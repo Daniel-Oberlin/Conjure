@@ -98,3 +98,157 @@ def test_stem_drops_an_extension_and_a_path_but_not_a_dotted_name():
     assert stem("files/assets/1/1/3_idle.mp3") == "3_idle"
     assert stem("aula_Std_Eye_R") == "aula_Std_Eye_R"
     assert stem("Plant_Dracaena-trifasciata_A.png") == "Plant_Dracaena-trifasciata_A"
+
+
+def test_identity_above_the_bytes_is_per_CAPTURE(tmp_path):
+    """A content-addressed catalog has no other way to say "the same logical asset": re-converting gives
+    it a new id every time the converter improves. So identity is `(kind, label)` **within one
+    capture** — and the capture tag is the whole safety argument.
+
+    Two captures can ship different `computer_desk` bytes and each keeps its own row, because a row
+    tagged only `jane` is never a candidate while importing `akari`. Without that, re-importing one
+    capture would retire another's props."""
+    import runpy
+
+    from conjure.library import AssetLibrary
+    mod = runpy.run_path("scripts/import_capture.py", run_name="not_main")
+    same_thing = mod["same_thing"]
+    S = "daniel/agents/builder"
+    lib = AssetLibrary(tmp_path / "library.db")
+    lib.upsert("desk-akari.glb", kind="model", label="computer_desk", scope=S,
+               source="cache://a", tags="akari")
+    lib.upsert("desk-jane.glb", kind="model", label="computer_desk", scope=S,
+               source="cache://b", tags="jane")
+    lib.upsert("shared.glb", kind="model", label="magnet", scope=S, source="cache://c",
+               tags="akari, jane")
+    lib.upsert("clip.glb", kind="animation", label="computer_desk", scope=S, source="cache://d",
+               tags="akari")
+
+    assert [r["id"] for r in same_thing(lib, S, "akari", "model", "computer_desk")] \
+        == ["desk-akari.glb"], "jane's desk is not akari's to retire"
+    assert [r["id"] for r in same_thing(lib, S, "jane", "model", "computer_desk")] \
+        == ["desk-jane.glb"]
+    assert [r["id"] for r in same_thing(lib, S, "akari", "model", "magnet")] == ["shared.glb"], \
+        "a prop shared by both IS akari's to replace when akari is re-imported"
+    assert same_thing(lib, S, "akari", "model", "nothing-called-this") == []
+    assert same_thing(lib, S, "akari", None, "computer_desk") == [], "no kind, no claim"
+
+
+def test_a_tombstone_is_never_a_candidate_a_second_time(tmp_path):
+    """Retiring a tombstone means nothing, and `by_user` already hides them — so the rule inherits that
+    for free rather than restating it."""
+    import runpy
+
+    from conjure.library import AssetLibrary
+    mod = runpy.run_path("scripts/import_capture.py", run_name="not_main")
+    S = "daniel/agents/builder"
+    lib = AssetLibrary(tmp_path / "library.db")
+    for i in ("old.glb", "new.glb"):
+        lib.upsert(i, kind="model", label="jane", scope=S, source=f"cache://{i}", tags="jane")
+    lib.supersede("old.glb", "new.glb")
+    assert [r["id"] for r in mod["same_thing"](lib, S, "jane", "model", "jane")] == ["new.glb"]
+
+
+def _script():
+    import runpy
+    return runpy.run_path("scripts/import_capture.py", run_name="not_main")
+
+
+def test_a_composed_files_provenance_names_the_thing_not_the_file():
+    """A composed GLB is named after the THING it holds, so there is no container stem to match on.
+
+    It carries what it drew from in `extras.conjure` instead, which is the fact rather than a
+    coincidence of naming — `underwear.glb` appears in eight captures under eight different ids, and
+    `office-babe` merges three files at once. Keying `shipped_with` on the file name silently lost every
+    authored set the moment the output stopped being one-file-per-asset.
+    """
+    from conjure.figures import write_glb
+    provenance = _script()["provenance"]
+    glb = write_glb({"asset": {"version": "2.0"},
+                     "extras": {"conjure": {"thing": "office-babe", "scene": "2249318.json",
+                                            "containers": {"10": 8, "11": 1},
+                                            "hidden": ["underwear"]}}})
+    mark = provenance(glb)
+    assert mark["thing"] == "office-babe"
+    assert sorted(mark["containers"]) == ["10", "11"]
+    assert mark["hidden"] == ["underwear"]
+    assert provenance(write_glb({"asset": {"version": "2.0"}})) == {}, "an ordinary GLB claims nothing"
+    assert provenance(b"not a glb") == {}
+
+
+def test_switching_from_per_container_to_per_thing_retires_the_leftovers(tmp_path):
+    """The switch is not a re-import of the same rows: the LABELS change, so ordinary `(kind, label)`
+    supersession catches only the few that happen to share a name.
+
+    Everything else would sit in the catalog forever, and the leftovers are the ones that do harm —
+    asked to "switch to a different bride" the director offered `model_britney_bride`, a bare body with
+    no clothes or hair, because nothing distinguished a figure from a piece of one.
+    """
+    from conjure.library import AssetLibrary
+    same_thing = _script()["same_thing"]
+    S = "daniel/agents/builder"
+    lib = AssetLibrary(tmp_path / "library.db")
+    for label in ("office-babe", "manager_fixing", "underwear", "TOOLS LIBRARYblend5"):
+        lib.upsert(f"old-{label}.glb", kind="model", label=label, scope=S,
+                   source="cache://x", tags="manager")
+    lib.upsert("new-babe.glb", kind="model", label="office-babe", scope=S, source="cache://y",
+              tags="manager")
+    lib.upsert("set:manager", kind="set", label="manager", scope=S, source="capture://manager",
+               tags="manager")
+
+    # `office-babe` shares its name with its container, so the ordinary rule already has it.
+    assert sorted(r["id"] for r in same_thing(lib, S, "manager", "model", "office-babe")) \
+        == ["new-babe.glb", "old-office-babe.glb"]
+    # The others do not, and are recognised by their label being a container stem of this capture.
+    assert [r["id"] for r in same_thing(lib, S, "manager", "model", "manager_fixing")] \
+        == ["old-manager_fixing.glb"]
+    lib.supersede("old-manager_fixing.glb", "new-babe.glb")
+    assert same_thing(lib, S, "manager", "model", "manager_fixing") == [], "a tombstone is not a candidate"
+    # One file that became FIFTEEN things points at the SET, not at an arbitrary one of them.
+    lib.supersede("old-TOOLS LIBRARYblend5.glb", "set:manager")
+    assert (lib.get("old-TOOLS LIBRARYblend5.glb") or {}).get("superseded_by") == "set:manager"
+
+
+def test_container_files_keys_a_container_both_ways(tmp_path):
+    """Id -> `(stem, build)`: identity for the composed path, the stem for the older output and for
+    recognising the rows a previous per-container import labelled."""
+    import json
+    container_files = _script()["container_files"]
+    from conjure.figures import write_glb
+    root = tmp_path / "cap" / "build"
+    (root / "files").mkdir(parents=True)
+    (root / "files" / "office-babe.glb").write_bytes(write_glb({"asset": {"version": "2.0"}}))
+    (root / "config.json").write_text(json.dumps({"assets": {
+        "77": {"id": "77", "type": "container", "name": "office-babe.glb",
+               "file": {"filename": "office-babe.glb", "url": "files/office-babe.glb"}},
+        "78": {"id": "78", "type": "material", "name": "skin", "data": {}}}, "scenes": []}))
+    found = container_files(str(tmp_path / "cap"))
+    assert found == {77: ("office-babe", str(root))}, "materials are not containers"
+
+
+def test_reverting_a_converter_change_does_not_leave_the_asset_in_its_own_tombstone(tmp_path):
+    """An id is a CONTENT ADDRESS, so improving a converter writes new bytes and a new row while the old
+    one steps aside — and REVERTING brings the old bytes, and the old id, back onto a retired row.
+
+    `upsert` never touched `superseded_by`, so the re-import looked clean and the asset stayed
+    invisible. Seen live: backing out one composer change took the catalog from 98 live models to 47,
+    each re-imported id written straight back into its own tombstone.
+    """
+    from conjure.library import AssetLibrary
+    S = "daniel/agents/builder"
+    lib = AssetLibrary(tmp_path / "library.db")
+    lib.upsert("old.glb", kind="model", label="Bride", scope=S, source="cache://old", tags="bride")
+    lib.upsert("new.glb", kind="model", label="Bride", scope=S, source="cache://new", tags="bride")
+    lib.supersede("old.glb", "new.glb")
+    assert (lib.get("old.glb") or {}).get("superseded_by") == "new.glb"
+
+    # the revert: the old bytes are back, so the old id is what an import writes
+    lib.upsert("old.glb", kind="model", label="Bride", scope=S, source="cache://old", tags="bride")
+    assert (lib.get("old.glb") or {}).get("superseded_by") == "new.glb", \
+        "upsert alone must NOT clear it — most callers are partial writes"
+    assert lib.revive("old.glb") is True
+    assert (lib.get("old.glb") or {}).get("superseded_by") is None
+    assert lib.revive("old.glb") is False, "nothing to do the second time"
+    assert lib.revive("never-existed.glb") is False
+    live = {r["id"] for r in lib.by_user("daniel", limit=100)}
+    assert "old.glb" in live and "new.glb" in live

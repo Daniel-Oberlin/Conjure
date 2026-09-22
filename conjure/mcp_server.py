@@ -612,11 +612,28 @@ async def inspect_figure(id: str) -> str:
             pass
     # The wording lives in `figures` so the eval harness can ask the director the same question this
     # tool does, against a file instead of a live world (docs/backlogs/figures.md, slice 2).
+    # What can be taken OFF, beside what can be posed. `inspect_figure` is the tool a director reaches
+    # for when asked "what is she wearing" — leaving parts out of it meant the answer was "nothing".
+    from .parts import load_vocabulary, removable as removable_parts
+    parts = meta.get("parts") or {}
+    groups = removable_parts(parts, load_vocabulary()) if parts else ({} if parts else None)
+    if parts and not groups:
+        groups = {}
+    hidden_raw = ((ent.get("components") or {}).get("figure-parts") or {}).get("hidden") or "[]"
+    try:
+        import json as _j
+        hidden = _j.loads(hidden_raw) if isinstance(hidden_raw, str) else list(hidden_raw)
+    except ValueError:
+        hidden = []
     return figure_description(
         label=meta.get("title") or id,
         height_m=(bbox[1][1] - bbox[0][1]) if bbox else None,
         tris=meta.get("tris"), bones=(meta.get("humanoid_axes") or {}),
-        has_map=bool(meta.get("humanoid")), posed=already)
+        has_map=bool(meta.get("humanoid")), posed=already,
+        removable=groups if parts else {}, hidden=hidden,
+        morphs=meta.get("morph_names"), expression=meta.get("expression_scheme"),
+        hand_side=(meta.get("hand_side") or "") if meta.get("hand_joints") else "",
+        worn=((ent.get("components") or {}).get("hand-rig") or {}).get("hand") or "")
 
 
 @mcp.tool()
@@ -624,9 +641,20 @@ async def dress_figure(id: str, hide: Optional[list[str]] = None, show: Optional
                        only_body: bool = False) -> str:
     """Turn parts of a figure off and on — clothing, hair, shoes, accessories.
 
-    Use for 'take her jacket off', 'lose the shoes', 'show me the model underneath'. hide/show take
-    CATEGORIES — clothing, hair, shoes, accessory — or the name of one mesh when a category is too
-    broad. only_body: strip everything removable in one go.
+    **Match the request to the narrowest thing that satisfies it.** The categories are separate because
+    people mean them separately:
+
+      "remove her clothes" / "take her dress off"  -> hide=["clothing"]     NOT only_body
+      "lose the shoes" / "barefoot"                -> hide=["shoes"]
+      "take off her necklace" / "no jewellery"     -> hide=["accessory"]
+      "shave her" / "remove the hair"              -> hide=["hair"]
+      "strip her" / "show me the model underneath" -> only_body=True
+
+    `only_body` removes EVERYTHING removable INCLUDING HER HAIR, which is almost never what "remove her
+    clothes" means. Reach for it only when the user asked for everything off.
+
+    hide/show also take the name of a single mesh, for when a category is too broad — 'take off the
+    left shoe'. The tool reports which categories it hid, so say that back rather than guessing.
 
     The face and the body itself are never removable. Hiding is visibility, not deletion: a pose
     survives it and showing a part again is instant. What counts as clothing was decided when the model
@@ -638,10 +666,138 @@ async def dress_figure(id: str, hide: Optional[list[str]] = None, show: Optional
         return f"Couldn't change that figure's parts: {_reason(out)}."
     hidden = out.get("hidden") or []
     groups = out.get("removable") or {}
-    lines = [f"{id}: {len(hidden)} mesh(es) hidden" + (f" — {', '.join(hidden)}" if hidden else "")]
-    lines.append("Removable: " + (", ".join(f"{k} ({n})" for k, n in groups.items()) or "nothing"))
+    by_cat = out.get("hidden_by_category") or {}
+    # Report by CATEGORY as well as by mesh, so the answer given back to the user is what actually
+    # happened. Three times running the director said "clothing's all off" after a call that also took
+    # the hair, because the reply only listed mesh names and nobody reads those.
+    summary = ", ".join(f"{c} ({len(n)})" for c, n in sorted(by_cat.items())) if by_cat else "nothing"
+    lines = [f"{id}: hidden — {summary}."]
+    if hidden:
+        lines.append(f"Meshes: {', '.join(hidden)}")
+    # What is STILL ON — `removable` is the TOTAL per category, and reported as a remainder beside a list
+    # of what just came off it reads as "there is more clothing left" when there is none. Same class of
+    # misreport as answering "clothing's all off" after a call that also took the hair.
+    left = {k: n - len(by_cat.get(k) or []) for k, n in groups.items()}
+    lines.append("Still on: "
+                 + (", ".join(f"{k} ({n})" for k, n in sorted(left.items()) if n > 0)
+                    or "nothing removable"))
     if out.get("unknown"):
         lines.append(f"Not a category or a mesh on this figure: {', '.join(out['unknown'])}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def play_clip(id: str, clip: str, loop: bool = True, speed: Optional[float] = None,
+                    force: bool = False) -> str:
+    """Play a captured animation on a figure — a dance, an idle, a gesture.
+
+    Ask `list_clips` first unless the user named a clip you already know exists. A clip is identified by
+    its label ("3_idle") or its asset id; if a label belongs to more than one clip this refuses and
+    lists them, because the same clip name turns up on different figures and picking one at random plays
+    the wrong body.
+
+    A clip plays on any figure, not only the one it shipped with. Same rig, it binds directly; a
+    different rig, it is REWRITTEN for her first — both skeletons mapped through a canonical humanoid
+    and every channel that can cross rewritten. So the answer to "can she do what the other one was
+    doing" is yes, with one honest caveat: a rewrite carries only the bones a humanoid has, so a skirt,
+    a ponytail or a breast chain stays still while the body moves. The reply says when it happened.
+
+    A figure with no recoverable bone map is still refused, because there is nothing to map through.
+    `force` is only for looking at the wreck deliberately — it binds by NAME across the mismatch, which
+    resolves almost nothing.
+
+    **A clip brings its own SOUND.** Most of these were captured with a voice track recorded against
+    them — 20 of Barbie's 21 — and it plays automatically, in sync, positioned on the figure. There is
+    no separate audio tool and none is needed: "animate her with sound", "make her talk", "with audio"
+    all mean *play a clip that has a voice*. Call `list_clips` and pick one marked `voiced`. Saying you
+    cannot do audio is wrong, and it was said on device while the voice was already playing.
+
+    **Leave `speed` alone unless the user asks for fast or slow.** Each clip carries the playback rate
+    its capture authored — some are meant to run at 0.5 and some at 1.2 — and passing a rate overrides
+    that, so a well-meant `speed=1.0` plays the clip wrong.
+
+    While a clip plays it drives the whole skeleton and any pose is overridden; stopping puts the figure
+    back and the pose returns. Use `stop_clip` to stop.
+    """
+    out = await _post("/figure/clip", _body(id=id, clip=clip, loop=loop, speed=speed, force=force))
+    if not out.get("ok"):
+        line = f"Couldn't play that: {_reason(out)}"
+        if out.get("candidates"):
+            line += "\n" + "\n".join(f"  {c['id']} ({c.get('tags') or 'untagged'})"
+                                      for c in out["candidates"])
+        return line
+    secs = out.get("duration_s")
+    length = f", {secs:.0f}s" if isinstance(secs, (int, float)) else ""
+    tail = " (looping)" if out.get("loop") else ""
+    if out.get("voiced"):
+        voice = " Her voice plays with it."
+    elif out.get("voiced_alternatives"):
+        voice = (f" This one is silent — {out['voiced_alternatives']} of her clips have a voice; "
+                 f"`list_clips(voiced=True)` lists them.")
+    else:
+        voice = " This one is silent."
+    warn = f"\nWarning: {out['warning']}" if out.get("warning") else ""
+    return f"Playing {out.get('label') or out['clip']} on {id}{length}{tail}.{voice}{warn}"
+
+
+@mcp.tool()
+async def stop_clip(id: str) -> str:
+    """Stop the animation playing on a figure. It returns to its pose, or to standing if it has none."""
+    out = await _post("/figure/clip", _body(id=id, stop=True))
+    return f"Stopped the animation on {id}." if out.get("ok") else f"Couldn't stop it: {_reason(out)}"
+
+
+@mcp.tool()
+async def list_clips(id: str, all: bool = False, kind: str = "", voiced: bool = False) -> str:
+    """What a figure can be animated with.
+
+    Three lists, and the differences matter. **Shipped** is what this figure's own scene gave it — the
+    safe default. **Compatible** is every clip her skeleton receives as-is. **Retargetable** is every
+    clip from a DIFFERENT rig, rewritten for her on the way; those play, and they lose the channels no
+    other rig has a bone for — a skirt or a ponytail stays still while the body moves. Both of the
+    latter are listed only when you pass `all`.
+
+    A clip that fits is not automatically a sensible one: many are authored around furniture that is not
+    there, so a figure standing in an empty room will lean on a sink that does not exist. Prefer the
+    shipped list unless the user is exploring.
+
+    `kind` narrows to "idle" or "action". Idles are quiet and personal to a figure; actions travel.
+
+    `voiced` keeps only the clips that carry a VOICE TRACK, which plays automatically with the
+    animation. That is the whole answer to "animate her with sound" — there is no separate audio tool,
+    the sound is part of the clip. Most clips are voiced; a few are not.
+    """
+    q = (f"/figure/clips?id={id}" + ("&all=true" if all else "") + (f"&kind={kind}" if kind else "")
+         + ("&voiced=true" if voiced else ""))
+    out = await _get(q)
+    if not out.get("ok"):
+        return f"Couldn't list clips: {_reason(out)}"
+
+    def show(rows: list) -> list[str]:
+        return [f"  {r['label'] or r['id']} — {r.get('kind') or 'clip'}"
+                + (f", {r['duration_s']:.0f}s" if isinstance(r.get("duration_s"), (int, float)) else "")
+                + (", voiced" if r.get("voiced") else "")
+                + f"  [{r['id']}]" for r in rows]
+
+    shipped = out.get("shipped") or []
+    lines = [f"{id} — rig {out.get('rig_sig') or 'unknown'}",
+             f"Shipped with her ({len(shipped)}):"] + (show(shipped) or ["  none"])
+    if all:
+        other = out.get("compatible") or []
+        lines.append(f"Also compatible ({len(other)}) — authored for other figures on this rig:")
+        lines += show(other) or ["  none"]
+        far = out.get("retargetable") or []
+        if far:
+            lines.append(f"Retargetable ({len(far)}) — from other rigs, rewritten to fit her:")
+            lines += show(far)
+    else:
+        counts = []
+        if out.get("compatible_count"):
+            counts.append(f"{out['compatible_count']} more fit this rig")
+        if out.get("retargetable_count"):
+            counts.append(f"{out['retargetable_count']} more can be retargeted from other rigs")
+        if counts:
+            lines.append(" and ".join(counts) + " — pass all to see them.")
     return "\n".join(lines)
 
 
@@ -758,6 +914,82 @@ async def pose_figure(id: str, pose: dict | None = None, named: str = "", clear:
         # rather than doing nothing, and knowing which one was hit is how the next request gets better.
         return moved + " Joint limits applied: " + "; ".join(out["limited"]) + "."
     return moved
+
+
+@mcp.tool()
+async def wear_hand(id: str, hand: str = "auto") -> str:
+    """Put a placed HAND MODEL on the wearer's hand, so it follows their real one. Use for "wear
+    these hands", "put the left hand on", "take the hands off".
+
+    A worn hand is driven by the headset's hand tracking, all twenty-five joints, every frame — so it
+    moves exactly as the person's own hand does. Nothing about it is posable and no animation plays on
+    it; it is the wearer's hand, wearing a model.
+
+    hand is "auto" (pair it with the side the model actually is), "left", "right", or "off" to take it
+    off. `auto` is almost always what you want: which hand a model is was MEASURED from its geometry
+    when it was imported, not read from its name. Asking for the wrong side is refused, because a left
+    model worn on a right hand looks like broken tracking rather than like a mistake.
+
+    Taking it off puts it back where it was placed — wearing does not consume the model, it occupies
+    it. It needs hand tracking: with controllers in hand there is nothing to follow, and the model
+    simply rests where it was put.
+    """
+    out = await _post("/figure/hand", {"id": id, "hand": hand})
+    if not out.get("ok"):
+        return f"Couldn't do that: {_reason(out)}."
+    if not out.get("worn"):
+        return "Taken off — it's back where it was placed."
+    return f"Worn on the {out.get('hand')} hand, following all {out.get('joints')} joints."
+
+
+@mcp.tool()
+async def set_expression(id: str, expression: dict | None = None, clear: bool = False) -> str:
+    """Change a figure's FACE — smile, blink, look at you, mouth a word. Use for "have her smile",
+    "make her look surprised", "close her eyes", "have her look left".
+
+    expression maps what you want to how much of it, 0 to 1. Several combine, so a face can do more
+    than one thing at once:
+
+        {"smile": 1}                          a smile
+        {"smile": 0.4}                        a slight one
+        {"blink": 1}                          eyes closed
+        {"joy": 1}                            a full happy face — mouth AND eyes
+        {"surprised": 1}                      brows up, jaw open
+        {"smile": 0.6, "look_left": 1}        smiling, glancing left
+        {"brow_raise": 1, "mouth_open": 0.3}  a questioning look
+
+    What you can ask for: neutral, smile, joy, sad, angry, surprised, blink, blink_left, blink_right,
+    squint, brow_raise, brow_lower, mouth_open, pucker, look_left, look_right, look_up, look_down.
+    Mouth shapes for speech: aa, ee, ih, oh, ou.
+
+    NOT EVERY FIGURE HAS A FACE, and most do not — a figure may be fully rigged, posable and
+    animated and still have no facial shapes at all. `inspect_figure` says which. When a figure
+    cannot, the reply says so plainly; do not retry with different wording, because the shapes are
+    simply not in the model.
+
+    Expressions REPLACE each other rather than accumulate: each call sets the whole face, so pass
+    everything you want at once. Pass clear=true to return to a resting face.
+    """
+    body: dict = {"id": id}
+    if clear:
+        body["clear"] = True
+    elif isinstance(expression, dict) and expression:
+        body["expression"] = expression
+    else:
+        return ('Give me an expression like {"smile": 1} or {"blink": 1, "smile": 0.5}, '
+                "or clear=true to relax her face.")
+    out = await _post("/figure/expression", body)
+    if not out.get("ok"):
+        return f"Couldn't do that: {_reason(out)}."
+    if out.get("cleared"):
+        return "Face relaxed."
+    said = ", ".join(sorted(out.get("applied") or []))
+    msg = f"Set {said}."
+    if out.get("skipped"):
+        # A face this figure has only part of. Said out loud: a tongue-only rig asked to raise its
+        # brows has no brows, and silence there reads as the tool not working.
+        msg += f" This figure cannot {', '.join(out['skipped'])}, so that was skipped."
+    return msg
 
 
 @mcp.tool()

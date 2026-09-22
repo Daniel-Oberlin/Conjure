@@ -59,7 +59,12 @@
         "inspect_figure",
         "list_poses",
         "pose_figure",
-        "dress_figure"
+        "set_expression",
+        "wear_hand",
+        "dress_figure",
+        "list_clips",
+        "play_clip",
+        "stop_clip"
       ]
     }
   ],

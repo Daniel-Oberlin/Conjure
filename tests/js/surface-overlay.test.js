@@ -186,7 +186,11 @@ test("cycling the layers is a closed loop that reaches every layer alone and off
   let hits = { poly: 0, rect: 0, seed: 0 };
   const seen = [];
   const press = { started: (a) => a === "surfaces" };
-  window.ConjurePointers = { controllers: () => [press] };
+  // `acting` is what the overlay asks for now — controllers AND tracked hands, since a hand resolves
+  // actions since 2026-09-17. The stub offers BOTH, because the call site is
+  // `(CP.acting || CP.controllers)` on purpose: a consumer updated against a stale pointers layer
+  // must degrade to controllers-only rather than throw inside its tick.
+  window.ConjurePointers = { acting: () => [press], controllers: () => [press] };
   const start = SO.mode();
   for (let i = 0; i < 5; i++) {
     SO.poll({});

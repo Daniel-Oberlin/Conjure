@@ -159,9 +159,55 @@ python scripts/playcanvas_rebuild.py <build-dir> --out temp/rebuilt --adopt
 conjure-import temp/rebuilt/jane_export.glb --label "Jane"
 ```
 
+**Check a download before you throw the old one away.** The grabber writes a fresh tree, so a
+re-download REPLACES rather than tops up — a run that captures less than the last one loses files
+silently, and one did: arabic's own character build went from 35 of 35 to 9 of 35.
+
+```bash
+python scripts/capture_audit.py temp/vrh/arabic                      # is it complete?
+python scripts/capture_audit.py temp/vrh/arabic --against temp/vrh.old  # did it LOSE anything?
+python scripts/capture_audit.py temp/vrh --each                      # every capture at once
+```
+
+A build's `config.json` is a complete manifest, so "is this capture complete" has an exact answer.
+Builds are matched by their asset-id SET rather than by path, because the same build appears under many
+captures and the useful comparison is between two copies of one build wherever they sit.
+
+For a whole capture, compose it into THINGS and import that instead — one asset per thing the scene
+places rather than one per file (see below):
+
+```bash
+python scripts/playcanvas_rebuild.py temp/vrh/jane --out temp/things/jane --compose
+python scripts/import_capture.py temp/vrh/jane                      # dry run; reads temp/things/jane
+python scripts/import_capture.py temp/vrh/jane --commit
+```
+
 If `--list` reports **"NO config.json"**, the capture is geometry only — the layout is fine, the
 registry is what is missing, and it prints the URL to fetch plus a reminder that `config.json` names the
 scene file and the textures you also need.
+
+### Converting whole THINGS instead of whole files
+
+A container is a FILE, one artist's export; a *thing* is what the scene places. They disagree in both
+directions — `office-babe` draws from three containers, and `TOOLS LIBRARYblend5.glb` is fifteen separate
+props — so the per-container output above emits meshes the scene never renders and drops ones it does.
+`--compose` writes one GLB per thing instead, and checks each against the scene that described it:
+
+```bash
+python scripts/playcanvas_rebuild.py temp/vrh/akari --things            # what the scenes place
+python scripts/playcanvas_rebuild.py temp/vrh/akari --out temp/things/akari --compose
+node scripts/glb_check.mjs temp/things/akari/*.glb                      # will three.js load it, and how big
+```
+
+It writes **alongside** `temp/rebuilt/` rather than replacing it, and nothing imports from it yet — so
+the way to look at one is to drop the file into a web glb viewer. Add `--as-shown` when you do: a viewer
+draws every node it is given and knows nothing about the hidden flag, so the asset shows you its whole
+wardrobe at once — Alice's switched-off pale hair, bride's underwear — which reads as a bug and is not
+one. `--as-shown` leaves those out. It is a copy for looking at; the asset keeps them, because a part
+the runtime can show again has to be in the file to be shown. `--compose` prints `WRONG:` for
+anything the composed file gets wrong against the scene, and says "the verifier is silent" when there is
+nothing; `glb_check.mjs` is the independent second opinion, and its bounding box is where a 100× error
+shows up instantly.
 
 `--adopt` gives a mesh no entity binds the material from an identically-named one elsewhere in the
 build, reported as INFERRED. It is rarely needed: `template` assets are read as well as scenes, and
@@ -184,7 +230,7 @@ node scripts/basis_to_png.js <capture-dir>
 If the report says **N referenced file(s) are not in this capture**, add `--fetch-list urls.txt` and
 feed it to `xargs -n1 curl -O` or `wget -i`; the addresses are derived from the capture's own path. Textures are downscaled to 1024
 by default because these builds routinely use 4096-square maps, which is about 90 MB of VRAM each. See
-§ 9a of [`specs/figures.md`](./specs/figures.md).
+§ 3 of [`specs/captures.md`](./specs/captures.md).
 
 ---
 
@@ -260,6 +306,47 @@ cable, or Developer Mode / the reboot didn't take.
 > vendor A-Frame locally — not done yet.
 
 Next session: server → `adb reverse` → browser. 3A is permanent.
+
+## Reading back a session
+
+`python scripts/transcript.py` renders a Claude Code session log to Markdown. Everything is on disk
+already, so it is local, instant and free.
+
+```
+python scripts/transcript.py --list      # sessions oldest first: started, last active, size
+python scripts/transcript.py b9914db3    # one of them -> temp/transcripts/2026-09-05-b9914db3.md
+python scripts/transcript.py --all       # every session this project has had
+python scripts/transcript.py b9914db3 --tools    # ...including the tool CALLS
+python scripts/transcript.py b9914db3 --full     # ...and their results (much larger)
+python scripts/transcript.py b9914db3 --me       # ONLY what you typed -> …-me.md
+```
+
+**Your turns are marked and indexed**, because they are outnumbered about ten to one and are easy to
+lose in the assistant's running commentary. Every file opens with a *What you asked* index — one line
+per turn with its line number — and each of your turns gets a `## ▶ … YOU` heading while the
+assistant's get a plain `###`. `--me` writes the index's full text on its own: one session's 191
+prompts come to 0.08 MB.
+
+The marker is not `role == "user"`. Most `user` records are TOOL RESULTS being fed back in — 2,353 of
+2,575 in one session — so the render keys on `origin.kind == "human"` instead, which is what the log
+records for a person at a keyboard.
+
+Files are named `<start-date>-<short-id>.md`, so the directory sorts chronologically. The date is when
+the session STARTED, not when it was last written: a session that continues would otherwise be renamed
+on every render, leaving the directory holding two copies of one conversation with nothing to say which
+is current. The full span is in each file's first line, since a single session can run for days —
+`b9914db3` covers 2026-09-05 to 09-14.
+
+**Prose-only is the default because of the ratio.** In a 50 MB session the conversation is 0.7 MB —
+1.4%. The rest is tool inputs, tool results and per-record metadata. The whole of this project's
+history, fifteen sessions and 175 MB of logs, renders to 4.7 MB you can grep.
+
+The logs live in `~/.claude/projects/<slugified-cwd>/`, one JSON object per line, and **the line
+number is the record number** — so once the Markdown points you at `line 6954`, `sed -n '6954p'` on
+the `.jsonl` gets you that turn's raw JSON, tool calls and all.
+
+Worth knowing after a context compaction: the summary is what the *model* keeps, and the log is what
+*happened*. They are not the same, and the log is complete.
 
 ## Troubleshooting
 

@@ -259,7 +259,7 @@
     var CP = window.ConjurePointers;
     if (!CP) return;
     var ptrs;
-    try { ptrs = CP.controllers(sceneEl); } catch (e) { return; }
+    try { ptrs = (CP.acting || CP.controllers).call(CP, sceneEl); } catch (e) { return; }
     for (var i = 0; i < ptrs.length; i++) {
       if (!ptrs[i].started("surfaces")) continue;
       mode = MODES[(MODES.indexOf(mode) + 1) % MODES.length];

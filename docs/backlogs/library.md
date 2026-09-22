@@ -140,47 +140,157 @@ the wrong home — maintenance verbs live in `ctl.py`. `search_library` through 
 
 ## Unsettled — asked for, not yet designed
 
-### Interactive exclusion at capture import
+### Interactive exclusion at capture import — see `backlogs/captures.md`
 
-`scripts/import_capture.py` takes everything a capture holds. A capture also holds the shared furniture
-— controllers, a desk, a magnet, a button, the tools library — and there is no way to leave it out
-short of deleting rows afterwards. Asked for as an **opt-in** mode that walks the items and takes
-Enter to include, `n` to exclude, with a **separate flag per asset type** so the models can be
-confirmed without being asked about clips.
+Moved 2026-09-13 with the capture pipeline; it is a question about what a capture yields, not about
+what the catalog does with a row.
 
-**Unsettled, and the measurements are why.**
+### Re-importing a capture leaves the previous rows behind — see `backlogs/captures.md`
 
-*It repeats.* Nine names account for nearly all the noise and each recurs in 15–20 of the twenty
-captures, while **43 of 53 distinct models appear in exactly one**. So the real cost is not 208
-decisions, it is about nine real ones and 199 repetitions — an interactive pass with no memory becomes
-unusable around the third capture. That argues for persisted decisions, which is a file, a format and a
-"forget my answers" escape hatch: more scope than the feature looks like.
-
-*Per-type is the whole point, not a nicety.* Confirming everything across twenty captures is
-
-    models 208 · animations 710 · audio 1,956 · TOTAL 2,874 prompts
-
-Audio already has an automatic skip rule for the promo lines, and no case has come up for excluding a
-clip. Models may be the only type that needs this at all.
-
-*Name or content as the key?* Content-addressing is exact, but `VR_hand_L.glb` has two distinct hashes
-across captures and `underwear.glb` has eight, so a hash-keyed skip re-asks on every variant.
-Name-keyed matches the intent and could catch something wanted.
-
-**And the prior question, unanswered:** whether exclusion is the right shape at all. Content-addressing
-means the desk in twenty captures is ONE row, so a wrong include costs almost no storage. If the
-problem is that props clutter a listing, `--kind` or a `prop` tag solves it without a decision per
-item; if the problem is that they should not be catalogued, exclusion is right. Nobody has said which.
+Moved with the above. It is listed there as a **blocker** on the composition work, because merging
+several containers into one asset is by definition a re-import that supersedes.
 
 ## Future directions
 
-### Visual model embedding via rendered thumbnails
+### Describing and embedding models ✅ DONE 2026-09-16 — all three layers shipped
 
-3D models are kept out of the vector index and matched by FTS/exact on their title, because
-text-derived vectors dominate text queries and bury the images (measured: model titles at distance
-~0.69 vs images at ~1.33). To make models semantically searchable ("a large deciduous tree" → an oak)
-and image-similarity-searchable, render each GLB to a thumbnail and embed **that**, so models join the
-image space at a consistent scale. Needs a GLB→PNG renderer (trimesh/pyrender).
+`conjure/describe.py` (layer 1), `scripts/describe_figures.py` (2 and 3), `glb_preview.py --shown`
+(the render). **38 rigged figures, all three layers, no failures.** The catalog went from 94 embedded
+assets of which none was a model to 132 of which 38 are, and from every figure's `notes` being empty to
+every figure carrying a paragraph. FTS now answers `bikini` → Arabic, Goddess; `sneakers` → four;
+`pigtails` → four; `silver hair` → Goddess. None of that was findable before.
+
+Re-run it after an import: `python scripts/describe_figures.py --commit --render --embed --caption`.
+
+**The one thing that would have gone wrong quietly**, and did until it was caught by eye: a render of
+EVERY mesh stacks a figure's wardrobe on top of itself, and the vision model describes the result in
+complete earnest. Alice's hidden underwear came back as *"a bright pink fanny pack worn diagonally
+across her front"* and the losing half of a hair variant as *"a striking white streak"*. Both fluent,
+both false. `--shown` reads `extras.conjure.hidden` out of the GLB and draws only what the scene draws.
+**A vision pass does not fail loudly; it fails plausibly.**
+
+What follows is the design as written before any of it was built, kept because the reasoning is still
+the reasoning.
+
+### Why it was built in three layers — a figure's whole searchable self was her name
+
+**The state of it, measured 2026-09-16.** 94 assets carry an embedding and **every one is an image or a
+skybox; no model has one**. Every rigged figure's `notes` and `tags` are empty, so a figure's entire
+searchable text is her `label` — and three of them are called `Animated Woman`. Asking this catalog for
+"a blonde in a cocktail dress" cannot work, and neither can "someone who looks like this".
+
+Models were kept out of the vector index for a reason that still holds: **text-derived vectors dominate
+text queries and bury the images** (measured: model titles at distance ~0.69 against images at ~1.33).
+That is an argument against embedding a model's TITLE. It is not an argument against embedding a
+picture of it.
+
+Three layers, and they are worth keeping apart because they fail differently and only the first is free.
+
+**Layer 1 — structured text, from what is already known. Deterministic, and costs nothing.** A figure's
+`attributes` already hold her height, rig convention, humanoid bone count, `parts` (which meshes are
+jacket, skirt, shoes), clip names and count, whether any are voiced, and her morph target names — which
+on this corpus include skin and hair variants (`Body_Asian`, `Hair_Asian`) and expression sets. Composing
+that into `notes` is a pure function of the row, it is already in the FTS index
+(`label, prompt, query, notes, tags`), and it cannot be refused or hallucinated. **Do this first**: it
+establishes whether search improves at all before anything is spent on a vision pass, and it gives the
+vision pass something to check against.
+
+**Layer 2 — render a thumbnail and embed THAT.** The renderer exists:
+[`scripts/glb_preview.py`](../../scripts/glb_preview.py), headless Blender, several views, written for
+exactly this and saying so. Embedding a rendered view puts models in the **image** space at a consistent
+scale, which is what sidesteps the text-dominance measurement above — and it buys image-similarity
+search ("find me another figure that looks like this one"), which no amount of description gives you.
+`SigLipEmbedder` is configured and does image and text in one space.
+
+**Layer 3 — a multimodal description, into `notes`.** `GeminiCaptioner` is configured and the
+`Captioner` protocol is the seam. This is the layer that answers "a blonde in a cocktail dress", and it
+is the only one that can describe what a person would actually say about a figure.
+
+**Three obstacles, and the second decides whether layer 3 happens at all.**
+
+- **A figure is not one image.** Her clothing is removable (`parts`), she can be posed, and she has 21+
+  clips. A front A-pose describes one configuration of many. Multi-view helps; knowing that the
+  description is *of the default dressed A-pose* matters more, and should be said in the text rather
+  than implied.
+- ~~**The corpus is adult, so a vision provider will refuse or sanitise some of it.**~~ **Tested
+  2026-09-16 and it did not happen: eight figures, eight `FinishReason.STOP`, no refusal and no
+  sanitising** — including Saka in a black underwear set and Goddess in a metallic bikini with a chain
+  body harness, both described plainly and in full. The premise was wrong in a way worth writing down:
+  **these figures are CLOTHED in their default composed state**, which is the state a render of the
+  thing produces. Undressing is something `dress` does at runtime by hiding parts, and no pipeline has
+  any reason to caption that. Layer 3 is feasible; gemini-2.5-flash, one call each, 32 figures is
+  nothing.
+- **A description is text, so putting it in the VECTOR index reintroduces the exact problem** that took
+  models out of it. Layer 3 belongs in `notes` for FTS; layer 2 owns the vector. Keeping that split is
+  the whole reason these are separate layers and not one pass.
+
+**What the test found instead**, none of which was predicted:
+
+- **The existing caption prompt is the wrong prompt, by a mile.** `_IMAGE_PROMPT` is tuned for images
+  and returns `"Female 3D model white background"`, `"3D render woman in dress"` — worse than the label
+  it would replace. A figure-specific prompt returns a full searchable paragraph: *"…light grey
+  long-sleeved collared shirt tucked into a black pleated mini-skirt… a bright pink fanny pack… pink and
+  white low-top sneakers"* for Alice, and it correctly read Jane as medieval, Steve as Minecraft-like,
+  and Moon Girl's outfit as *"maid, school…"*. Layer 3 is a prompt as much as a pass, and the prompt is
+  most of it.
+- **The render has to be told which way she FACES.** Moon Girl came out back-to-camera, and the caption
+  duly described a square neckline *at the back* and a bow at the waist. Figures do not agree on facing
+  — one rig in this catalog rests yawed 27° — and `humanoid_axes` already knows the answer, so this is
+  wiring rather than work. A back view is not a failure that announces itself: the description reads
+  perfectly well and is about the wrong side of the figure.
+- **Workbench renders carry enough colour.** The worry that a structural renderer would lose the texture
+  was misplaced — it caught pink sneakers, silver hair with darker roots, a golden tiara and coral
+  fabric. No need for EEVEE and its cost.
+- **The descriptions run long** (a dense paragraph each). `notes` wants a length cap, or FTS scoring
+  starts favouring whichever figure got the most verbose answer.
+
+**Where this pays off beyond search.** The director picks figures today from a name. A described catalog
+is the difference between "place Jane" and "place someone who fits a hotel bar at midnight" — and the
+same text is what a person needs when `dir --all` returns ninety-eight rows.
+
+### A room model as the ENVIRONMENT — designed, not built
+
+**Moved here 2026-09-16 when the figures plan dissolved; designed 2026-09-12 and untouched since.** It
+was always independent of the figure work, and it is the largest thing the captures already contain that
+nothing consumes: four of them ship a room model *and* a cube-mapped sky.
+
+Touches `specs/worlds-surfaces.md` (presentation and the scaffold), `specs/dynamics.md` (the `grab`
+mode) and this file (the `environment` facet).
+
+- `attributes.environment = {projection: "equirect" | "grounded" | "cubemap" | "mesh" | "cylinder"}`
+  — the facet. `kind` stays `image` or `model`. **`cubemap` is not speculative**: four captures ship a
+  room model *and* a cube-mapped sky (`akari`/JAPANESEROOM, `stewardess`/PrivateJetInterior,
+  `moon-girl`/MOONLANDBASE, `susan`/aula), which is a projection the library has never held.
+- **A room and its sky are two environments that travel together**, linked by `pairs_with` (phase 1).
+  Setting the room offers its sky; neither requires the other, because the pairing is how the scene
+  shipped and not a constraint we should inherit.
+- A room model is **singleton** and replaces, like the sky: `set_environment(model_id)`, not
+  `place_asset`.
+- It **suppresses the scaffold**, on the same switch `presentation.skybox` and `.grounded` already use
+  — the room *is* the walls.
+- It is the content `authored` immersion was written for, which is why that mode currently falls back
+  to `ar`.
+- **`grab` follows the GROUNDED SKYBOX**, which is the mode that already solves this: offset and yaw
+  to place and square the room against the real one, scale to fit it to the physical space. The reason
+  is alignment for walking, not looks.
+- **Known obstacle, and it is the central one.** The grab catalog says it plainly: *"Skybox scale and
+  void mode need a void/outdoor world; skybox yaw works anywhere."* Inside a real space you get yaw and
+  nothing else — and a room model inside a real space is precisely the case that needs offset and scale
+  most, because that is what lining a virtual room up with a physical one *is*. The gate
+  (`WF.isVoid()`) has to learn about an environment model, and this is the phase's real work rather
+  than a footnote to it.
+- **Open:** where the user stands in a room, and whether its floor snaps to the space's floor plane.
+  `authored`'s "built to the real footprint" argues for snapping; `plane_anchor.py` already has the
+  machinery.
+
+**Done when:** a room model can be set as the environment, the scaffold gives way to it, and it can be
+dragged and yawed into alignment with the real room from inside the headset.
+
+**The central obstacle, restated:** the grab catalog says *"Skybox scale and void mode need a
+void/outdoor world; skybox yaw works anywhere."* Inside a real space you get yaw and nothing else — and
+a room model inside a real space is precisely the case that needs offset and scale most, because lining
+a virtual room up with a physical one *is* offset and scale. `WF.isVoid()` has to learn about an
+environment model. That is the phase's work, not a footnote to it.
 
 ### Rigged humanoid import — see `backlogs/figures.md`
 

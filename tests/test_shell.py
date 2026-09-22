@@ -1201,6 +1201,29 @@ def test_listing_filters_split_off_a_path_that_may_contain_anything():
     assert split("--kind model") == ("", {"kind": "model"})
     assert split("plain/path") == ("plain/path", {})
     assert split("") == ("", {})
+    # `--out`/`--in` take no value, so they need their own pass — a value-hungry pattern would eat the
+    # next word, and `dir --in --kind model` would look for a kind called "--kind".
+    assert split("--rel part_of --in") == ("", {"relation": "part_of", "direction": "in"})
+    assert split("--with jane --rel shipped_with --out --kind animation") == \
+        ("", {"related": "jane", "relation": "shipped_with", "direction": "out", "kind": "animation"})
+    assert split("assets --out") == ("assets", {"direction": "out"})
+    assert split("--all") == ("", {"limit": 0}), "0 means no cap"
+    assert split("assets --limit 500") == ("assets", {"limit": 500})
+    assert split("*idle* --all --kind animation") == ("*idle*", {"kind": "animation", "limit": 0})
+
+
+def test_a_filter_worth_ZERO_still_reaches_the_server():
+    """`--all` is `limit: 0`, and the body was built with `if v` — so the flag was dropped before it
+    was sent and did nothing, while the `… (more than 200)` marker kept appearing. A feature whose own
+    success value is falsy. Only ABSENT is absent."""
+    from conjure.shell import Shell
+    assert Shell._admin_body("/p", {"limit": 0}) == {"path": "/p", "limit": 0}
+    assert Shell._admin_body("/p", {"kind": "animation", "limit": 0}) == \
+        {"path": "/p", "kind": "animation", "limit": 0}
+    assert Shell._admin_body("/p", {"limit": 500}) == {"path": "/p", "limit": 500}
+    # ...and genuinely empty filters still go nowhere, which is what `if v` was there for.
+    assert Shell._admin_body("/p", {"kind": None, "related": "", "direction": "out"}) == \
+        {"path": "/p", "direction": "out"}
 
 
 def test_a_flag_like_word_inside_a_filename_is_not_a_flag():

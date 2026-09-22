@@ -1879,6 +1879,12 @@
         var ridden = 0, freed = 0, anchored = 0;
         Array.prototype.forEach.call(wr.children, function (el) {
           if (!el._frefPose || !el.object3D) return;
+          // A WORN HAND holds its own pose from the tracked joints every frame, so re-solving a
+          // plane-relative anchor onto it would fight the skeleton and win for one frame at a time.
+          // Skipped rather than cleared: `_frefPose` is what it goes back to when it is taken off, and
+          // dropping it would lose the place it was put (docs/decisions.md §30).
+          var rig = el.components && el.components["hand-rig"];
+          if (rig && rig.data && rig.data.hand) return;
           // ONE placement rule for all three kinds — see contentPose. `true` rides the host's slew TARGET
           // so on-surface art eases in lock-step with its wall (§5.5) instead of lagging it through a
           // transition. A null result means no basis yet: hold the current pose.
@@ -2107,7 +2113,7 @@
         var CP = window.ConjurePointers;
         if (!window.CONJURE_GEOMETRY_LOG || !CP) return;
         var ptrs;
-        try { ptrs = CP.controllers(sceneEl); } catch (e) { return; }
+        try { ptrs = (CP.acting || CP.controllers).call(CP, sceneEl); } catch (e) { return; }
         var hit = null;
         for (var i = 0; i < ptrs.length; i++) if (ptrs[i].started("mark")) { hit = ptrs[i]; break; }
         if (!hit) return;

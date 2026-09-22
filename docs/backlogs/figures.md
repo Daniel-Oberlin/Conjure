@@ -14,12 +14,236 @@ the design rationale is the expensive part and it does not survive being cut in 
 - the **import half** touches [`backlogs/library.md`](./library.md) — conversion, catalog `attributes`,
   licence capture
 - the **runtime half** touches [`backlogs/dynamics.md`](./dynamics.md) and
-  [`specs/dynamics.md`](../specs/dynamics.md) — a new module, the sync tiers, `ConjurePointers`
+  [`specs/dynamics.md`](../specs/dynamics.md) — a new module, the sync tiers — and
+  [`specs/input.md`](../specs/input.md) for `ConjurePointers`
 
 Rejected alternatives and consequential forks belong in [`docs/decisions.md`](../decisions.md) once they
 are settled.
 
 ---
+
+## Open — seen in the headset, not reproducible from files
+
+### Clip playback has not been run on a headset yet (2026-09-13)
+
+§8b landed with its endpoints smoke-tested against the real catalog — `jane_export`, `Teacher_v1` and
+`office-babe` each resolve `10_action` to their own clip, with the right voice, and the cross-rig
+refusal and its `force` override both behave. What that does NOT establish is the part only a headset
+can answer: whether the bodies move correctly.
+
+Specifically unverified:
+
+- **Does the skeleton actually move?** Binding is by node name and the name match is 222/222 on three
+  figures, but a match is not motion — a clip authored against a different bind pose can resolve every
+  channel and still fold a figure up.
+- ~~**Root motion.**~~ Found on device 2026-09-14 and fixed: an animating position track is re-based
+  onto the model's rest, so a clip keeps its movement and loses the address it was captured at. What
+  is still untested is whether a clip with GENUINE locomotion — walking, not swaying — now walks in
+  place, which is the correct behaviour for a placed figure but has not been seen.
+- **Does the voice actually start?** Autoplay is refused without a gesture and the fallback listens for
+  a `click`, which is not the event an immersive session produces. If the voice never arrives on a
+  Quest, the gesture hook is the first place to look.
+- **Two headsets on the same frame.** The shared-clock seek is the whole sync design and has been
+  exercised by exactly one client — none.
+
+### Nothing plays the teacher's `Blink.glb`, so her eyes are still shut
+
+Now a gap with a mechanism rather than one without. Her build ships a `Blink.glb` animating 189 targets
+including the eyelid bones and the site opens her eyes by playing it; `play_clip` can play it, but
+nothing does so at placement. The fix is a decision — which clip, if any, a figure should idle on when
+it arrives — not new machinery.
+
+
+### A Character Creator figure does not kneel in the client, and does everywhere else
+
+Asked to kneel, Alice (Reallusion `CC_Base_*`) tilts forward a few degrees and stays standing. The
+teacher (Rigify `DEF-*`) kneels correctly from the same tool, in the same world, on the same day.
+
+**Everything checkable from the files is identical or correct:**
+
+- the pose applies server-side to the same eleven bones on both
+- her rebuilt GLB with the pose baked in and rendered in BLENDER kneels perfectly — thighs vertical,
+  shins folded back, foot behind
+- re-grounding computes a 0.409 m drop for her against 0.483 m for the teacher
+- both carry 22 mapped bones, 22 anatomical frames, and the same joint limits
+- no duplicate node names, no follow-bone constraints, and the client's name-variant lookup is a no-op
+  on `CC_Base_*` names
+
+**One real difference, disproved as the cause.** Her `CC_Base_L_Thigh` and `CC_Base_L_Calf` deform no
+vertices directly — all the weight is on twist children. But those children are children, and they
+move: `CC_Base_L_CalfTwist02` travels 0.314 m when she kneels.
+
+**What that leaves:** the client. She has FIFTEEN skinned meshes with fifteen skeletons where the
+teacher has seven meshes; it is the only structural difference left. The symptom — five degrees of
+spine and nothing from the legs — says the spine bone resolved and the leg bones did not, or their
+skeletons did not update.
+
+**The diagnostic that would settle it,** which needs a headset or browser session: place her, kneel
+her, then read the entity's `figure` component and whether her hips visibly drop. Hips dropping with
+straight legs is skinning; nothing moving but the feet is the bone lookup.
+
+## Small, open, and not blockers — carried over when the figures plan dissolved
+
+Each of these was seen and deliberately left, 2026-09-12 to 09-16.
+
+- **Per-model arm clearance.** Akari's 18 cm torso already fails `clears` on `kneel` and `stand`. It
+  predates the plan that recorded it and bites harder across twenty bodies than it did across two.
+- **A half-mapped figure validates clean.** `REQUIRED_BONES` names no hands and no feet, so four
+  unmapped core bones drew no complaint on Blondie or Bianca. Worth a rule; the map is still usable, so
+  the rule should warn rather than reject.
+- **`Steve` measures 2.53 m tall.** Noticed while writing figure descriptions and not chased. Either a
+  blocky character genuinely is that tall or a unit is wrong; `height_m` feeds life-size placement, so
+  it is worth one look.
+
+## Left open by phase 5, 2026-09-16 — retargeting shipped, these did not
+
+The law and its measurements are in [`specs/figures.md`](../specs/figures.md) §8c. What follows is what
+was deliberately not done, each with the measurement that says how much it matters.
+
+### Faces — driving one SHIPPED 2026-09-16; retargeting one still has nothing to build on
+
+**Driving is built**, as [`specs/figures.md`](../specs/figures.md) §8d: `conjure/expressions.py`, the
+`figure-face` component, `POST /figure/expression` and `set_expression`. A semantic vocabulary —
+`smile`, `blink`, `look_left`, and five visemes — resolved per expression rig into whatever that
+figure's author called it. Two of 38 rigged figures can use it, which is a fact about the corpus.
+
+The tables are verified geometrically, which is the part worth knowing about: a morph target carries
+position deltas, so `check_regions` (brow above eye above mouth) and `check_directions` (a shape moves
+the mesh the way its name says) are measurements rather than assertions. §8d has the numbers and the
+three defects they caught — including a **vacuous pass** where Alice's whole face measured as empty
+because sparse accessors were read as zero vertices, and the check reported OK on no data.
+
+**Retargeting still should wait, and for the reason originally given.** A bone retarget maps through a
+shared skeleton with geometry to check it against; carrying a PERFORMANCE between two morph vocabularies
+has names and nothing else, and `Fcl_ALL_Joy` is not `Brow_Raise_Inner_L` in any sense a measurement can
+establish. Note what the geometric checks do and do not buy here: they verify that a target is where and
+what its name claims *on its own rig*, which is enough to justify a table from a semantic name to an
+author's label. They say nothing about whether two authors' labels mean the same thing.
+
+**The captures hold no MORPH performance to carry — but they do hold a bone one, and it is stranded.**
+Measured 2026-09-16: 249 of 543 clips drive morph weights and **not one drives a facial target**; those
+channels are `Dress` and `Body`, and a clip GLB has no meshes so the weights carry no names at all.
+
+But these captures use a **Rigify facial rig**, and the performance is on its bones. `pc_blink` spends
+83° on `DEF-lid.T.L`/`.R` and its top six movers are all eyelids; `1_idle_speaking` puts **74.9% of its
+motion into `DEF-jaw_master`** — that is lip sync, recorded, on disk, today. 29 clips have a facial name.
+
+So the retargeting question is no longer "author or retarget" — it is **which representation**:
+
+- A morph retarget still has names and nothing else, and should still wait.
+- ~~A BONE retarget of a facial clip is the machinery of §8c…~~ **Built 2026-09-16 as §8e**, though not
+  the way that sentence assumed: the law cannot square a facial bone up, because most of them are
+  leaves with no direction to square against. They are carried as a local delta, gated per bone on how
+  far the two rigs rest them apart.
+
+  **What it does not reach is a face across a NAMING FAMILY**, and that is now the whole of the
+  remaining problem. Daz spells an eyelid `eyelidUpper.L`, Character Creator `lEyelidUpper`, Rigify
+  `DEF-lid.T.L`. Grace, Trish, Yuffie, Alice, Blondie and Saka therefore receive nothing.
+
+  A name map across the three families is the obvious next move and is **harder than it looks for a
+  specific reason**: the thing that makes §8e safe is a measured rest agreement, and across two
+  different rig builds the rests disagree by construction. The gate that justifies the carry would
+  refuse the mapping. Something else would have to justify it — the geometry of the mesh the bone
+  moves, most likely, which is the measurement `expressions.check_regions` already makes for morphs.
+- Meanwhile these clips DO play natively: `pc_blink` matches 16 figures by rig signature, so `play_clip`
+  offers it on every capture from that site already.
+
+**A facial name is not evidence of a facial performance.** `clip_activity` measures angular TRAVEL, so a
+two-keyframe clip holding an expression reads as motionless — `pc_mouth_opened` has 3° of travel and
+sits 16° off rest. And `pc_squint` is a genuine no-op at 0.13° from rest, despite its name.
+
+Open, and small:
+
+- **Nothing blinks on its own, and for Saka and Alice a timer is the only answer.** A face holds
+  whatever it was last set to, so a figure given `blink: 1` stays with her eyes shut. The 16 capture
+  figures do not need this — 519 of 543 clips rotate their eyelids, so they blink whenever a clip
+  plays (§8e). Saka and Alice are the opposite case: morph faces with **no morph performance anywhere
+  in the corpus**, so nothing will ever blink them. That makes an idle timer right for exactly those
+  two, and pointless for everyone else.
+
+  Deliberately not built before the face work is seen on a headset: a timer over a broken driver just
+  automates the fault. See [`plans/test-clips-and-faces.md`](../plans/test-clips-and-faces.md) §2.
+
+  **Scope it by "is anything driving this face", not by which figure.** A capture figure blinks while a
+  clip plays and stops the moment it is stopped, so the rule is per-moment rather than per-rig: blink
+  when nothing else is moving the eyelids. That also settles the composition question — the timer must
+  yield to a clip rather than fight it.
+
+  **The interval needs variation or it reads as a metronome.** A human at rest blinks every 3–5 s with
+  wide spread, and a closure lasts 100–150 ms, not a frame. A fixed period is the thing people notice;
+  jittering it is one line and most of the realism. Occasional doubles are a nice-to-have.
+
+  **Two mechanisms, and the bone one has to be derived rather than authored.** Saka and Alice blink by
+  morph weight, which `figure-face` already writes. The 16 capture figures have no blink morph and
+  blink with `DEF-lid.*` BONES — so a bone blink needs the closed pose, and the honest source for it is
+  the recorded performance: `pc_blink`'s most-closed frame is a measured 26.4° delta per lid bone.
+  Extracting a blink pose per rig from a clip we already have beats authoring one against a rig we
+  cannot see.
+
+### Eye contact — aiming the eyes at the wearer
+
+**Planned: [`plans/gaze-and-blink.md`](../plans/gaze-and-blink.md).** The measurement says it is far
+more tractable than the facial retarget. Every rig
+in the corpus has eye bones:
+
+| figure | eye bones | in the humanoid map? | look morphs |
+|---|---|---|---|
+| Saka (VRM) | `J_Adj_L_FaceEye`, `J_Adj_R_FaceEye` | **yes — `leftEye`/`rightEye`, stated by the file** | 0 |
+| Alice (CC) | `CC_Base_L_Eye`, `CC_Base_R_Eye` | no | **8** (`Eye_L_Look_Up` …) |
+| Barbie, office-babe (Rigify) | `DEF-eye.L/R`, `DEF-eye_master.L/R` | no | 0 |
+| Grace (Daz) | `eye.L/R` | no | 0 |
+
+**The reason this is not blocked by what blocks §8e:** gaze is an **`aim`**, not a delta. §8e has to
+carry a rotation between two rigs and therefore depends on their rest frames agreeing — which is why
+it refuses Eve and cannot cross a naming family. Aiming a bone at a world-space point needs no such
+agreement: `figures.compose_frame` already resolves "point this bone there" from whatever rest a rig
+happens to have, and that is the whole of `aim`'s existing job. Four naming families is then a
+discovery-layer-1 table, which is the cheap kind.
+
+So the work is roughly:
+
+1. `leftEye`/`rightEye` into the bone vocabulary, with a convention entry per family. **Saka needs
+   none of this** — VRM states them, so she is already mapped and could be aimed today.
+2. A client component that aims both eyes at the active camera each frame. It must run AFTER the mixer,
+   because a clip drives eye bones too — `1_idle_speaking` puts 42.7° of travel into `CC_Base_R_Eye` —
+   and gaze should win while it is on.
+3. **Clamp hard, and this is the part that decides whether it looks alive or possessed.** Human eyes
+   reach ~30–35° off centre; past that a head turn does the rest. Unclamped eye aim at a wearer walking
+   behind the figure is the classic uncanny failure, and worse than no gaze at all.
+4. Alice's eight look morphs are a second route for her specifically, and a useful cross-check: two
+   mechanisms on one figure should agree about where she is looking.
+
+Open questions worth settling before building: whether the head should follow past the clamp (probably,
+slowly), and whether gaze should break occasionally — a figure that never looks away is also wrong.
+- **Nothing drives visemes from speech.** The five mouth shapes exist and the voice path exists; nothing
+  connects them.
+- **`squint` on VRM is `Fcl_EYE_Joy`** — the narrowed-eye shape, whatever it happens to be named after.
+  Right by geometry, odd by name, and worth re-checking if that rig ever gains a second figure.
+
+### A bone map that is not a CHAIN, and one rig where the fingers cannot be fixed
+
+`validate()` checks geometry and never whether a bone is actually UNDER its humanoid parent, so a map can
+pass every check and still name bones from different branches of a control rig. **6 of 28 maps break**;
+`Rig.chain_breaks()` finds them and the retarget reports them, separately for the body and the fingers
+because a broken torso is the performance and a broken finger is cosmetic.
+
+Two cases, and they want different fixes:
+
+- **Eve's inferred map** puts `hips` on `ORG-spine` and `spine` on `chest`, so rotating her hips cannot
+  move her spine. That is a discovery defect and `validate()` could catch it — the check is "walk from
+  child to root and expect to meet the parent", which `chain_breaks()` already implements.
+- **Grace's fingers are not fixable from here.** Her three FK finger joints export as SIBLINGS under one
+  palm bone, because what chained them in Blender was a constraint and a GLB carries none, and she has no
+  `DEF-` finger chain to prefer instead. Each joint still reaches its correct absolute orientation; a
+  bend cannot carry onward. Her fingertip measures 0.0° of swing where Alice's native is 3.8°. This is
+  her file, and the only fix is a better export.
+
+### The parts vocabulary is one dialect
+
+`parts.json` classifies by mesh name against a vocabulary measured on one site's captures. It is
+revision 2 and it works there; a second origin will need a second dialect, and the failure mode is
+silent — an unclassified mesh is simply never offered as clothing. `parts_unclassified` records them, so
+the size of the problem is already queryable per figure.
 
 ## Why this is not just "place a model"
 
@@ -2468,6 +2692,52 @@ are already a live issue on this hardware. `Budget.maxTris` (500k) exists in the
 it. **Numbers to be measured in the first slice, not guessed at here.**
 
 ---
+
+## The parts vocabulary does not speak the dev library's dialect (2026-09-15)
+
+Measured after force-refreshing every model row: **30 mesh names across nine dev-library models are
+unclassified**, against one on a captured figure. The vocabulary was fitted to 96 names from one
+PlayCanvas origin, and these came from Daz, Reallusion, Mixamo and VRM.
+
+    body  Genesis 8 Female Mesh, Genesis 8.1 Female Mesh, Grace_Mesh, Character, Woman, Shaun
+    face  Eye_L, Eye_R, eyelid, eyelid.001/.002, Mouth, Face, Grace_Tearline Mesh,
+          Genesis 8.1 Female Tear Mesh, mole, eye2
+    ?     Head.002/.003/.005/.020/.127/.1633 (Trish — probably hair or accessory, needs a look),
+          WoodenBat_Saw (Shaun — a HELD prop, and the second instance of that category),
+          Casual_/Formal_ Head|Feet|Legs (Animated Woman — outfit variants)
+
+Not a defect: this is what "the vocabulary is data and is never finished" means, and the backlog list is
+doing the job it exists for. Worth doing because **phase 5 targets exactly these models** — retargeting
+is to be tested on Trish, Saka and Eve — and a figure you cannot undress is a poor subject for it.
+
+Two cautions from fitting it the first time. Rules are first-match-wins SUBSTRING, so `face` as a word
+would also claim `Surface`, and `Head.*` on Trish needs looking at before guessing — six numbered heads
+on one figure is more likely an LOD or a morph set than six accessories. And `WoodenBat_Saw` says `held`
+generalises, which is worth confirming rather than assuming.
+
+Do it as a vocabulary edit plus `refresh-models`; it costs a `parts_rev` bump and no release.
+
+## Does the `dress_figure` steering actually hold? (2026-09-15)
+
+Recorded here rather than holding phase 2 open, because it is a director-eval question and not a code
+change.
+
+On device, "remove her clothes" on Barbie took her hair. The classifier was not at fault — she
+classifies cleanly, `hair` as `hair` apart from `skirt`/`top`/`underwear` as `clothing`. The director
+reached for `only_body`, which removes everything removable. The fix that shipped was steering plus a
+report: `dress_figure`'s docstring now maps five phrasings to the narrowest call that satisfies each and
+says outright that `only_body` "is almost never what 'remove her clothes' means", and the reply lists
+what came off BY CATEGORY, because three times running the director announced "clothing's all off" after
+a call that also took the hair.
+
+**Whether that is enough is unmeasured.** It cannot be settled by a unit test — the thing under test is
+a model's choice between two correct-looking tool calls. What would settle it: a small eval that puts the
+five phrasings to the director against a figure with hair, clothing and shoes, and asserts on the CALL
+rather than the prose. That is the same shape as the other director-behaviour questions here, and worth
+building once for all of them rather than once for this.
+
+Note the category added since: `held`. `only_body` now takes the beer too, which is right, and is one
+more thing a careless `only_body` removes without being asked.
 
 ## Open questions
 

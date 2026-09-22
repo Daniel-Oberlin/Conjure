@@ -119,6 +119,56 @@ env     --ambience------>  audio     room soundtracks
 asset   --part_of------->  set       provenance only, never the compatibility test
 ```
 
+### Seeing them — `show` and `dir`
+
+Relations are only worth recording if they can be READ. Two surfaces, and no SQL:
+
+**`show <asset>`** prints the `attributes` bag one scalar per row (a nested value is summarised, never
+dumped — a clip's `travel_deg` is six joints) and then the links, grouped by type and direction:
+
+```
+  attributes        17 keys
+  rig_sig           85e41f9b8e
+  rigged            yes
+  parts             {4 keys}: clothes_maiddress, model_britney, …
+  links             22 edges
+    → part_of         1  set        jane
+    → shipped_with   21  animation  10_action, 10_idle, 1_action, 1_idle, +17
+```
+
+**`dir --rel TYPE`** adds a COLUMN, so a listing answers "which of these has a voice" in one pass
+rather than one `show` per row. `--with NAME` narrows to assets linked to NAME; `--out` / `--in` pin
+which way the edge points.
+
+```
+dir --kind animation --rel voiced_by            every clip, with its audio or a dash
+dir --with jane_export --rel shipped_with       her 21 clips
+dir --kind set --rel part_of --in               each set, with what belongs to it
+```
+
+**A `--with` name is disambiguated by the RELATION.** Labels collide constantly here by design: every
+capture names its set after its figure, so `barbie` is both `set:barbie` and her model, and a flat
+refusal made `--with barbie` useless for the most ordinary question there is. When exactly one
+candidate has edges of the type asked for — only the model ships clips, only the set holds parts — that
+is the one meant. Genuine ambiguity is still refused, and `3_idle` is the case that stays genuinely
+ambiguous: the clip and the audio that voices it both touch a `voiced_by` edge, so only `--out`/`--in`
+can separate them.
+
+**The arrow is load-bearing.** Both directions is the default, because a figure's clips and the clips
+one audio voices are the same question from opposite ends — but `part_of` fans IN 107 where it fans
+OUT 15, so "the set this belongs to" and "the parts of this set" are very different lists.
+
+**Listings page at 200 rows and say so** — `… (more than 200)`. `--all` lifts the cap, `--limit N`
+sets it. A **glob always searches everything** regardless of the page size, because a search that
+reads the first page is not a search: on the live catalog `dir *idle*` matched 32 of 183 and reported
+no truncation at all, since the cut happened in the candidate set rather than the result and the
+marker is itself a row the glob skips.
+
+**A filter runs over every asset, then the listing is capped** — not the reverse. The 200-row cap used
+to be applied while building rows, so a filter narrowed an arbitrary first page: measured on the live
+catalog, `--kind animation` returned 98 of 364 and `--with jane_export` found **none** of her 21 clips
+because they sat past the cut. A filter that silently narrows its own input is worse than no filter.
+
 `conjure/capture_set.py` holds the rules, and the point of it is where they **stop**. A name that does
 not parse is left unlinked rather than guessed — `HotelAction0`'s number indexes a script we do not
 have, and 698 of 898 audio files across twenty captures attach to nothing by name. They are still
@@ -142,6 +192,52 @@ unit-testable alone and reusable by any future scanner.
 
 **Visibility is inherited, not chosen.** A new asset takes the live session's `public` flag
 (`_inherit_visibility`, `server.py:872`) and never overwrites a visibility the owner set later.
+
+### Supersession — what happens when the same thing arrives with new bytes
+
+An id is a content address, so improving the converter and re-importing a capture writes **different
+bytes and therefore a new row**, while the old one stays. Seen live: the roughness and mirror fixes
+changed `Teacher_v1` and `bride_ready`, and the catalog then held two of each with a search returning
+both and nothing to choose between them.
+
+`library.supersede(old, new)` retires the previous row:
+
+- **relations MOVE**, not copy. A figure carries 21 `shipped_with` edges keyed to its model id, and
+  leaving them behind would make `dir --with` answer twice for one figure. Ownership and aliases move
+  with them; an edge that would point at itself is dropped.
+- **the row becomes a TOMBSTONE** — `superseded_by` set, FTS entry removed — and is **never deleted**.
+  Three reasons, all pointing one way. The bytes are still on disk and a world that placed them still
+  renders, so dropping the row would leave a live entity with geometry and no title, licence or
+  attributes. `delete()` removes relations, which is precisely what this exists to carry forward. And
+  identity above the bytes is an inference, so it has to be cheap to be wrong about.
+- **a tombstone is reachable by id and by nothing else.** The predicate sits in `_scope_sql` and in
+  `query()`'s scoped view rather than in each caller's SQL, because every read goes through one of
+  those two — `dir`, the clip lists, `search`, `by_user` — and a tombstone surfacing in any of them is
+  the bug the column exists to end.
+
+`library.revive(id)` clears a tombstone, and it is not optional. An id is a content address in both
+directions: improve a converter and a re-import writes new bytes onto a new row while the old steps
+aside — **revert the change and the old bytes, and therefore the old id, come back onto a row that is
+still marked retired.** `upsert` never touched `superseded_by`, so the re-import looked clean and the
+asset stayed invisible. Measured live while backing out one composer change: the catalog went from 98
+live models to **47**, each re-imported id written straight back into its own tombstone.
+
+Deliberately NOT part of `upsert`, because most calls to that are partial writes — an embedding
+backfill, a curation note — and having those clear a tombstone would resurrect everything ever retired.
+Reviving is a claim that the asset is being INGESTED, so the ingest path says it explicitly. Relations
+are not restored: `supersede` MOVED them, so they belong to whatever replaced the row, and an importer
+is re-creating the ones it means anyway.
+
+**What counts as "the same thing" is `(kind, label)` within ONE capture** — `import_capture.same_thing`.
+The capture tag is the whole safety argument: two captures can ship different `computer_desk` bytes and
+each keeps its row, because a row tagged only `jane` is never a candidate while importing `akari`.
+Blocks the composition work in [`specs/captures.md`](./captures.md) §3,
+which merges several containers into one asset and is therefore a re-import by definition.
+
+**Copying the catalog needs the WAL.** It runs in `journal_mode=wal`, so `cp library.db` reads a stale
+snapshot — a 4.1 MB `-wal` sat beside it during this work, and a probe built with `cp` was testing the
+previous day's state. Use `sqlite3 src ".backup dst"` or `Connection.backup`, which is how the
+supersession behaviour was finally verified against real data.
 
 ## 4. Search — four stages and a tier
 
@@ -288,9 +384,12 @@ index specifically, so that swap is the one anticipated.
 | `POST /library/caption` | backfill labels for label-less visual assets |
 | `POST /library/retag-skyboxes` | re-tag wide images as skyboxes |
 
-**Admin (shell `dir`):** `POST /admin/tree` and `/admin/match` take optional `kind`, `related` and
-`relation` — listing filters, so a capture's figure, sixty clips and thirty audio files can be asked
-apart. `related` resolves an id or an exact label, and refuses an ambiguous one rather than picking.
+**Admin (shell `dir`, `show`):** `POST /admin/tree` and `/admin/match` take optional `kind`, `related`,
+`relation` and `direction` — so a capture's figure, sixty clips and thirty audio files can be asked
+apart. `related` resolves an id or an exact label and refuses an ambiguous one rather than picking;
+`relation` alone adds a column instead of filtering; `direction` is `out` | `in` | omitted for both;
+`limit` is the page size, `0` for all.
+`POST /admin/show` returns the attributes and the links (§2a).
 
 **Ownership:** `library.grant(id, scope)` / `revoke` / `transfer(id, from, to)` / `owners(id)` (§5a).
 **Relations:** `add_relation(from, to, type)`, `related(id, type, reverse=)`, `relations_of(id)`.

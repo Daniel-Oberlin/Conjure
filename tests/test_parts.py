@@ -68,6 +68,38 @@ def test_hair_is_removable_but_is_NOT_clothing(vocab):
     assert "body" not in out and "face" not in out
 
 
+def test_a_thing_the_figure_HOLDS_is_not_a_thing_she_wears(vocab):
+    """Oktoberfest's beer, and the last mesh in twenty captures the vocabulary had no word for.
+
+    It is a real category rather than a tidy-up: `accessory` is what you WEAR, so filing a pint there
+    means "take off your beer", and `clothing` is plainly wrong. It stays removable, because putting it
+    down is a thing you ask for.
+
+    Ordered after `shoes` and before `accessory`. That matters both ways: `held` must not sweep up the
+    glasses and the shoes must not fall into it.
+    """
+    found = parts.classify(_doc("Beer", "item_Teacher_Glasses", "clothes_weddingdress_heels_R",
+                                "Dress", "Body"), vocab)
+    got = found["parts"]
+    assert got["Beer"] == "held"
+    assert got["item_Teacher_Glasses"] == "accessory", "worn, not held"
+    assert got["clothes_weddingdress_heels_R"] == "shoes", "also bone-parented, and still shoes"
+    assert "held" in parts.removable(got, vocab), "putting it down is a thing you ask for"
+
+
+def test_being_parented_to_a_BONE_is_not_what_makes_a_thing_held(vocab):
+    """The tempting rule, and it is wrong three times in four.
+
+    Four meshes in the corpus are unskinned and parented to a bone: Oktoberfest's beer on `DEF-hand.R`,
+    bride's two heels on `DEF-foot.L`/`.R`, and teacher's glasses on the head. Only the first is held —
+    the BONE is what distinguishes them, which needs the humanoid map, and the names already answer it
+    correctly without one. So the structure is why the category exists and not how it is decided.
+    """
+    got = parts.classify(_doc("Beer", "clothes_weddingdress_heels_L", "item_Teacher_Glasses"),
+                         vocab)["parts"]
+    assert sorted(got.values()) == ["accessory", "held", "shoes"]
+
+
 def test_only_nodes_that_CARRY_A_MESH_are_parts(vocab):
     """A bone called `DEF_Skirt01` drives a garment and is not one. Hiding it would do nothing while
     implying it had."""
@@ -78,10 +110,15 @@ def test_only_nodes_that_CARRY_A_MESH_are_parts(vocab):
 def test_what_the_vocabulary_does_not_know_is_REPORTED(vocab):
     """That list is the vocabulary's backlog and the only honest measure of its coverage. A classifier
     that silently called everything unknown "body" would read as complete while refusing to undress
-    anyone. Across all twenty captured figures exactly one name is unclassified: `Beer`."""
-    found = parts.classify(_doc("Dress", "Beer", "Zorblax"), vocab)
-    assert found["unclassified"] == ["Beer", "Zorblax"]
-    assert "Beer" not in found["parts"]
+    anyone.
+
+    It works as a backlog: `Beer` sat on this list as the one unclassified name across twenty captured
+    figures until `held` was added for it, which is the whole intended lifecycle. What remains across
+    the captured corpus is one mesh literally named `New Entity`, and that stays unclassified — inventing a
+    category for a name that means nothing is how a classifier starts lying."""
+    found = parts.classify(_doc("Dress", "New Entity", "Zorblax"), vocab)
+    assert found["unclassified"] == ["New Entity", "Zorblax"]
+    assert "Zorblax" not in found["parts"]
 
 
 def test_a_user_vocabulary_SHADOWS_the_bundled_one_rather_than_merging(tmp_path):

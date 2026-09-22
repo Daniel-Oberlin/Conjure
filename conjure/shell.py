@@ -335,11 +335,13 @@ class Shell:
 
             # -- paths: act on anything addressable
             (re.compile(r"^(?:dir|ls)(?:\s+(?P<long>-l))?(?:\s+(?P<path>\S.*))?$", re.I), self._dir,
-             "dir [-l] [path] [--kind K] [--with NAME [--rel TYPE]] — list one level of the namespace "
-             "(-l also shows ids). --kind narrows to one asset type (model, animation, audio, set); "
-             "--with narrows to assets related to NAME, by one --rel type when given (shipped_with, "
-             "voiced_by, ambience, part_of). Combines with globbing: "
-             "`dir *idle* --kind animation --with jane_export`", False),
+             "dir [-l] [path] [--all|--limit N] [--kind K] [--rel TYPE] [--with NAME] [--out|--in] "
+             "— list one level of the namespace (-l also shows ids). Listings stop at 200 rows and "
+             "say so; --all lifts the cap, --limit N sets it. --kind narrows to one asset type "
+             "(model, animation, audio, set). --rel adds a COLUMN showing each row's links of that "
+             "type (shipped_with, voiced_by, part_of); --with narrows to assets linked to NAME; "
+             "--out/--in pin which way the edge points, both by default. Combines with globbing: "
+             "`dir *idle* --kind animation --rel voiced_by --with jane_export`", False),
             (re.compile(r"^(?:show|info)(?:\s+(?P<path>\S.*))?$", re.I), self._show,
              "show [path] — one entry in detail", False),
             (re.compile(r"^gc(?P<force>\s+!)?$", re.I), self._gc,
@@ -886,8 +888,10 @@ class Shell:
                             f"Nothing matches {loc_name(path)!r}{extra} in {where}.")
             return
         head = f"{len(rows)} match {loc_name(path)!r}"
-        await self._say(on_text, head + "\n" + "\n".join(columns(rows, found.get("columns") or [],
-                                                                  long=long)))
+        text = head + "\n" + "\n".join(columns(rows, found.get("columns") or [], long=long))
+        if found.get("note"):          # a glob truncates as visibly as a listing does
+            text += f"\n  ({found['note']})"
+        await self._say(on_text, text)
 
     async def _recover(self, on_text, m, failed: dict) -> Optional[dict]:
         """A path command failed. If the CWD is what went stale, move up to the nearest place that still
@@ -1348,7 +1352,33 @@ class Shell:
             if hit:
                 filters[field] = hit.group("v")
                 path = (path[:hit.start()] + " " + path[hit.end():]).strip()
+        hit = re.search(r"(?:^|\s)--limit\s+(?P<v>\d+)", path or "", re.I)
+        if hit:
+            filters["limit"] = int(hit.group("v"))
+            path = (path[:hit.start()] + " " + path[hit.end():]).strip()
+        # Valueless, and mutually exclusive by construction: the last one wins rather than erroring,
+        # because `--out --in` means "both", which is already the default.
+        for flag, value in (("--out", "out"), ("--in", "in")):
+            hit = re.search(rf"(?:^|\s){flag}(?=\s|$)", path or "", re.I)
+            if hit:
+                filters["direction"] = value
+                path = (path[:hit.start()] + " " + path[hit.end():]).strip()
+        hit = re.search(r"(?:^|\s)--all(?=\s|$)", path or "", re.I)
+        if hit:
+            filters["limit"] = 0                  # 0 = no cap; an explicit --limit N still wins if later
+            path = (path[:hit.start()] + " " + path[hit.end():]).strip()
         return path, filters
+
+    @staticmethod
+    def _admin_body(path: str, filters: dict) -> dict:
+        """The request body for an `/admin/*` call — a path plus whatever filters were given.
+
+        **Only ABSENT is absent.** This was `if v`, which drops `limit: 0` — and `0` is precisely what
+        `--all` means, so the flag did nothing at all while the `… (more than 200)` marker went on
+        appearing. Its own success condition was falsy. The same trap ate `metalness: 0` during the
+        material pass, and it is worth a named function so it has somewhere to be tested.
+        """
+        return {"path": path, **{k: v for k, v in filters.items() if v is not None and v != ""}}
 
     async def _admin(self, action: str, path: str, **filters) -> dict:
         """POST to the world server's /admin/{tree,delete}. Returns the JSON, or an error dict."""
@@ -1358,7 +1388,7 @@ class Shell:
         try:
             import httpx
             async with httpx.AsyncClient(timeout=30.0) as client:
-                body = {"path": path, **{k: v for k, v in filters.items() if v}}
+                body = self._admin_body(path, filters)
                 resp = await client.post(f"{url}/admin/{action}", json=body,
                                          headers={"X-Conjure-User": self._acting})   # WHO is browsing/deleting
                 return resp.json()

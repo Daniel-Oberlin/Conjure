@@ -1,5 +1,7 @@
 """Linking rules for an imported capture — what goes with what, and what is left alone.
 
+Spec: docs/specs/captures.md.
+
 A capture arrives as a pile of files. Three of the links between them are recoverable from the names
 the build already uses, and the rest are not; this module is the line between those two, kept pure so
 the line can be tested without a library, a server, or a capture on disk.

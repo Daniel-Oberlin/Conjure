@@ -1,5 +1,7 @@
 """Re-assemble a PlayCanvas published build into self-contained, textured GLBs.
 
+Spec: docs/specs/captures.md.
+
 PlayCanvas's converter splits an upload deliberately: geometry and skinning go into the GLB, while
 materials and textures become separate entries in the project's asset registry. The GLB is never
 self-contained *by design* — the engine reattaches materials at load time. So a build downloaded from
@@ -55,6 +57,12 @@ CULLFACE_NONE = 0
 #: as opaque geometry they turned both her eyes into solid black discs.
 LIGHTENING_BLENDS = (BLEND_ADDITIVE, BLEND_ADDITIVEALPHA, BLEND_SCREEN)
 
+#: THREE ways a layer can be all environment and no content, and glTF expresses none of them: a blend
+#: mode that only lightens (black is the no-op), one that modulates (white is), and a see-through
+#: MIRROR whose colour is entirely a reflection. Each is made invisible when it carries no detail of
+#: its own, because drawn opaque each one OCCLUDES the thing it was meant to enhance — and in all three
+#: cases the thing behind it was an eye.
+#:
 #: And the mirror image: blend modes that MODULATE what is behind them, where WHITE is the no-op. Same
 #: problem, opposite neutral colour — the stewardess's corneas are an untextured white on
 #: `BLEND_MULTIPLICATIVE2X`, a highlight over an eyeball the body mesh draws underneath, and as opaque
@@ -108,6 +116,10 @@ class Binding:
     mesh: int                      # `renderIndex` — the glTF mesh index inside the container
     materials: tuple[Optional[int], ...]
     adopted: bool = False          # inferred by name rather than stated by a scene — see `adopt_unbound`
+    # WHERE the claim came from: a scene is what runs, a template is the container's own default. Once a
+    # build has scenes, a template-only binding is the signal for a mesh the site never draws — see
+    # `dead_meshes`.
+    source: str = "scene"
 
 
 @dataclass
@@ -119,6 +131,18 @@ class Build:
     bindings: list[Binding] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     origin: str = ""               # the URL it was captured from, when the path says (see `build_origin`)
+    scened: bool = False           # at least one scene file was READ — see `dead_mesh_notes`
+    # `(file name, entities)` per scene actually read. Kept because `things` needs the entity TREE and
+    # not just the bindings it flattens to — which is the whole of § 2b: a container is a file and a
+    # thing is a subtree, and flattening to (container, mesh) throws the subtree away.
+    scenes: list = field(default_factory=list)
+    templates: list = field(default_factory=list)   # `(name, entities)` per template — see `things`
+    prefer: str = "scene"          # which claim wins where a scene and a template disagree
+    # Every `(container, mesh)` a SCENE entity claims, regardless of whose MATERIALS won. Kept apart
+    # from `Binding.source` because those answer different questions, and conflating them made
+    # `dead_meshes` call Alice's `CC_Base_Eye` dead: the scene draws it, and the template's richer
+    # materials merely won the tie-break.
+    scene_claims: set = field(default_factory=set)
 
     def asset(self, aid) -> dict:
         return self.assets.get(int(aid)) if aid is not None else None
@@ -296,8 +320,62 @@ def variant_only(build: Build) -> list[tuple[str, str, str]]:
     return out
 
 
-def read_build(root: str) -> Build:
-    """Load a build and resolve every entity → container → mesh → per-primitive material binding."""
+def how_dressed(build: Build, mats) -> tuple[int, int]:
+    """`(primitives with a BASE COLOUR, filled map slots)` — how DRESSED a claim on a mesh is.
+
+    The tie-break when several entities claim one mesh. First-wins was arbitrary and it picked wrong:
+    three entities bind Jane's right hand, and the one the scene happens to list first is
+    `handmodeltutorial`, wearing a placeholder with nothing but a sphere map. Her left hand has two
+    claimants and got the real material by luck, so the pair came out mismatched — a textured left hand
+    and a chrome right one — with nothing missing from the capture to explain it.
+
+    A placeholder is a DEGENERATE version of the real material, so the richest claim is the authored
+    one. Ties keep first-wins, which is what separates `ArmsVR` from `ArmsVRToolMode`: both fill two
+    slots, and the plain one is listed first.
+
+    **A base colour outranks a slot count, and Alice's hair is why.** Her two claims on `Side_Swept`
+    fill six slots each and are not the same: one primitive of the losing set carries a SPECULAR map
+    where the winning set carries a diffuse, so it renders as flat paint — pale locks at the front of a
+    brown head. Slots alone score that a tie and pick by luck. What decides whether a primitive is a
+    picture or a colour is whether it has a base colour at all, so that is counted first.
+
+    Slots are counted as FILLED, not as distinct textures. A build reuses one image across several
+    slots far more than you would guess — 33 of the 43 mapped materials in Jane's build point every map
+    they have at a single texture, the hands among them, where `Hands_diffuse_2K.jpeg` is both the
+    diffuse and the light map. Counting distinct textures scores all three claimants 1 and decides
+    nothing.
+    """
+    base = slots = 0
+    for material in mats:
+        data = (build.asset(material) or {}).get("data") or {}
+        base += 1 if data.get("diffuseMap") else 0
+        slots += sum(1 for key, value in data.items() if key.endswith("Map") and value)
+    return base, slots
+
+
+def read_build(root: str, *, prefer: str = "scene") -> Build:
+    """Load a build and resolve every entity → container → mesh → per-primitive material binding.
+
+    **`prefer` is the one real judgment in this module, and it decides which of two twins survives.**
+
+    A mesh can be claimed twice: by a SCENE entity and by the container's own TEMPLATE. Scenes are read
+    first and `setdefault` keeps the first claim, so **the scene wins** — defensible, because a template
+    is the default a container shipped with and a scene is what actually runs. It is still a choice, and
+    it is the choice that makes the Japanese house's deck and Alice's `Scalp_Female` disappear rather
+    than be painted.
+
+    **`prefer` outranks richness, and only for a scene-vs-template disagreement.** Where two claims
+    share a source — three scene entities binding Jane's right hand, one of them a placeholder with a
+    single sphere map — the best-dressed still wins, which is what that tie-break was written for.
+    Across a scene/template split it does not: of 1,340 meshes both claim, 952 are equally dressed and
+    384 favour the scene either way, but 4 have a better-dressed TEMPLATE, and there "what actually
+    runs" has to outrank "what has more maps" or this knob means nothing.
+
+    `prefer="template"` reverses it, for looking at what a container shipped with — a bad default and a
+    useful question. Note what it does NOT change: a mesh claimed by nobody at all stays unclaimed
+    either way, which is the three body twins, so this knob cannot bring those back (see
+    `adopt_unbound` for that, and `things` for why neither is needed once conversion walks scenes).
+    """
     cfg = json.load(open(os.path.join(root, "config.json")))
     assets = {int(k): v for k, v in (cfg.get("assets") or {}).items()}
     build = Build(root=root, assets=assets)
@@ -305,32 +383,10 @@ def read_build(root: str) -> Build:
     seen: dict[tuple[int, int], Binding] = {}
     clashes: dict[tuple[int, int], set] = {}
 
-    def dressed(mats) -> int:
-        """How many distinct textures a binding's materials reference — how DRESSED the mesh is.
+    def dressed(mats) -> tuple:
+        return how_dressed(build, mats)
 
-        The tie-break when several entities claim one mesh. First-wins was arbitrary and it picked
-        wrong: three entities bind Jane's right hand, and the one the scene happens to list first is
-        `handmodeltutorial`, wearing a placeholder with nothing but a sphere map. Her left hand has
-        two claimants and got the real material by luck, so the pair came out mismatched — a textured
-        left hand and a chrome right one — with nothing missing from the capture to explain it.
-
-        A placeholder is a DEGENERATE version of the real material, so the richest binding is the
-        authored one. Ties keep first-wins, which is what separates `ArmsVR` from `ArmsVRToolMode`:
-        both fill two slots, and the plain one is listed first.
-
-        Counted as FILLED SLOTS, not distinct textures. A build reuses one image across several slots
-        far more than you would guess — 33 of the 43 mapped materials in Jane's build point every map
-        they have at a single texture, the hands among them, where `Hands_diffuse_2K.jpeg` is both the
-        diffuse and the light map. Counting distinct textures scores all three claimants 1 and decides
-        nothing.
-        """
-        slots = 0
-        for material in mats:
-            data = (build.asset(material) or {}).get("data") or {}
-            slots += sum(1 for key, value in data.items() if key.endswith("Map") and value)
-        return slots
-
-    def take(entities: dict) -> None:
+    def take(entities: dict, source: str = "scene") -> None:
         for entity in (entities or {}).values():
             render = (entity.get("components") or {}).get("render")
             if not render or render.get("type") != "asset" or render.get("asset") is None:
@@ -342,7 +398,28 @@ def read_build(root: str) -> Build:
             mats = tuple(int(m) if m is not None else None
                          for m in (render.get("materialAssets") or []))
             key = (int(container), int(index))
-            bound = Binding(entity.get("name") or "?", key[0], key[1], mats)
+            if source == "scene":
+                build.scene_claims.add(key)
+            bound = Binding(entity.get("name") or "?", key[0], key[1], mats, source=source)
+            if key in seen and seen[key].source != source:
+                # A scene-vs-TEMPLATE disagreement is settled by `prefer`, not by richness, and there
+                # is no exception. Measured over the captures: of 1,340 meshes both claim, 952 are
+                # equally dressed (order decides) and 384 favour the scene either way — but 4 have a
+                # better-dressed TEMPLATE, and for those "what actually runs" has to beat "what has
+                # more maps" or the knob means nothing.
+                #
+                # There WAS an exception, `filled_in`, for a claim that repeats one material where the
+                # other names several — Alice's eyes, the only mesh in the corpus it ever fired on. It
+                # was wrong. Her scene binds `Eye_R, Cornea_R, Eye_R, Cornea_R` and reaches for a
+                # MAPLESS `aula_Std_Cornea_R` where the template names four distinct textured
+                # materials, and reading that as "information lost" was an inference about intent. The
+                # running site is the ground truth and it draws the scene's claim: no blood vessels in
+                # either eye. Nothing in the whole capture binds the textured corneas at all — they are
+                # unused Character Creator leftovers. See `docs/specs/captures.md` § 3.
+                if source == prefer and seen[key].source != prefer:
+                    clashes.setdefault(key, set()).add(seen[key].entity)
+                    seen[key] = bound
+                continue
             if key in seen and seen[key].materials != mats:
                 # Two entities dressing the same mesh differently is a legitimate thing to do — a props
                 # library reuses one button mesh in a dozen colours — and it has no single answer in a
@@ -357,19 +434,33 @@ def read_build(root: str) -> Build:
                 continue
             seen.setdefault(key, bound)
 
-    for scene in cfg.get("scenes") or []:
-        url = scene.get("url")
-        if not url or not os.path.exists(os.path.join(root, url)):
-            build.notes.append(f"scene {scene.get('name')!r} is referenced but not on disk ({url}) — "
-                               f"falling back to the templates, which carry the CONTAINER's own "
-                               f"bindings and not the scene's. Materials may be silently wrong: one "
-                               f"room came out with flat grey cushions and panelling this way, while "
-                               f"the textures for both sat decoded on disk. Capture the scene.")
-            continue
-        take(json.load(open(os.path.join(root, url))).get("entities"))
+    def read_scenes() -> bool:
+        got = False
+        for scene in cfg.get("scenes") or []:
+            url = scene.get("url")
+            if not url or not os.path.exists(os.path.join(root, url)):
+                build.notes.append(
+                    f"scene {scene.get('name')!r} is referenced but not on disk ({url}) — "
+                    f"falling back to the templates, which carry the CONTAINER's own bindings and not "
+                    f"the scene's. Materials may be silently wrong: one room came out with flat grey "
+                    f"cushions and panelling this way, while the textures for both sat decoded on "
+                    f"disk. Capture the scene.")
+                continue
+            loaded = json.load(open(os.path.join(root, url))).get("entities") or {}
+            take(loaded)
+            build.scenes.append((os.path.basename(url), loaded))
+            got = True
+        return got
 
-    # TEMPLATES are the same structure and a second place the binding lives. Read AFTER the scenes, so
-    # a scene wins where both speak — it is what actually runs.
+    def read_templates() -> None:
+        for asset in build.assets.values():
+            if asset.get("type") == "template":
+                entities = (asset.get("data") or {}).get("entities") or {}
+                take(entities, source="template")
+                build.templates.append((asset.get("name") or str(asset.get("id")), entities))
+
+    # TEMPLATES are the same structure and a second place the binding lives. Read AFTER the scenes by
+    # default, so a scene wins where both speak — it is what actually runs. See `prefer`.
     #
     # Not a fallback bolted on. A PlayCanvas template is a serialised entity hierarchy, which is how a
     # reusable thing is packaged, and a character is exactly that: the second capture to arrive had NO
@@ -377,9 +468,13 @@ def read_build(root: str) -> Build:
     # binding its OWN container. So there is no ambiguity to resolve — reading them is what makes that
     # capture convertible at all, and it costs nothing where a scene is present because identical
     # bindings are deduplicated rather than reported as a clash.
-    for asset in build.assets.values():
-        if asset.get("type") == "template":
-            take((asset.get("data") or {}).get("entities"))
+    if prefer == "template":
+        read_templates()
+        read_a_scene = read_scenes()
+    else:
+        read_a_scene = read_scenes()
+        read_templates()
+    build.prefer = prefer
     for (container, index), others in sorted(clashes.items()):
         build.notes.append(
             f"{build.name(container)} mesh {index}: {len(others)} other entity binding(s) disagree "
@@ -388,11 +483,531 @@ def read_build(root: str) -> Build:
             f"{build.name(container)} mesh {index}: {', '.join(sorted(others))} bind different "
             f"materials — keeping {seen[(container, index)].entity!r}")
     build.bindings = sorted(seen.values(), key=lambda b: (b.container, b.mesh))
+    build.scened = read_a_scene
+    for note in dead_mesh_notes(build):
+        build.notes.append(note)
+    for note in dangling_notes(build):
+        build.notes.append(note)
     return build
 
 
+def container_meshes(build: Build, container: int) -> list[tuple[str, tuple[int, ...]]]:
+    """`(node name, per-primitive vertex counts)` for each mesh of a container GLB, in mesh order.
+
+    The container file, not the registry. A render asset is the registry's NAME for a mesh, and a build
+    does not always have one: `office-babe.glb` holds nine meshes and the registry describes eight,
+    starting at index 1. The missing one is her body.
+    """
+    path = build.path(container)
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        doc, _bin = split_glb(open(path, "rb").read())
+    except Exception:                                       # noqa: BLE001  (a bad file is not fatal here)
+        return []
+    if not doc:
+        return []
+    names: dict[int, str] = {}
+    for node in doc.get("nodes") or []:
+        if node.get("mesh") is not None:
+            names.setdefault(int(node["mesh"]), node.get("name") or "")
+    accessors = doc.get("accessors") or []
+    out = []
+    for i, mesh in enumerate(doc.get("meshes") or []):
+        counts = []
+        for prim in mesh.get("primitives") or []:
+            pos = (prim.get("attributes") or {}).get("POSITION")
+            n = int((accessors[pos] or {}).get("count") or 0) if isinstance(pos, int) and pos < len(accessors) else 0
+            counts.append(n)
+        # All or nothing. A partial count cannot align two primitive lists, and an empty tuple is the
+        # honest way to say so — `adopt_unbound` then adopts the materials as they are, as it always did.
+        out.append((names.get(i) or mesh.get("name") or "", tuple(counts) if all(counts) else ()))
+    return out
+
+
+def regroup_materials(donor: tuple[int, ...], mats: tuple, counts: tuple[int, ...]) -> Optional[tuple]:
+    """Carry a donor's per-primitive materials onto the same mesh split into different primitives.
+
+    Two copies of one mesh need not be split the same way, because a glTF primitive break IS a material
+    break: the copy that was exported with materials splits where they change, and the copy that was
+    exported without them does not. Office-babe's body is 5 primitives in her own container and 6 in
+    `manager_fixing.glb`, which the scene actually renders — the difference is the mouth, one span there
+    and two here, both wearing `Mouth`.
+
+    So match by VERTEX COUNT and refuse anything else. Consume donor primitives until they sum to the
+    recipient's, and take their material only if they agree on one; a span covering two materials has no
+    answer, and a sum that never lands means these are not the same mesh and nothing should be adopted.
+    """
+    out, i = [], 0
+    for want in counts:
+        got, span = 0, []
+        while i < len(donor) and got < want:
+            got += donor[i]
+            span.append(mats[i] if i < len(mats) else None)
+            i += 1
+        if got != want or len(set(span)) != 1:
+            return None
+        out.append(span[0])
+    return tuple(out) if i == len(donor) else None
+
+
+@dataclass
+class Node:
+    """One entity of a thing's subtree, exactly as the scene states it.
+
+    The subtree is kept whole rather than flattened into per-piece transforms because it IS the
+    skeleton: measured across every case in this corpus, 100% of a container's joints appear here as
+    entities (181/181 office-babe across three containers, 222/222 bride, 85/85 Alice). Composing from
+    the scene therefore needs no skeleton merge at all — there is one skeleton because the scene has
+    one — and it sidesteps the trap that a container's own root transform is reproduced by the entity
+    that instantiates it, so copying both applies it twice (bride, 100× out).
+    """
+
+    name: str
+    parent: int                                 # index in `Thing.tree`; -1 for the thing's own root
+    position: tuple
+    rotation: tuple                             # euler DEGREES in PlayCanvas order — `compose.quat_from_euler`
+    scale: tuple
+    enabled: bool                               # this entity's OWN flag, uncomposed
+
+
+@dataclass
+class Piece:
+    """One mesh a THING draws, plus everything about it the container file does not hold.
+
+    A container is a file and a piece is a use of it: the same mesh appears twice in bride's heels, once
+    per foot, and the difference between them lives entirely here.
+    """
+
+    container: int
+    mesh: int                                   # `renderIndex` inside that container
+    materials: tuple[Optional[int], ...]
+    entity: str                                 # the scene entity that draws it
+    parent: str                                 # what it hangs off — `DEF-hand.R` for Oktoberfest's beer
+    path: tuple[str, ...]                       # entity names from the thing's root down to here
+    enabled: bool                               # this entity AND every ancestor up to the thing root
+    position: tuple = (0.0, 0.0, 0.0)           # composed down `path`, in the thing's own frame
+    scale: tuple = (1.0, 1.0, 1.0)
+    rotated: bool = False                       # a non-zero rotation appears in the chain — see `things`
+    # Every LINK of that chain, `(name, position, rotation, scale)` from the thing's root down to this
+    # entity inclusive, each transform the entity's OWN. `position`/`scale` above are a summary and are
+    # exact only while the chain is unrotated; 538 of 948 pieces across the twenty captures are not, so
+    # anything that has to place geometry rebuilds the chain from here instead of reading the summary.
+    chain: tuple = ()
+    node: int = -1                              # the entity that draws it, as an index into `Thing.tree`
+    # Another piece draws this same mesh in this same place, better dressed — see `_shadow_variants`.
+    # A VARIANT, not an instance, and not the scene's wardrobe switch either: emitted hidden.
+    shadowed: bool = False
+    # The materials came from the CONTAINER's template rather than from this entity, because the entity
+    # named none of its own. Reported, never silent.
+    redressed: bool = False
+
+
+@dataclass
+class Thing:
+    """One addressable thing in a scene: a character, a room, a prop. The unit a container is NOT.
+
+    A container is one artist's export; a thing is what the app places. The two disagree in both
+    directions — office-babe draws from three containers, and `TOOLS LIBRARYblend5.glb` is split into
+    fifteen separate props — which is the whole argument for reading scenes
+    (`docs/specs/captures.md` §3).
+    """
+
+    name: str                                   # the entity name; becomes the asset label
+    scene: str                                  # which scene file said so
+    enabled: bool                               # placed in this scene, or sitting in its catalogue
+    entities: int                               # subtree size, for reporting
+    pieces: list[Piece] = field(default_factory=list)
+    tree: list = field(default_factory=list)    # the whole entity subtree, parents before children
+    # The thing entity's OWN transform. Its scale belongs to the thing — `Banana` is a 0.5 wrapper around
+    # a 0.9166 mesh and a banana that skips it comes out twice life size — but its POSITION is where this
+    # scene put it, which is not a property of the thing and does not travel with it.
+    position: tuple = (0.0, 0.0, 0.0)
+    rotation: tuple = (0.0, 0.0, 0.0)
+    scale: tuple = (1.0, 1.0, 1.0)
+
+    @property
+    def containers(self) -> dict[int, int]:
+        out: dict[int, int] = {}
+        for p in self.pieces:
+            out[p.container] = out.get(p.container, 0) + 1
+        return out
+
+    @property
+    def live(self) -> list[Piece]:
+        return [p for p in self.pieces if p.enabled and not p.shadowed]
+
+    @property
+    def shadowed(self) -> list[Piece]:
+        """Alternates: one mesh in one place claimed twice, the losing claim. See `_shadow_variants`."""
+        return [p for p in self.pieces if p.shadowed]
+
+    @property
+    def optional(self) -> list[Piece]:
+        """Drawn by an entity the scene has switched OFF — the site's own wardrobe switch.
+
+        `underwear` is exactly this in office-babe, Oktoberfest and bride, and it is what the parts
+        classifier has been reconstructing from mesh names. Emit it hidden rather than dropping it.
+        """
+        return [p for p in self.pieces if not p.enabled and not p.shadowed]
+
+
+def thing_notes(build: Build, ts: Optional[list] = None, **kw) -> list[str]:
+    """What the thing rule PROPOSED, per scene, so a person can see it and disagree.
+
+    The rule is convention (see `things`), so this is the whole of its accountability: it prints the
+    candidates with their subtree size and piece count and names no winner. The numbers are usually
+    enough — a prop is 2 entities and 1 piece, while the app shell's `Gestures` is 380 entities and 1
+    piece and is obviously not a thing anybody wants to place.
+    """
+    # `**kw` reaches `things` so a report describes what was actually CHOSEN — capture overrides and
+    # exclusions included — rather than what the bare convention would have proposed.
+    ts = things(build, **kw) if ts is None else ts
+    if not ts:
+        return []
+    out = []
+    # A FIGURE WELDED TO ITS ROOM, which is the one shape the convention gets wrong in a way that costs
+    # something. teacher's `SchoolCorridor` is 394 entities holding both the corridor and the teacher,
+    # so converting it as one thing means she is not placeable at all — no clips, no rig, no figure.
+    # susan is the same shape and was found by hand; this is so the next one is not.
+    for thing in ts:
+        skinned = [p for p in thing.pieces if _rigged(build, p.container)]
+        rigid = [p for p in thing.pieces if p not in skinned]
+        if skinned and len(rigid) >= 3:
+            out.append(f"{thing.name!r} draws {len(skinned)} SKINNED piece(s) and {len(rigid)} rigid "
+                       f"one(s) — very likely a figure welded to its environment, which are two things "
+                       f"and separately useful. Split it in captures/things.json; left as one, the "
+                       f"figure stops being placeable")
+    for scene in sorted({t.scene for t in ts}):
+        group = [t for t in ts if t.scene == scene]
+        on = sum(1 for t in group if t.enabled)
+        shown = ", ".join(f"{t.name}({t.entities}e/{len(t.pieces)}p)" for t in group[:6])
+        out.append(f"{scene}: {len(group)} candidate thing(s), {on} enabled — {shown}"
+                   f"{', …' if len(group) > 6 else ''}. Which entity is a THING is this app's "
+                   f"convention and not the format; correct it per capture rather than trusting it")
+    return out
+
+
+_RIGGED: dict[int, bool] = {}
+
+
+def _rigged(build: Build, container: int) -> bool:
+    """Does this container hold a skin? Cached, because a report asks per piece and a figure has many."""
+    key = id(build), int(container)
+    if key not in _RIGGED:
+        path = build.path(container)
+        ok = False
+        if path and os.path.exists(path):
+            try:
+                doc, _bin = split_glb(open(path, "rb").read())
+                ok = bool(doc and doc.get("skins"))
+            except Exception:                            # noqa: BLE001 — a bad file is not rigged
+                ok = False
+        _RIGGED[key] = ok
+    return _RIGGED[key]
+
+
+def _vec(entity: dict, key: str, default: tuple) -> tuple:
+    value = entity.get(key)
+    if not isinstance(value, list) or len(value) != 3:
+        return default
+    try:
+        return tuple(float(v) for v in value)
+    except (TypeError, ValueError):
+        return default
+
+
+THINGS_FILE = "things.json"
+
+
+def load_thing_rules(paths: Optional[list] = None) -> dict:
+    """`things.json` — which entity in a captured scene counts as a THING.
+
+    DATA rather than code for the same reason `parts.json` is: the answer is a CONVENTION of the site
+    being captured, not a property of glTF or PlayCanvas, so the next capture can arrive shaped a third
+    way and correcting it should be an edit. A user file shadows the bundled one entirely — merging two
+    would make the result depend on rule order across files nobody can see at once.
+    """
+    from . import config                                  # noqa: PLC0415  (config imports late)
+    from pathlib import Path
+    search = paths if paths is not None else [config.CONFIG_DIR / "captures",
+                                              config.BUNDLED_CAPTURES_DIR]
+    for base in search:
+        candidate = Path(base) / THINGS_FILE
+        if candidate.exists():
+            try:
+                return json.loads(candidate.read_text())
+            except Exception:                             # noqa: BLE001 — a broken edit must not stop a build
+                print(f"[conjure] thing rules at {candidate} are not readable JSON — ignoring them")
+    return {"revision": 0, "exclude": [], "captures": {}}
+
+
+def things(build: Build, *, roots: Optional[dict] = None, capture: str = "",
+           rules: Optional[dict] = None) -> list[Thing]:
+    """Every thing each of this build's scenes places, with the pieces it draws and from where.
+
+    **Which entity is a thing is CONVENTION, not format.** A render component naming
+    `(container, renderIndex, materialAssets)`, an entity carrying `enabled` / a parent / a transform,
+    and therefore "a mesh no entity binds is not rendered" — all of that is the PlayCanvas data model
+    and holds anywhere. This does not: the default rule here is *a direct child of a scene's Root whose
+    subtree renders something*, which is true of the content scenes and **false of the app's own**.
+    `2049393.json` has 1,016 entities whose Root children are `ToolModeStore`, `TRASH`, `DemoVRHoloes`
+    and `SampleStore` — machinery groupings nested several levels deep, not things.
+
+    So the rule PROPOSES and the caller can correct it: `roots` maps a scene's file name to the entity
+    names to treat as things, and whatever is used is reported. The same discipline `parts/parts.json`
+    uses for garment words and `adopt_unbound` uses when it prints INFERRED — a heuristic that fires
+    where it can be inspected, rather than one buried in a conversion.
+
+    `enabled` is composed down the chain, because an ancestor switched off takes its children with it.
+    At THING level the flag means something else again — in the catalogue, not placed in this scene —
+    which is the entire props library, so it is recorded on the `Thing` and never used to skip it.
+    """
+    # Scenes when there are any, TEMPLATES when there are not. Two of 58 builds declare a scene that is
+    # not on disk, and a template IS a serialised entity hierarchy — same shape, same walk — so falling
+    # back is what makes those builds readable at all rather than a special case for them.
+    rules = load_thing_rules() if rules is None else rules
+    # `roots=` is the explicit override a caller passes; the FILE is the durable one, keyed by capture
+    # then scene. The file's entry wins where both speak, because it is the reviewed answer.
+    per_capture = (rules.get("captures") or {}).get(capture or os.path.basename(build.root.rstrip("/")))
+    excluded = set(rules.get("exclude") or ())
+    out: list[Thing] = []
+    # A scene wraps its things in a `Root`, so the THINGS are Root's children. A template IS one thing
+    # already — `VR_hand_R` is 53 entities under a single root — so there the root is the thing itself.
+    # Treating them alike returned a hand's fingers as three separate things.
+    for name, entities, nested in ([(n, e, True) for n, e in build.scenes] or
+                                   [(n, e, False) for n, e in build.templates]):
+        if not entities:
+            continue
+        claimed = {c for e in entities.values() for c in (e.get("children") or [])}
+        tops = [g for g in entities if g not in claimed]
+        override = (per_capture or {}).get(name, (roots or {}).get(name))
+        if override is not None:
+            # An override NAMES the things, wherever they sit. susan's are `ModelParent` and
+            # `EnvironmentVR`, two levels down inside `aula` — a filter over Root's children could only
+            # ever have dropped her, which is what it did.
+            # A list names them; a MAP also renames them, because the entity name is often the app's
+            # internal one — susan's figure is `ModelParent`, which is no use as an asset label.
+            wanted = dict(override) if isinstance(override, dict) else {n: n for n in override}
+            candidates = [g for g, e in entities.items() if (e.get("name") or "?") in wanted]
+        else:
+            candidates = [g for top in tops for g in (entities[top].get("children") or [])] if nested \
+                else tops
+        for guid in candidates:
+            if guid not in entities:
+                continue
+            # A template's root entity is called `RootNode` in six builds — the ASSET's name is the one
+            # that means anything (`VR_hand_R`, `Dilda`), and it is what a label has to come from.
+            label = entities[guid].get("name") or "?"
+            if not nested and label in ("RootNode", "?"):
+                label = name
+            if override is None and label in excluded:
+                continue                                  # the app's own machinery, site-wide
+            thing = _walk(build, entities, guid, name)
+            _shadow_variants(build, thing)
+            thing.name = wanted.get(label, label) if override is not None else label
+            if thing.pieces or override is not None:
+                out.append(thing)
+    return out
+
+
+def _walk(build: Build, entities: dict, guid: str, scene: str) -> Thing:
+    """Collect one thing's subtree: the entity TREE, and the pieces hanging off it.
+
+    The tree is kept whole (see `Node`) because it is what the composer builds nodes from. The per-piece
+    `chain`, `position` and `scale` are the same information summarised for reading and for reports.
+    """
+    top = entities[guid]
+    thing = Thing(name=top.get("name") or "?", scene=scene,
+                  enabled=top.get("enabled") is not False, entities=0)
+    redress = {(b.container, b.mesh): b.materials for b in build.bindings if b.source == "template"}
+    # Depth-first, and a parent is always appended before its children — so `Node.parent` always points
+    # at an index that already exists and anything downstream can build the tree in one pass.
+    stack = [(guid, (), (), True, (0.0, 0.0, 0.0), (1.0, 1.0, 1.0), False, "", -1)]
+    while stack:
+        g, path, chain, on, pos, scl, rot, parent, up = stack.pop()
+        if g not in entities:
+            continue
+        entity = entities[g]
+        thing.entities += 1
+        label = entity.get("name") or "?"
+        here = path + (label,)
+        # Compose down the chain. Scale multiplies and position accumulates through the parent's scale,
+        # which is exact while every rotation is zero — and a non-zero one is FLAGGED rather than
+        # silently mis-composed, because euler order is a decision this does not get to guess at.
+        p = _vec(entity, "position", (0.0, 0.0, 0.0))
+        s = _vec(entity, "scale", (1.0, 1.0, 1.0))
+        r = _vec(entity, "rotation", (0.0, 0.0, 0.0))
+        pos = tuple(pos[i] + p[i] * scl[i] for i in range(3))
+        scl = tuple(scl[i] * s[i] for i in range(3))
+        rot = rot or any(abs(v) > 1e-6 for v in r)
+        links = chain + ((label, p, r, s),)
+        if not path:
+            thing.position, thing.rotation, thing.scale = p, r, s
+        thing.tree.append(Node(name=label, parent=up, position=p, rotation=r, scale=s,
+                               enabled=entity.get("enabled") is not False))
+        mine = len(thing.tree) - 1
+        # The THING's own flag is consumed by `Thing.enabled` and must NOT propagate: at that level it
+        # means "in the catalogue, not placed in this scene", which is the entire props library — all
+        # 15 tools and all 13 skin-tone variants are disabled Root children. Composing it would mark
+        # every piece of every prop optional and import none of them. Below the root it means what it
+        # says, and an ancestor switched off does take its children with it.
+        if path:
+            on = on and entity.get("enabled") is not False
+        render = (entity.get("components") or {}).get("render")
+        if render and render.get("type") == "asset" and render.get("asset") is not None:
+            data = (build.asset(render["asset"]) or {}).get("data") or {}
+            container, index = data.get("containerAsset"), data.get("renderIndex")
+            if container is not None and index is not None:
+                stated = tuple(int(m) if m is not None else None
+                               for m in (render.get("materialAssets") or []))
+                # The entity's own list, falling back to the container's template only where the
+                # entity named none — a scene entity dressing a mesh its own way is normal and is the
+                # whole of the variant case, so it is never second-guessed. Alice's two hair entities
+                # keep their two different material sets, and her eyes keep the right eye's material
+                # on BOTH, which is what the running site draws.
+                instead = redress.get((int(container), int(index)))
+                thing.pieces.append(Piece(
+                    container=int(container), mesh=int(index),
+                    materials=instead or stated,
+                    redressed=bool(instead) and instead != stated,
+                    entity=label, parent=parent, path=here,
+                    enabled=on and render.get("enabled") is not False,
+                    position=pos, scale=scl, rotated=rot, chain=links, node=mine))
+        for child in entity.get("children") or []:
+            stack.append((child, here, links, on, pos, scl, rot, label, mine))
+    thing.pieces.sort(key=lambda x: (x.container, x.mesh, x.entity))
+    return thing
+
+
+def _shadow_variants(build: Build, thing: Thing) -> None:
+    """One mesh drawn twice in ONE place is a VARIANT; drawn twice in two places it is an instance.
+
+    The distinction is the whole of it, and both halves are real in this corpus — exactly one case each,
+    out of 948 pieces. Bride's heels are `clothes_weddingdress_heels_L` and `_R`: one mesh, two feet,
+    two different chains, and flattening them loses a shoe. Alice's hair is `Side_Swept` and
+    `Side_Swept2`: one mesh, one chain, both enabled, and two different sets of materials. That is a
+    colour switch the site flips at runtime with a script the capture does not contain — and drawn
+    together they z-fight, which is the pale locks at the front of her otherwise brown head.
+
+    So: same mesh AND the same transform all the way up means one of them is an alternate. The
+    best-dressed claim wins, on the same rule that settles it for a binding (`how_dressed` — a base
+    colour outranks a slot count, which is what separates these two), and the loser is kept and marked
+    rather than dropped. It is a wardrobe option the moment anything can switch it.
+    """
+    groups: dict[tuple, list[int]] = {}
+    for i, piece in enumerate(thing.pieces):
+        where = tuple((link[1], link[2], link[3]) for link in piece.chain)
+        groups.setdefault((piece.container, piece.mesh, where), []).append(i)
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        best = max(members, key=lambda i: (how_dressed(build, thing.pieces[i].materials), -i))
+        for i in members:
+            if i != best:
+                thing.pieces[i].shadowed = True
+
+
+def dead_meshes(build: Build) -> list[Binding]:
+    """Bindings that only a TEMPLATE claims, in a build whose scenes were read — probably not rendered.
+
+    A template is the container's own default binding; a scene is what runs. `read_build` reads scenes
+    first and templates after precisely so a scene wins, which means a surviving template binding is a
+    mesh no scene entity asked for. **That is the signal for a mesh the site never draws**, and it is
+    the only thing that identifies the whole family:
+
+      · `JAPANESEROOM BAKED.glb` mesh 32 — a deck and railing, replaced in the scene by `WOODout.glb`
+      · `aula_Aliceglb` mesh 14 `Scalp_Female` — wearing one of four scalp materials, the one with no
+        maps, so it renders opaque WHITE. Her real scalp is a primitive of her hair mesh
+      · office-babe's body twin, Oktoberfest's and bride's denser twins, bride's `clothes_sexyunderwear_*`
+
+    **Scoped to containers the scene DOES use**, which is the difference between a signal and 725 rows
+    of noise. A container no scene mentions at all is not full of dead meshes — it is a container this
+    scene does not use, which is ordinary: the VR shell's controllers and the props library are bound
+    only by templates in every capture. What is suspicious is a mesh whose SIBLINGS are scene-bound and
+    which is not: the scene reached into that container, dressed the meshes it wanted, and left this one.
+
+    Only meaningful once a scene has actually been read. Two of 58 builds have no scene file on disk,
+    and there every binding is template-only and none of them is dead.
+
+    Reported, never dropped. A dead mesh is a candidate for removal and the composition work is where
+    that decision belongs (`docs/specs/captures.md` §3) — this tells you where to look.
+    """
+    if not build.scened:
+        return []
+    live = {c for c, _m in build.scene_claims}
+    return [b for b in build.bindings
+            if (b.container, b.mesh) not in build.scene_claims and b.container in live]
+
+
+def dead_mesh_notes(build: Build) -> list[str]:
+    out = []
+    for container, group in sorted(by_container(Build(root=build.root, assets=build.assets,
+                                                     bindings=dead_meshes(build))).items()):
+        names = ", ".join(f"{b.mesh} [{b.entity}]" for b in group[:4])
+        out.append(f"{build.name(container)}: {len(group)} mesh(es) bound ONLY by a template while this "
+                   f"build's scenes were read — {names}{', …' if len(group) > 4 else ''}. A scene is "
+                   f"what runs, so these are probably not drawn at all; converting them is how a dead "
+                   f"twin or an empty material reaches the library looking like a bug")
+    return out
+
+
+def dangling(build: Build) -> dict[int, list[str]]:
+    """Asset ids that something REFERENCES and the registry does not define — `{id: [who wants it]}`.
+
+    Invisible to every other check, which is the point. `missing_files` walks the registry looking for
+    files that are not on disk; an id the registry never had is not walked, so it reports nothing
+    absent and the material converts flat. The Japanese house's deck material `WOODout` points at
+    texture `194421251`, which is in no `config.json` — and *"no texture on the railing of the house"*
+    cost a session and several re-downloads that could never have helped.
+
+    This is the difference between **re-download this capture** and **the site ships it this way**, and
+    nothing we produced could tell those apart.
+
+    **Only what a BINDING depends on.** Scanning the whole registry finds 1,011 of these, almost all in
+    the props library's materials — `SAUSAGE.diffuseMap`, `STICK.normalMap` — which nothing in the
+    converted output binds, so they cost nobody anything. A reference is worth reporting when it is
+    reachable from a mesh we actually emit.
+    """
+    want: dict[int, list[str]] = {}
+    def need(aid, who: str) -> None:
+        if aid is None:
+            return
+        try:
+            key = int(aid)
+        except (TypeError, ValueError):
+            return
+        if key not in build.assets:
+            want.setdefault(key, []).append(who)
+
+    for bind in build.bindings:
+        where = f"{build.name(bind.container)} mesh {bind.mesh}"
+        for mat in bind.materials:
+            if mat is None:
+                continue
+            need(mat, f"{where} material")
+            asset = build.asset(mat)
+            if asset is None:
+                continue
+            for field_, value in (asset.get("data") or {}).items():
+                if field_.endswith("Map"):
+                    need(value, f"{where} material {asset.get('name') or mat!r}.{field_}")
+    return want
+
+
+def dangling_notes(build: Build) -> list[str]:
+    want = dangling(build)
+    if not want:
+        return []
+    shown = ", ".join(f"{k} ({want[k][0]})" for k in sorted(want)[:3])
+    return [f"{len(want)} referenced asset id(s) are NOT IN THE REGISTRY at all — {shown}"
+            f"{', …' if len(want) > 3 else ''}. Not a missing FILE: the id was never in config.json, so "
+            f"re-capturing cannot help and `missing_files` reports nothing absent. Whatever points at "
+            f"one converts flat"]
+
+
 def adopt_unbound(build: Build) -> int:
-    """Give an unbound mesh the material bound to an identically-named render asset elsewhere. Inferred.
+    """Give an unbound mesh the material bound to an identically-named mesh elsewhere. Inferred.
 
     A character build routinely ships the same mesh twice: once inside the body container and once as a
     standalone container so it can be swapped. Jane's hair is both `jane_export.glb` mesh 3 and the whole
@@ -402,7 +1017,13 @@ def adopt_unbound(build: Build) -> int:
     Faithfully, that IS what the scene does. But a figure has to arrive as ONE file here, and a
     swappable-outfit vocabulary does not exist yet (specs/figures.md, § What is not built), so the
     useful answer and the literal answer differ. This is the useful one, kept behind a flag and reported
-    as inferred every time, because a render asset's NAME matching is good evidence and not proof.
+    as inferred every time, because a NAME matching is good evidence and not proof.
+
+    Candidates come from the registry AND from the container files, because the registry can be silent.
+    Office-babe's skin, hair and glasses came out matte black — the black of glTF's default material,
+    metallic 1 — and her body was the reason: the scene renders it from `manager_fixing.glb`, so her own
+    container's copy has no render asset, no name in the registry, and was invisible to a search that
+    only ever looked at render assets. Her mesh is still called `Body` inside the file.
     """
     renders = {}
     for aid, a in build.assets.items():
@@ -413,16 +1034,44 @@ def adopt_unbound(build: Build) -> int:
             renders[(int(d["containerAsset"]), int(d["renderIndex"]))] = a.get("name") or ""
     bound = {(b.container, b.mesh) for b in build.bindings}
     by_name = {renders.get((b.container, b.mesh), ""): b for b in build.bindings}
+
+    # Only containers the build already binds something in. Enough to reach a stale sibling mesh, and it
+    # keeps this from opening every GLB in a props library to look at meshes nothing refers to.
+    geometry = {c: container_meshes(build, c) for c in sorted({b.container for b in build.bindings})}
+    for container, meshes in geometry.items():
+        for i, (name, _counts) in enumerate(meshes):
+            renders.setdefault((container, i), name)
+    for bind in build.bindings:                 # a bound mesh can be a donor under its in-file name too
+        meshes = geometry.get(bind.container) or []
+        if bind.mesh < len(meshes) and meshes[bind.mesh][0]:
+            by_name.setdefault(meshes[bind.mesh][0], bind)
+
     adopted = 0
     for key, name in sorted(renders.items()):
         if key in bound or not name or name not in by_name:
             continue
         donor = by_name[name]
+        mats, how = donor.materials, ""
+        mine = geometry.get(key[0]) or []
+        theirs = geometry.get(donor.container) or []
+        if key[1] < len(mine) and donor.mesh < len(theirs):
+            counts, donor_counts = mine[key[1]][1], theirs[donor.mesh][1]
+            if counts and donor_counts and counts != donor_counts:
+                mats = regroup_materials(donor_counts, donor.materials, counts)
+                if mats is None:
+                    build.notes.append(
+                        f"{build.name(key[0])} mesh {key[1]} is bound by no entity and shares the name "
+                        f"{name!r} with {build.name(donor.container)} mesh {donor.mesh}, but their "
+                        f"primitives do not line up ({list(counts)} vs {list(donor_counts)}) — NOT "
+                        f"adopting, they are not the same mesh")
+                    continue
+                how = (f", regrouped from {len(donor_counts)} primitive(s) to {len(counts)} by matching "
+                       f"vertex counts")
         build.bindings.append(Binding(f"{donor.entity} (adopted by name {name!r})",
-                                      key[0], key[1], donor.materials, adopted=True))
+                                      key[0], key[1], mats, adopted=True))
         build.notes.append(f"{build.name(key[0])} mesh {key[1]} is bound by no entity; adopting the "
                            f"material from {build.name(donor.container)} mesh {donor.mesh}, which shares "
-                           f"the render name {name!r} — INFERRED, look at it")
+                           f"the name {name!r}{how} — INFERRED, look at it")
         adopted += 1
     build.bindings.sort(key=lambda b: (b.container, b.mesh))
     return adopted
@@ -595,13 +1244,22 @@ class _Textures:
         `glossInvert` decides whether the source is gloss or roughness, and it is not a guess: the
         engine's `glossPS` chunk multiplies the scalar by the map and THEN applies `1.0 - x` under
         `MAPINVERT`, so an inverted gloss map is a roughness map and goes straight through.
+
+        **The shininess scalar is BAKED IN when the map is a gloss map**, because the two models do not
+        factor the same way. PlayCanvas computes `roughness = 1 - s*g`; glTF can only offer
+        `roughnessFactor * roughnessTexture`, and `(1-s) * (1-g)` is a different surface — about 0.5
+        too smooth across the whole range, which on skin is the difference between matte and wet. The
+        product only agrees at `g = 1`. Baking `1 - s*g` per texel is exact, and the caller then sets
+        `roughnessFactor` to 1.
+
+        An INVERTED gloss map needs no baking: there `roughness = s*g`, which is a product already.
         """
         Image = _pil()
         gloss, metal = d.get("glossMap"), d.get("metalnessMap")
         if gloss is None and metal is None:
             return None
         key = ("mr", gloss, d.get("glossMapChannel"), metal, d.get("metalnessMapChannel"),
-               bool(d.get("glossInvert")))
+               bool(d.get("glossInvert")), round(float(d.get("shininess", 0) or 0), 3))
         if key in self._by_key:
             return self._by_key[key]
         size = None
@@ -614,6 +1272,9 @@ class _Textures:
             rough = _channel(src, d.get("glossMapChannel"))
             if not d.get("glossInvert"):
                 from PIL import ImageOps                        # noqa: PLC0415
+                scalar = max(0.0, min(1.0, float(d.get("shininess", 0) or 0) / 100.0))
+                if scalar != 1.0:                               # fold the scalar in: 1 - s*g, exactly
+                    rough = rough.point(lambda v, k=scalar: int(round(v * k)))
                 rough = ImageOps.invert(rough)                  # a gloss map is roughness upside down
         if metal is not None and self.build.path(metal) and os.path.exists(self.build.path(metal)):
             src = self._open(self.build.path(metal), self.build.name(metal))
@@ -685,6 +1346,10 @@ def material_from(d: dict, name: str, tex: _Textures) -> dict:
     mr = tex.metallic_roughness(d)
     if mr is not None:
         pbr["metallicRoughnessTexture"] = ref(mr, "gloss" if d.get("glossMap") else "metalness")
+        if d.get("glossMap") is not None and not d.get("glossInvert"):
+            # The scalar is already inside the texture (see `metallic_roughness`), so multiplying by it
+            # again would apply it twice. This factor exists for the NO-TEXTURE case.
+            pbr["roughnessFactor"] = 1.0
 
     out: dict = {"name": name, "pbrMetallicRoughness": pbr}
 
@@ -715,9 +1380,43 @@ def material_from(d: dict, name: str, tex: _Textures) -> dict:
     blend = int(d.get("blendType", BLEND_NONE))
     cutoff = float(d.get("alphaTest", 0) or 0)
     alpha_real = "baseColorTexture" in pbr and tex.has_alpha(pbr["baseColorTexture"]["index"])
+    # A third way a layer can be all environment and no content: a MIRROR. `useMetalness` with
+    # `metalness: 1`, a gloss of 100, a skybox and no texture of its own is a reflection shell — the
+    # wet film over an eye. glTF carries no per-material environment (see `_UNCARRIED`), so it renders
+    # as a black mirror: the teacher's `Sclera` sits as its own primitive over the eye the body mesh
+    # draws, and came out as a dark disc that reads as a closed eye.
+    #
+    # Gated on being SEE-THROUGH, which is the line between an overlay and an object. `Sclera` is 0.2,
+    # `Cornea_v2` 0.2, `EyeMoisture` 0.5 — all films over something. `DIAMANT` is 0.963: also a
+    # reflection material, also wrong without an environment, but there is nothing behind it, so a dark
+    # gem is worse than no gem and it is left alone.
+    mirror = (bool(d.get("useMetalness")) and float(d.get("metalness") or 0) >= 0.9
+              and (d.get("useSkybox") or d.get("cubeMap") or d.get("sphereMap"))
+              and d.get("diffuseMap") is None and opacity <= 0.6)
+    # A refractive LENS: no maps at all, see-through, and its whole appearance is the environment bent
+    # through it. glTF core cannot express that (`KHR_materials_transmission` can, at the cost of a
+    # transmission pass this does not spend on a Quest), and the fallback is not neutral — a flat colour
+    # at partial alpha is white PAINT over the thing it was meant to enhance. Bride's `Reflections-eyes`
+    # is 48% white over her irises, and the brown came out washed to a pale tan. Five materials across
+    # the twenty captures are this shape and four of them are named for an eye; the fifth is a pane of
+    # glass, which is likewise better seen through than fogged.
+    lens = (d.get("useDynamicRefraction") and blend in (BLEND_NORMAL, BLEND_PREMULTIPLIED)
+            and opacity < 1 and not any(k.endswith("Map") and v for k, v in d.items()))
     lightening = blend in LIGHTENING_BLENDS
     modulating = blend in MODULATING_BLENDS
-    if lightening or modulating:
+    if lens:
+        out["alphaMode"] = "BLEND"
+        pbr["baseColorFactor"] = [0.0, 0.0, 0.0, 0.0]
+        warn.append(f"{name}: a refractive lens ({opacity:.2f} opacity, no maps of its own) — glTF core "
+                    f"cannot bend what is behind it, so it is made invisible rather than drawn as a "
+                    f"flat film over whatever it was meant to refract")
+    elif mirror and not (lightening or modulating):
+        out["alphaMode"] = "BLEND"
+        pbr["baseColorFactor"] = [0.0, 0.0, 0.0, 0.0]
+        warn.append(f"{name}: a see-through mirror ({opacity:.2f} opacity, metalness 1, reflecting a "
+                    f"skybox glTF cannot carry) — it has no colour of its own, so it is made invisible "
+                    f"rather than drawn as a black film over whatever it was meant to catch the light on")
+    elif lightening or modulating:
         # The least-wrong translation: BLEND, so the alpha at least applies, and
         # fully transparent where the layer carries no detail of its own —
         # because that is a layer which contributes nothing, and saying so is
@@ -775,6 +1474,8 @@ def material_from(d: dict, name: str, tex: _Textures) -> dict:
         warn.append(f"{name}: {', '.join(moved)} map(s) are tiled, offset or rotated — not carried "
                     f"(needs KHR_texture_transform)")
     for label, used, lost in _UNCARRIED:
+        if lens and label == "refraction":
+            continue                    # already reported above, and "will read as opaque" is now wrong
         if used(d):
             warn.append(f"{name}: {label} is set and not carried — {lost}")
     for message in warn:

@@ -34,9 +34,11 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from conjure import capture_set                                          # noqa: E402
-from conjure.importer import plan_import                                 # noqa: E402
+from conjure.importer import plan_import, read_glb_json                  # noqa: E402
 from conjure.library import AssetLibrary                                 # noqa: E402
-from conjure.playcanvas import find_builds                               # noqa: E402
+from conjure.playcanvas import find_builds, read_build                               # noqa: E402
+from conjure.positions import (clip_audio, clip_speed, read_main, read_positions,    # noqa: E402
+                               resolves)
 
 
 def _asset_id(data: bytes, ext: str) -> str:
@@ -61,27 +63,75 @@ def _store(cache: str, asset_id: str, data: bytes) -> bool:
     return True
 
 
-def _containers_by_build(capture: str) -> dict[str, str]:
-    """Container filename -> the build directory it belongs to.
+def container_files(capture: str) -> dict[int, tuple[str, str]]:
+    """Container asset id -> `(file stem, the build directory that registers it)`.
 
-    This is what makes `shipped_with` mean what it says. A capture holds several builds — a character
-    in one, the shared hands and props in another — and the authored set is the clips that shipped in
-    the FIGURE's OWN build. Without this, every rigged thing in the capture claims every clip, and the
-    VR hands end up owning Jane's twenty-one animations.
+    Both views of the same fact, because two callers need different halves of it. Keying on IDENTITY is
+    what makes the composed path work at all: a composed GLB is named after the THING it holds
+    (`office-babe.glb`, `Banana.glb`) and not after any container, so there is no stem to match. It
+    carries the container ids it drew from in `extras.conjure` instead — which is the fact rather than a
+    coincidence of naming, since `underwear.glb` appears in eight captures under eight different ids and
+    `office-babe` draws from three files at once.
+
+    The STEM half is still needed, for two things: the older one-per-container output is named after it,
+    and the rows a previous per-container import left in the catalog are LABELLED with it, which is how
+    `_retire_containers` recognises them.
     """
-    out: dict[str, str] = {}
+    out: dict[int, tuple[str, str]] = {}
     for build in find_builds(capture):
         try:
-            cfg = json.load(open(os.path.join(build, "config.json")))
+            read = read_build(build)
         except Exception:                                                # noqa: BLE001
             continue
-        for asset in (cfg.get("assets") or {}).values():
+        for aid, asset in read.assets.items():
             if asset.get("type") != "container":
                 continue
-            name = asset.get("name") or ""
-            if name:
-                out.setdefault(os.path.splitext(name)[0].replace("%20", " ").strip(), build)
+            path = read.path(aid)
+            if path:
+                out.setdefault(int(aid), (os.path.splitext(os.path.basename(path))[0], build))
     return out
+
+
+def provenance(data: bytes) -> dict:
+    """`extras.conjure` from a composed GLB, or `{}` for anything else.
+
+    The composer writes it (`conjure/compose.py`) so that everything downstream can ask what a file IS
+    rather than infer it from a name: which thing, which scene, which containers it merged, and which
+    of its nodes the scene had switched off.
+    """
+    try:
+        doc = read_glb_json(data)
+    except Exception:                                                    # noqa: BLE001
+        return {}
+    return ((doc or {}).get("extras") or {}).get("conjure") or {}
+
+
+def authored(capture: str, report=print) -> tuple[dict, dict]:
+    """`({clip name: [sound name, …]}, {clip name: rate})` from the build's own position configs.
+
+    The site STATES which sound goes with which clip and how fast to play it, and where it does that
+    beats `capture_set.audio_role`'s filename match — which is exactly the four captures that the stem
+    rule links nothing for. Reported per capture, because a config that stops resolving is saying it
+    describes a version of the build no longer on disk (`positions.resolves`).
+    """
+    pairs: dict[str, list[str]] = {}
+    speeds: dict[str, float] = {}
+    for build_root in find_builds(capture):
+        try:
+            build = read_build(build_root)
+        except Exception:                                                # noqa: BLE001
+            continue
+        positions = read_positions(build, (read_main(build).get("bone_masks") or {}))
+        if not positions:
+            continue
+        ok_c, n_c, ok_s, n_s = resolves(build, positions)
+        rates, clash = clip_speed(positions)
+        report(f"    {len(positions)} authored position(s): clips {ok_c}/{n_c}, sounds {ok_s}/{n_s}"
+               + (f", {len(clash)} clip(s) the configs disagree about the speed of" if clash else ""))
+        for clip, sounds in clip_audio(positions).items():
+            pairs.setdefault(clip, []).extend(s for s in sounds if s not in pairs.get(clip, []))
+        speeds.update(rates)
+    return pairs, speeds
 
 
 def _source_assets(capture: str, kinds=("animation", "audio")) -> list[dict]:
@@ -104,6 +154,30 @@ def _source_assets(capture: str, kinds=("animation", "audio")) -> list[dict]:
     return out
 
 
+def same_thing(library, scope: str, capture: str, kind, label) -> list[dict]:
+    """The LIVE rows this import is about to replace: same kind, same label, already tagged `capture`.
+
+    Identity above the bytes, which a content-addressed catalog has no other way to express — the whole
+    problem is that the same logical asset gets a new id whenever the converter improves.
+
+    **The capture tag is what makes it safe.** Two captures can ship different `computer_desk` bytes and
+    each keeps its own row, because a row tagged only `jane` is never a candidate while importing
+    `akari`. Without that, re-importing one capture would retire another's props.
+
+    `by_user` rather than `query()`: the latter's scoped view now hides superseded rows, and this wants
+    only what is currently live — retiring a tombstone twice means nothing.
+    """
+    if not (kind and label):
+        return []
+    out = []
+    for row in library.by_user(scope.split("/", 1)[0], limit=100_000):
+        if row.get("kind") != kind or (row.get("label") or "") != label:
+            continue
+        if capture in [t.strip() for t in (row.get("tags") or "").split(",")]:
+            out.append(row)
+    return out
+
+
 def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, cache: str, commit: bool,
         report=print) -> dict:
     name = os.path.basename(capture.rstrip("/"))
@@ -113,9 +187,100 @@ def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, cache:
     def put(asset_id, data=None, **fields):
         stats[fields.get("kind", "?")] += 1
         if commit:
+            # An asset this import is WRITING is current, whatever a previous run decided. An id is a
+            # content address, so reverting a converter change brings the old bytes and the old id back
+            # — onto a row a later run had already retired. Without this the import looks clean and the
+            # asset stays invisible: 98 live models became 47, each re-import landing in its own
+            # tombstone.
+            if library.revive(asset_id):
+                stats["revived"] += 1
             if data is not None and _store(cache, asset_id, data):
                 stats["bytes_written"] += 1
-            library.upsert(asset_id, scope=scope, **fields)
+            # TAG EVERY ASSET WITH ITS CAPTURE. A set is called `susan` and her figure is called
+            # `Alice`, so searching the name a person actually uses found the set and no model —
+            # `place_cached_asset` needs a model, and the director reported her missing from a catalog
+            # she was in. Tags are FTS-indexed, so this is the one field that fixes it.
+            #
+            # MERGED, not replaced: the shared props arrive in every capture and a second import must
+            # not take the first one's tag off them.
+            existing = (library.get(asset_id) or {}).get("tags") or ""
+            words = [w for w in (t.strip() for t in existing.split(",")) if w]
+            if name not in words:
+                words.append(name)
+            library.upsert(asset_id, scope=scope, tags=", ".join(words), **fields)
+        _supersede_prior(asset_id, fields.get("kind"), fields.get("label"))
+
+    def _supersede_prior(asset_id: str, kind, label) -> None:
+        """Retire the row this import replaces.
+
+        An id is a content address, so re-converting a capture with a fixed converter writes DIFFERENT
+        bytes and therefore a NEW row, while the old one stays — seen live when the roughness fix
+        changed `Teacher_v1` and `bride_ready` and the catalog then held two of each, with a search
+        returning both and nothing to choose between them.
+
+        **Identity above the bytes is `(kind, label)` within THIS capture.** The capture tag is what
+        makes it safe: two captures can ship different `computer_desk` bytes and each keeps its own row,
+        because only rows already tagged with the capture being imported are considered. It is still an
+        inference — which is why `supersede` marks rather than deletes, so being wrong costs a column
+        and not an asset.
+        """
+        if not (commit and kind and label):
+            return
+        for row in same_thing(library, scope, name, kind, label):
+            if row["id"] == asset_id:
+                continue
+            ok, _err = library.supersede(row["id"], asset_id)
+            if ok:
+                stats["superseded"] += 1
+                report(f"    retired {row['id']} — replaced by {asset_id} ({label})")
+
+
+    def _retire_containers() -> None:
+        """Retire the rows a PER-CONTAINER import of this capture left behind.
+
+        The switch from one asset per file to one per thing is not a re-import of the same rows: the
+        labels change, so the ordinary `(kind, label)` supersession catches only the handful that happen
+        to share a name (`office-babe` does, since her thing is named after her file). Everything else
+        would sit in the catalog forever, and those leftovers are the ones that cause harm — asked to
+        "switch to a different bride" the director offered `model_britney_bride`, a bare body with no
+        clothes or hair, because nothing distinguished a figure from a piece of one.
+
+        Recognised by LABEL matching a container file stem of this capture, which is what the old path
+        named its rows after, and retired only into a thing that actually contains that container. A
+        container no thing draws is left alone and reported: `computer_desk`, `magnet` and the Quest
+        controller are bound only inside the app's own excluded machinery, so whether they are worth
+        rescuing is a `captures/things.json` decision and not this script's to take.
+
+        `TOOLS LIBRARYblend5` is the fan-out case — one file, fifteen things — and a tombstone points at
+        one row. Where several things share a container it points at the SET, because that is what
+        actually replaced it: the file's contents are now spread across the capture, and following the
+        tombstone to the set finds all fifteen. Pointing at one of them would be picking arbitrarily
+        between equals, and the first version of this announced that the cutlery drawer had become a
+        cucumber.
+        """
+        if not commit:
+            return
+        stems = {stem: cid for cid, (stem, _build) in files.items()}
+        orphans = []
+        for stem, cid in sorted(stems.items()):
+            if stem in labels_written:
+                continue                          # a thing is named after this file; normal supersession has it
+            heirs = sorted(things_seen.get(cid) or [], reverse=True)
+            for row in same_thing(library, scope, name, "model", stem):
+                if not heirs:
+                    orphans.append(stem)
+                    continue
+                heir = heirs[0][1] if len(heirs) == 1 else set_id
+                ok, _err = library.supersede(row["id"], heir)
+                if ok:
+                    stats["superseded:container"] += 1
+                    became = (f"inside {library.get(heir).get('label')}" if len(heirs) == 1 else
+                              f"spread across {len(heirs)} things in this set")
+                    report(f"    retired {stem} — its geometry is now {became}")
+        if orphans:
+            report(f"    {len(orphans)} container row(s) left alone — no thing draws them, so they are "
+                   f"the app's own machinery rather than props ({', '.join(orphans[:5])}"
+                   f"{', …' if len(orphans) > 5 else ''})")
 
     def link(a, b, kind):
         stats[f"rel:{kind}"] += 1
@@ -125,9 +290,13 @@ def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, cache:
     put(set_id, kind="set", label=name, source=f"capture://{name}",
         attributes={"capture": name, "origin": "playcanvas"})
 
-    # ---- the rebuilt models, which are what a world actually places -----------------------------
-    by_build = _containers_by_build(capture)
+    # ---- the models, which are what a world actually places --------------------------------------
+    files = container_files(capture)
+    by_stem = {stem: build for stem, build in files.values()}
+    by_container = {cid: build for cid, (_stem, build) in files.items()}
     figures: dict[str, list[str]] = defaultdict(list)    # build dir -> [asset id]
+    things_seen: dict[int, list[tuple[int, str]]] = defaultdict(list)   # container -> [(pieces, asset)]
+    labels_written: set[str] = set()
     for file in sorted(f for f in os.listdir(rebuilt) if f.endswith(".glb")) if os.path.isdir(rebuilt) else []:
         path = os.path.join(rebuilt, file)
         data = open(path, "rb").read()
@@ -136,19 +305,40 @@ def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, cache:
             report(f"    ? {file}: nothing recognised it")
             continue
         asset_id = _asset_id(data, result.ext)
-        put(asset_id, data, kind=result.kind, label=os.path.splitext(file)[0],
-            source=f"cache://{asset_id}", filename=asset_id, attributes=result.attributes)
+        mark = provenance(data)
+        # The THING's own name, not the file's. `_safe` had to make the file name safe for a
+        # filesystem and the label should not inherit that, and a per-container import labelled
+        # `TOOLS LIBRARYblend5` where the catalog now holds fifteen separately placeable tools.
+        label = mark.get("thing") or os.path.splitext(file)[0]
+        attributes = {**result.attributes}
+        if mark:
+            # The capture comes from the IMPORT, not from the file — see `compose_thing`, which keeps
+            # it out of the bytes so a prop shared by fifteen captures is one row and not fifteen.
+            attributes["thing"] = {"scene": mark.get("scene"), "capture": name,
+                                   "containers": sorted(mark.get("containers") or {})}
+            # WHICH PARTS THE SOURCE HAS SWITCHED OFF, stated rather than classified. A different fact
+            # from `parts` (which garment a mesh IS) and the runtime needs both: `figure-parts` hides
+            # by node name, and until now the only answer came from reading mesh names.
+            if mark.get("hidden"):
+                attributes["parts_hidden"] = list(mark["hidden"])
+        put(asset_id, data, kind=result.kind, label=label,
+            source=f"cache://{asset_id}", filename=asset_id, attributes=attributes)
+        labels_written.add(label)
         link(asset_id, set_id, "part_of")
+        for cid in (mark.get("containers") or {}):
+            things_seen[int(cid)].append(((mark.get("containers") or {}).get(cid, 0), asset_id))
         # A FIGURE, not merely something with a skin: `rig_sig` is only set when a humanoid map was
         # recovered, which is the difference between a character and a pair of disembodied hands.
         if result.attributes.get("rig_sig"):
-            build = by_build.get(os.path.splitext(file)[0])
+            build = next((by_container[int(c)] for c in (mark.get("containers") or {})
+                          if int(c) in by_container), None) or by_stem.get(os.path.splitext(file)[0])
             if build:
                 figures[build].append(asset_id)
             else:
                 report(f"    ? {file}: rigged, but no build claims it — no authored set recorded")
 
     # ---- clips and audio, which live only in the source build -----------------------------------
+    stated_pairs, stated_speeds = authored(capture, report)
     source = _source_assets(capture)
     clip_names = [a["name"] for a in source if a["type"] == "animation"]
     clips: dict[str, str] = {}                           # registry name -> asset id
@@ -165,12 +355,18 @@ def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, cache:
         if capture_set.wants_props(asset["name"]):
             extra["wants_props"] = capture_set.wants_props(asset["name"])
         extra["slot_named"] = capture_set.is_slot_named(asset["name"])
+        # THE RATE THE SITE PLAYS IT AT. 0.5, 0.6 and 1.2 are authored in this corpus, so a clip
+        # played at its own speed is played wrong; absent here means nobody said, which means 1.0.
+        if asset["name"] in stated_speeds:
+            extra["speed"] = stated_speeds[asset["name"]]
         put(asset_id, data, kind="animation", label=capture_set.stem(asset["name"]),
             source=f"cache://{asset_id}", filename=asset_id, attributes=extra)
         link(asset_id, set_id, "part_of")
         clips[asset["name"]] = asset_id
         clips_by_build[asset["build"]].append(asset_id)
 
+    sounds: dict[str, str] = {}                          # registry name -> asset id
+    paired: set = set()                                  # (clip id, audio id) already linked
     for asset in source:
         if asset["type"] != "audio":
             continue
@@ -180,17 +376,49 @@ def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, cache:
             continue
         data = open(asset["path"], "rb").read()
         result = plan_import(asset["name"], data, {"kind": "audio"})
+        if result is None:
+            # A registry `audio` asset that is not audio. Three of them are `.mp4` promo videos, and
+            # they only started arriving once the grabber stopped skipping declared audio — so this is
+            # not a hypothetical: the first import after that fix crashed here. The type comes from the
+            # site and the CONTENT decides, as everywhere else in this pipeline.
+            stats["audio:not-audio"] += 1
+            report(f"    ? {asset['name']}: the registry calls it audio and it is not — skipped")
+            continue
         asset_id = _asset_id(data, ".mp3")
         put(asset_id, data, kind="audio", label=capture_set.stem(asset["name"]),
             source=f"cache://{asset_id}", filename=asset_id,
             attributes={**result.attributes, "role": role})
         link(asset_id, set_id, "part_of")
+        sounds[asset["name"]] = asset_id
         for clip_name in voiced:
             link(clips[clip_name], asset_id, "voiced_by")
+            paired.add((clips[clip_name], asset_id))
         if role == "ambience":
             stats["audio:ambience"] += 1
         elif role == "unlinked":
             stats["audio:unlinked"] += 1
+
+    # ---- what the site STATES, which outranks the filename match --------------------------------
+    #
+    # `audio_role` pairs by filename stem and that is all the older builds give you. The newer ones
+    # declare it outright, and they are exactly the builds the stem rule fails on: susan 0 of 8,
+    # nancy 0 of 62, ebony 0 of 140, ebony2 0 of 62 clips voiced before this.
+    stated = missed = 0
+    for clip_name, sound_names in sorted(stated_pairs.items()):
+        for sound_name in sound_names:
+            if clip_name not in clips or sound_name not in sounds:
+                missed += 1                              # named but not imported — reported, not guessed
+                continue
+            edge = (clips[clip_name], sounds[sound_name])
+            if edge in paired:
+                continue
+            link(edge[0], edge[1], "voiced_by")
+            paired.add(edge)
+            stated += 1
+    if stated or missed:
+        report(f"    {stated} voiced_by edge(s) from the site's own configs"
+               + (f"; {missed} pairing(s) name a file this capture does not have" if missed else ""))
+        stats["rel:voiced_by:stated"] = stated
 
     # ---- the AUTHORED set: a figure and the clips that shipped in its own build ------------------
     #
@@ -202,6 +430,7 @@ def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, cache:
             for clip_id in clips_by_build.get(build, []):
                 link(asset_id, clip_id, "shipped_with")
 
+    _retire_containers()
     report(f"\n  {name}: " + ", ".join(f"{k} {v}" for k, v in sorted(stats.items())))
     return dict(stats)
 
@@ -209,7 +438,9 @@ def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, cache:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("capture")
-    ap.add_argument("--rebuilt", default="", help="the reconstructed GLBs (default temp/rebuilt/<name>)")
+    ap.add_argument("--models", "--rebuilt", dest="models", default="",
+                    help="the converted GLBs (default temp/things/<name>, one per THING — pass "
+                         "temp/rebuilt/<name> for the older one-per-container output)")
     ap.add_argument("--scope", default="daniel/agents/builder")
     ap.add_argument("--library", default="", help="catalog path (default: the real one)")
     ap.add_argument("--cache", default="", help="asset bytes dir (default: beside the catalog)")
@@ -217,7 +448,7 @@ def main() -> int:
     args = ap.parse_args()
 
     name = os.path.basename(args.capture.rstrip("/"))
-    rebuilt = args.rebuilt or os.path.join("temp/rebuilt", name)
+    models = args.models or os.path.join("temp/things", name)
     if not os.path.isdir(args.capture):
         print(f"{args.capture} is not a directory")
         return 2
@@ -227,7 +458,11 @@ def main() -> int:
     library = AssetLibrary(path)
     print(f"catalog: {path}\nbytes:   {cache}"
           f"{'' if args.commit else '   (DRY RUN — nothing will be written)'}")
-    run(args.capture, rebuilt, scope=args.scope, library=library, cache=cache, commit=args.commit)
+    if not os.path.isdir(models):
+        print(f"{models} is not a directory — compose it first with "
+              f"`playcanvas_rebuild.py {args.capture} --out {models} --compose`")
+        return 2
+    run(args.capture, models, scope=args.scope, library=library, cache=cache, commit=args.commit)
     return 0
 
 

@@ -51,7 +51,7 @@
     tick: function () {
       try {
         var CP = window.ConjurePointers;
-        var pointers = CP ? CP.controllers(this.el.sceneEl) : [];
+        var pointers = CP ? (CP.acting || CP.controllers).call(CP, this.el.sceneEl) : [];
         if (!pointers.length) { this._hideAll(); return; }
 
         var live = {};

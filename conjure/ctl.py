@@ -364,16 +364,348 @@ def cmd_caption(s: Settings, a) -> None:
           "(runs in the background on the server)")
 
 
+def parse_bones(specs) -> tuple[dict, str]:
+    """`--bone NAME:AXIS=VALUE` into the `pose` dict the endpoint takes. `(pose, error)`.
+
+    The one thing that needs care: `aim` takes a DIRECTION — a word (`up`) or a three-vector
+    (`0,1,1`) — while `bend`/`spread`/`turn` take degrees. Sending a string where the server wants a
+    number surfaces as a validation error three layers down that names neither the bone nor the flag,
+    so the split happens here where the input is still in front of you.
+    """
+    pose: dict = {}
+    for spec in specs:
+        bone, _, rest = spec.partition(":")
+        axis, _, value = rest.partition("=")
+        if not bone or not axis or value == "":
+            return {}, f"--bone wants NAME:AXIS=VALUE, got {spec!r}"
+        if axis == "aim":
+            parts = value.replace(",", " ").split()
+            if len(parts) == 3:
+                try:
+                    pose.setdefault(bone, {})[axis] = [float(x) for x in parts]
+                except ValueError:
+                    return {}, f"{value!r} is not a direction or a three-vector (in {spec!r})"
+            else:
+                pose.setdefault(bone, {})[axis] = value
+        else:
+            try:
+                pose.setdefault(bone, {})[axis] = float(value)
+            except ValueError:
+                return {}, f"{value!r} is not a number of degrees (in {spec!r})"
+    return pose, ""
+
+
+def cmd_pose(s: Settings, a) -> None:
+    """Put a placed figure into a named pose, adjust one bone, or clear it.
+
+    `--bone` is `NAME:AXIS=DEGREES` (`leftUpperArm:bend=45`) or `NAME:aim=DIRECTION`
+    (`rightUpperArm:aim=up`). Repeatable, and it composes onto a named pose — the endpoint merges per
+    BONE onto whatever is already there, so adjusting an arm does not reset the legs.
+    """
+    if a.clear:
+        _say(_post(s, "/figure", {"id": a.id, "clear": True}), a.verbose,
+             f"cleared the pose on {a.id}")
+        return
+    pose, bad = parse_bones(a.bone or [])
+    if bad:
+        print(f"error: {bad}")
+        return
+    if not pose and not a.named:
+        print("error: name a pose, or give at least one --bone (or --clear)")
+        return
+    body: dict = {"id": a.id}
+    if a.named:
+        body["named"] = a.named
+    if pose:
+        body["pose"] = pose
+    out = _post(s, "/figure", body)
+    if out.get("ok") is False:
+        _say(out, a.verbose, "")
+        return
+    # Both halves when there are two. `posed` comes back holding the NAMED pose's whole expansion —
+    # eleven bones for `kneel` — so printing it swallows the adjustment that was the point of the call,
+    # and printing only the name hides it completely. The bones asked for by hand are known here.
+    what = out.get("named") or ", ".join(out.get("posed") or []) or "nothing"
+    if out.get("named") and pose:
+        what += ", adjusted: " + ", ".join(sorted(pose))
+    lines = [f"{a.id}: {what} ({out.get('bones', 0)} bone(s) held)"]
+    # The refusals are the point of reporting at all. A joint limit silently clamping looked like the
+    # tool ignoring the request — the director asked for 90 degrees of hip extension twice in one
+    # session with nothing telling it otherwise.
+    if out.get("limited"):
+        lines.append("clamped by joint limits: " + ", ".join(str(x) for x in out["limited"]))
+    if out.get("skipped"):
+        lines.append("bones this figure does not have: " + ", ".join(out["skipped"]))
+    if out.get("needs"):
+        lines.append(f"needs something to rest on: {out['needs']} — nothing is put there for you")
+    _say(out, a.verbose, "\n".join(lines))
+
+
+def cmd_wear(s: Settings, a) -> None:
+    """Wear a placed hand model, take it off, dial its fingertips, or say what there is to wear.
+
+    `--hand auto` is the default and almost always right: which hand a model IS was measured from its
+    geometry at import, not read from the `_L` in its name. Wearing does not consume the model — it
+    occupies it, so `--hand off` puts it back exactly where it was placed.
+
+    A hand has to be PLACED before it can be worn, and nothing in this CLI placed a library model — so
+    `--place` does it, and `--pair` does both sides at once, which is what anyone actually wants.
+    """
+    a.tip_out_given = a.tip_out is not None or a.tip_thumb is not None
+    if a.tip_out is None:
+        # A bare `--tip-thumb` adjusts the thumb WITHOUT arguing with the offset already set, which is
+        # the whole point of dialling one number at a time.
+        a.tip_out = _worn_tip_out(s) if a.tip_thumb is not None else "0"
+    if a.tip_thumb is None:
+        a.tip_thumb = "1"
+    if a.pair:
+        return _wear_pair(s, a)
+    if not a.id:
+        # `--tip-out` with no id adjusts EVERY worn hand. It takes effect on the next frame — the
+        # component reads `tipOut` per frame and A-Frame replaces `this.data` on the patch, and there
+        # is no `update` handler to re-run `init`, so the skeleton, the bind pose and the captured rest
+        # all survive. Dialling a number in should not cost a reload, and it does not.
+        if a.tip_out_given:
+            return _wear_tip(s, a)
+        return _wear_list(s)
+    eid = a.id
+    if a.place:
+        put = _post(s, "/place_cached_asset", {"id": a.id, "name": a.name or None})
+        if not put.get("ok"):
+            print(f"wear: could not place {a.id}: {put.get('error', 'failed')}")
+            return
+        eid = put["id"]
+        print(f"placed {a.id} as {eid}")
+    out = _post(s, "/figure/hand", {"id": eid, "hand": a.hand, "tip_out": a.tip_out,
+                                    "tip_thumb": a.tip_thumb})
+    if not out.get("ok"):
+        print(f"wear: {out.get('error', 'failed')}")
+        return
+    if not out.get("worn"):
+        _say(out, a.verbose, "taken off — back where it was placed")
+        return
+    tip = f", fingertips out by {a.tip_out}" if a.tip_out not in ("0", 0) else ""
+    _say(out, a.verbose, f"{eid}: worn on the {out.get('hand')} hand, "
+                         f"{out.get('joints')} joints driven{tip}")
+
+
+def _wear_list(s: Settings) -> None:
+    out = _get(s, "/figure/hands")
+    placed, lib = out.get("placed") or [], out.get("library") or []
+    if placed:
+        print("placed, and wearable right now:")
+        for h in placed:
+            state = f"WORN on the {h['worn']}" if h["worn"] else "not worn"
+            tip = h.get("tip_out") or "0"
+            if h["worn"] and tip not in ("0", ""):
+                state += f", fingertips out by {tip}"
+                thumb = h.get("tip_thumb") or "1"
+                if thumb not in ("1", ""):
+                    state += f" (thumb ×{thumb})"
+            print(f"  {h['id']:<22} {h['side'] or '?':<6} {h['label'][:22]:<22} {state}")
+        print("\n  wear --tip-out 8 | radius | off       dial the fingertips, live"
+              "\n  wear --tip-thumb 0.8                 ...and the thumb on its own")
+    if lib:
+        print("\nin the library — place one with `wear <asset-id> --place`:")
+        for h in lib:
+            dress = ", ".join(h.get("materials") or []) or "NO MATERIALS — it will render grey"
+            print(f"  {h['id']:<24} {h['side'] or '?':<6} {h['label'][:20]:<20} {dress}")
+    if not placed and not lib:
+        # Two absences with one appearance, so say which. A library catalogued before hands existed
+        # has no `hand_wearable` on any row and needs a refresh; a library with no hand models in it
+        # needs an import, and a refresh would waste the time.
+        print("no wearable hands. If you have hand models, they were catalogued before hands were\n"
+              "measured — RESTART THE SERVER and run `refresh-models`, which re-derives what the\n"
+              "server process knows rather than what is on disk.")
+    if not placed and lib:
+        print("\n  conjure-ctl wear --pair          places both sides and wears them")
+
+
+def _worn_tip_out(s: Settings) -> str:
+    """What the worn hands are already set to, so one knob can be turned without resetting another."""
+    worn = [h for h in (_get(s, "/figure/hands").get("placed") or []) if h["worn"]]
+    return next((h.get("tip_out") or "0" for h in worn), "0")
+
+
+def _wear_tip(s: Settings, a) -> None:
+    """Push the fingertips of every WORN hand in or out, live."""
+    worn = [h for h in (_get(s, "/figure/hands").get("placed") or []) if h["worn"]]
+    if not worn:
+        print("nothing is worn — `wear --pair` first, then `wear --tip-out MM` to dial it")
+        return
+    done = []
+    for h in worn:
+        out = _post(s, "/figure/hand", {"id": h["id"], "hand": h["worn"],
+                                        "tip_out": a.tip_out, "tip_thumb": a.tip_thumb})
+        if out.get("ok"):
+            done.append(h["id"])
+        else:
+            print(f"wear: {h['id']}: {out.get('error', 'failed')}")
+    _say({"ok": bool(done), "adjusted": done, "tip_out": a.tip_out}, a.verbose,
+         f"fingertips out by {a.tip_out} on {', '.join(done)} — live, no reload")
+
+
+def _wear_pair(s: Settings, a) -> None:
+    """Place both hands and wear them — the whole test, in one command.
+
+    **Matched on MATERIAL NAMES, not taken in order.** The catalog's hand files are not one pair: two
+    are the textured VR set, one is an orphaned AR left, and two rights carry no materials at all.
+    Taking the first of each side put a grey untextured right next to a textured left on the first
+    wearing, which reads as a broken import rather than as two files that were never a pair.
+    """
+    lib = (_get(s, "/figure/hands").get("library") or [])
+    lefts = [h for h in lib if h["side"] == "left"]
+    rights = [h for h in lib if h["side"] == "right"]
+    chosen = {}
+    for left in lefts:                       # already best-dressed first
+        mate = next((r for r in rights if r["materials"] == left["materials"]), None)
+        if mate:
+            chosen = {"left": left, "right": mate}
+            break
+    if not chosen:
+        # No two agree, so say so rather than assembling a mismatched pair in silence.
+        if lefts and rights:
+            print("wear: no matching pair — no left and right share a material set. Taking the "
+                  "best-dressed of each; expect them to look different.")
+        chosen = {"left": lefts[0] if lefts else None, "right": rights[0] if rights else None}
+
+    worn = []
+    for side in ("left", "right"):
+        have = chosen.get(side)
+        if not have:
+            print(f"wear: no {side} hand in the library")
+            continue
+        put = _post(s, "/place_cached_asset", {"id": have["id"], "name": f"hand_{side}"})
+        if not put.get("ok"):
+            print(f"wear: could not place the {side} hand: {put.get('error', 'failed')}")
+            continue
+        out = _post(s, "/figure/hand", {"id": put["id"], "hand": side,
+                                        "tip_out": a.tip_out, "tip_thumb": a.tip_thumb})
+        if out.get("ok"):
+            worn.append(f"{put['id']} ({side})")
+        else:
+            print(f"wear: placed {put['id']} but could not wear it: {out.get('error')}")
+    _say({"ok": bool(worn), "worn": worn}, a.verbose,
+         ("wearing " + ", ".join(worn)) if worn else "nothing worn")
+
+
+def cmd_dress(s: Settings, a) -> None:
+    """Turn parts of a figure off and on — clothing, hair, shoes, accessories.
+
+    `--hide`/`--show` take a CATEGORY or a single mesh name; `--only-body` strips everything removable,
+    hair included, which is almost never what "take her dress off" means."""
+    body = {"id": a.id, "hide": a.hide or [], "show": a.show or [], "only_body": bool(a.only_body)}
+    out = _post(s, "/figure/parts", body)
+    if out.get("ok") is False:
+        _say(out, a.verbose, "")
+        return
+    by_cat = out.get("hidden_by_category") or {}
+    # By CATEGORY as well as by mesh: a list of mesh names is not something anyone reads back.
+    summary = ", ".join(f"{c} ({len(n)})" for c, n in sorted(by_cat.items())) if by_cat else "nothing"
+    lines = [f"{a.id}: hidden — {summary}"]
+    if out.get("hidden"):
+        lines.append("  meshes: " + ", ".join(out["hidden"]))
+    # What is STILL ON, not what the figure owns. `removable` is the total per category and reads as a
+    # remainder next to a list of what just came off — it said `clothing (2)` with both already hidden.
+    groups = out.get("removable") or {}
+    left = {k: n - len(by_cat.get(k) or []) for k, n in groups.items()}
+    left = {k: n for k, n in left.items() if n > 0}
+    lines.append("  still on: "
+                 + (", ".join(f"{k} ({n})" for k, n in sorted(left.items())) or "nothing removable"))
+    if out.get("unknown"):
+        lines.append("  neither a category nor a mesh here: " + ", ".join(out["unknown"]))
+    _say(out, a.verbose, "\n".join(lines))
+
+
+def cmd_clips(s: Settings, a) -> None:
+    """What a figure can dance to. Two lists, never merged: what SHIPPED with her, and what merely fits
+    her rig — `--all` for the second, which is much the larger and much the less trustworthy (many clips
+    are authored around furniture that is not in the room)."""
+    q = (f"/figure/clips?id={a.id}" + ("&all=true" if a.all else "")
+         + (f"&kind={a.kind}" if a.kind else "") + ("&voiced=true" if a.voiced else ""))
+    out = _get(s, q)
+    if out.get("ok") is False:
+        _say(out, a.verbose, "")
+        return
+
+    def show(rows):
+        for r in rows:
+            secs = f"{r['duration_s']:.0f}s" if isinstance(r.get("duration_s"), (int, float)) else "?"
+            print(f"  {(r['label'] or ''):16} {(r.get('kind') or 'clip'):7} {secs:>6}"
+                  f"{'  voiced' if r.get('voiced') else '        '}  {r['id']}")
+
+    shipped = out.get("shipped") or []
+    print(f"{a.id} — rig {out.get('rig_sig') or 'unknown'}")
+    print(f"shipped with her ({len(shipped)}):")
+    show(shipped) if shipped else print("  none")
+    if a.all:
+        other = out.get("compatible") or []
+        print(f"also fits this rig ({len(other)}) — authored for other figures:")
+        show(other) if other else print("  none")
+    elif out.get("compatible_count"):
+        print(f"{out['compatible_count']} more fit this rig — pass --all to list them.")
+
+
+def cmd_clip(s: Settings, a) -> None:
+    """Play a clip on a figure, or `--stop`. The clip is a label or an asset id; a label resolves to the
+    one that shipped with THIS figure, since `10_action` is eleven different clips library-wide."""
+    if a.stop or not a.clip:
+        # No clip named is the same request as `--stop`, and it has to be routed here: the endpoint
+        # answers an empty clip with the STOP shape, which has no `clip` key to print.
+        _say(_post(s, "/figure/clip", {"id": a.id, "stop": True}), a.verbose,
+             f"stopped the animation on {a.id}")
+        return
+    body = {"id": a.id, "clip": a.clip, "loop": not a.once, "force": a.force}
+    if a.speed is not None:                    # absent means "use the rate the capture authored"
+        body["speed"] = a.speed
+    out = _post(s, "/figure/clip", body)
+    if out.get("ok") is False:
+        _say(out, a.verbose, "")
+        for c in out.get("candidates") or []:
+            print(f"  {c['id']}  {c.get('tags') or 'untagged'}")
+        return
+    secs = out.get("duration_s")
+    length = f", {secs:.0f}s" if isinstance(secs, (int, float)) else ""
+    if out.get("voiced"):
+        voice = ", with her voice"
+    elif out.get("voiced_alternatives"):
+        voice = f" — silent; {out['voiced_alternatives']} of her clips are voiced (--voiced lists them)"
+    else:
+        voice = " — silent"
+    _say(out, a.verbose,
+         f"playing {out.get('label') or out['clip']} on {a.id}{length}"
+         f"{' (looping)' if out.get('loop') else ''}{voice}"
+         + (f"\nwarning: {out['warning']}" if out.get("warning") else ""))
+
+
 def cmd_refresh_models(s: Settings, a) -> None:
     """Re-derive every model's catalog attributes from its bytes — bone map, frame, joint limits, and
     whether it is a figure at all. Placement does this one model at a time; this is the batch form, for
     after a build that changes what extraction knows."""
     _working("re-extracting models…")
     out = _post(s, "/library/refresh-models", {"force": bool(a.force)})
+    # A refresh runs INSIDE the server, so it can only derive what that process's code knows. A server
+    # started before a build reports "0 of 98 updated" and reads as "the build needed no refresh" —
+    # measured: a server 23 hours old against a FRAME_REV that had moved 18 -> 19, and `--force` would
+    # not have helped either, because the old process has no idea the new attributes exist.
+    from .figures import FRAME_REV as LOCAL_FRAME_REV
+    running = out.get("frame_rev")
+    if running != LOCAL_FRAME_REV:
+        # ABSENT counts as stale, and has to: the field was added by the same build that needed this
+        # warning, so a server old enough to be the problem is also too old to report its revision.
+        # Leaving `None` unhandled meant the one case the check existed for was the one it skipped.
+        seen = "does not report one" if running is None else f"is at {running}"
+        print(f"  ! this server's FRAME_REV {seen}; the code on disk is at {LOCAL_FRAME_REV}.\n"
+              f"    A refresh derives what the SERVER knows, so RESTART IT and run this again — "
+              f"--force will not help, the running process cannot see the new attributes.")
     updated = out.get("updated") or []
     for row in updated:
         print(f"  {row['label'] or row['id']}: rigged={row['rigged']} bones={row['bones']}")
-    _say(out, a.verbose, f"{len(updated)} of {out.get('checked', 0)} model(s) updated.")
+    tail = ""
+    if out.get("clips_respelled"):
+        tail = (f" {out['clips_respelled']} of {out.get('clips_checked', 0)} clip signature(s) "
+                f"re-derived.")
+    _say(out, a.verbose, f"{len(updated)} of {out.get('checked', 0)} model(s) updated.{tail}")
 
 
 def cmd_retag_skyboxes(s: Settings, a) -> None:
@@ -486,6 +818,64 @@ def build_parser() -> argparse.ArgumentParser:
     a = sub.add_parser("refresh-models", help="re-derive model attributes (figures, bone maps, limits)")
     a.set_defaults(fn=cmd_refresh_models)
     a.add_argument("--force", action="store_true", help="re-extract even rows already up to date")
+
+    a = sub.add_parser("pose", help="pose a placed figure (named pose, or bone by bone)")
+    a.set_defaults(fn=cmd_pose)
+    a.add_argument("id", help="the ENTITY id of a placed figure")
+    a.add_argument("named", nargs="?", default="", help="a pose from the library: kneel, sit, wave, …")
+    a.add_argument("--bone", action="append", metavar="NAME:AXIS=VAL",
+                   help="leftUpperArm:bend=45 · rightUpperArm:aim=up — repeatable, composes onto `named`")
+    a.add_argument("--clear", action="store_true", help="drop the pose, back to the bind pose")
+
+    a = sub.add_parser("dress", help="hide/show a figure's clothing, hair, shoes, accessories")
+    a.set_defaults(fn=cmd_dress)
+    a.add_argument("id", help="the ENTITY id of a placed figure")
+    a.add_argument("--hide", action="append", metavar="CATEGORY|MESH",
+                   help="clothing · shoes · hair · accessory — or one mesh name. Repeatable")
+    a.add_argument("--show", action="append", metavar="CATEGORY|MESH", help="…and to bring back")
+    a.add_argument("--only-body", dest="only_body", action="store_true",
+                   help="strip everything removable, HAIR INCLUDED")
+
+    a = sub.add_parser("wear", help="drive a placed HAND model from your tracked hand")
+    a.set_defaults(fn=cmd_wear)
+    a.add_argument("id", nargs="?", help="the ENTITY id of a placed hand — or an ASSET id with "
+                                         "--place. With neither, lists what there is to wear")
+    a.add_argument("--hand", default="auto", choices=["auto", "left", "right", "off"],
+                   help="auto pairs on the MEASURED side (default); off puts it back down")
+    a.add_argument("--place", action="store_true",
+                   help="the id is a LIBRARY asset: place it first, then wear it")
+    a.add_argument("--name", help="entity id to place it as (with --place)")
+    a.add_argument("--pair", action="store_true",
+                   help="place BOTH hands from the library and wear them — the whole test in one")
+    # `default=None` and a separate flag, because 0 is a REAL value here: "put them back exactly
+    # where the runtime says" is the thing you dial back to, and it must be distinguishable from
+    # not having asked.
+    a.add_argument("--tip-thumb", dest="tip_thumb", default=None, metavar="K",
+                   help="coefficient on the THUMB's radius in `radius` mode. Its own axis because a "
+                        "thumb's radius is the half-width of a broad flat pad and overstates how far "
+                        "its tip protrudes; 1 = no special case")
+    a.add_argument("--tip-out", dest="tip_out", default=None, metavar="MM|radius",
+                   help="push each fingertip out along its own bone: millimetres (`8`), `radius` for "
+                        "one tip radius as the RUNTIME reports it (`radius:0.8` scales it), or `off` "
+                        "to put them back exactly where the runtime says")
+
+    a = sub.add_parser("clips", help="list the animations a placed figure can play")
+    a.set_defaults(fn=cmd_clips)
+    a.add_argument("id", help="the ENTITY id of a placed figure (see `conjure-ctl` with no args)")
+    a.add_argument("--all", action="store_true", help="also list clips that merely fit her rig")
+    a.add_argument("--kind", help="idle | action")
+    a.add_argument("--voiced", action="store_true",
+                   help="only clips carrying a voice track — it plays automatically with the animation")
+
+    a = sub.add_parser("clip", help="play an animation on a placed figure"); a.set_defaults(fn=cmd_clip)
+    a.add_argument("id", help="the ENTITY id of a placed figure")
+    a.add_argument("clip", nargs="?", default="", help="clip label or asset id")
+    a.add_argument("--stop", action="store_true", help="stop whatever is playing")
+    a.add_argument("--once", action="store_true", help="play through once instead of looping")
+    a.add_argument("--speed", type=float, default=None,
+                   help="override the rate the capture authored for this clip")
+    a.add_argument("--force", action="store_true",
+                   help="play a clip from a DIFFERENT rig — it will look wrong; that is the point")
 
     a = sub.add_parser("retag-skyboxes", help="re-tag wide backfilled images as skyboxes")
     a.set_defaults(fn=cmd_retag_skyboxes)

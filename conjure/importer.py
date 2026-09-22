@@ -348,6 +348,36 @@ def glb_bounds(doc: dict, blob: bytes = b"") -> Optional[tuple[list[float], list
 #: map is the whole point of the figures pipeline: every later capability — posing, retargeting an
 #: animation, "raise her left arm" — needs a per-model translation from a semantic name to that model's
 #: own node. VRM is the one source that states it outright (docs/backlogs/figures.md, discovery layer 1).
+def _face_attrs(doc: dict) -> dict:
+    """What a figure's morph targets are, rather than how many rows they occupy.
+
+    Three attributes instead of one count:
+
+        morph_targets       how many DISTINCT targets — the number the old one meant to be
+        morph_names         what they are called, so a face can be driven without re-reading the GLB
+        expression_scheme   "vrm" | "cc" | "" — which of the two expression rigs this is
+        facial_morphs       how many of the targets are a FACE
+
+    The last one is the query that matters and the only one that answers it. 22 of 38 rigged figures
+    carry morph targets; **two** carry a face. The rest are `Body_Alabaster`, `Shirt_Blue`, `Pussy2`,
+    `Vagina_Open` — wardrobe, skin tone and anatomy. A count of targets says a figure is expressive
+    when it can only change its shorts.
+    """
+    from .expressions import EXPRESSION_REV, facial, scheme_of
+    from .figures import morph_names
+
+    names = morph_names(doc)
+    if not names:
+        return {"morph_targets": 0}
+    return {
+        "morph_targets": len(names),
+        "morph_names": names,
+        "expression_scheme": scheme_of(names),
+        "facial_morphs": len(facial(names)),
+        "expression_rev": EXPRESSION_REV,
+    }
+
+
 def vrm_humanoid(doc: dict) -> Optional[dict]:
     """`{semanticBone: nodeName}` from a VRM's humanoid map, or None if this isn't a VRM.
 
@@ -406,9 +436,11 @@ class ModelImporter(AssetImporter):
                         "height_m": round(hi[1] - lo[1], 4),
                         "joints": [len(s.get("joints", [])) for s in doc.get("skins", [])],
                         "clips": [a.get("name") for a in doc.get("animations", [])],
-                        "morph_targets": sum(len(p.get("targets", []))
-                                             for m in doc.get("meshes", [])
-                                             for p in m.get("primitives", [])),
+                        # DISTINCT names, not a sum over primitives. The old count added a target
+                        # once per primitive it appears in and once per mesh sharing the vocabulary:
+                        # Saka read 399 for 57 real targets, Alice 172 for 34. "Who can smile" was
+                        # already a query and it was querying a number with no meaning.
+                        **_face_attrs(doc),
                     })
                     humanoid = vrm_humanoid(doc)
                     if not humanoid:
@@ -484,6 +516,15 @@ class ModelImporter(AssetImporter):
                             attributes["parts_unclassified"] = found["unclassified"]
                     except Exception as exc:  # noqa: BLE001 — a figure without a wardrobe still poses
                         print(f"[conjure] parts classification failed for {filename}: {exc}")
+                    # A HAND YOU CAN WEAR is a different thing from a figure and shares none of its
+                    # machinery: no vocabulary to discover, nothing to retarget, and the side MEASURED
+                    # from the geometry rather than read out of the filename. `describe` returns {} for
+                    # everything that is not one, so this costs a name check on every other model.
+                    try:
+                        from .hands import describe as describe_hand
+                        attributes.update(describe_hand(doc))
+                    except Exception as exc:  # noqa: BLE001 — never fail an import over it
+                        print(f"[conjure] hand extraction failed for {filename}: {exc}")
         # Stamped on EVERY model, not only the ones that turn out to be figures. The stamp records which
         # build looked at this file, and "we looked and it is a prop" is exactly as much worth recording
         # as a bone map — three rigged characters sat in the catalog as props because an earlier ingest

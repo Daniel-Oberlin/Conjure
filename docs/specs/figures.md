@@ -415,11 +415,31 @@ Only nodes carrying a **mesh** are parts. A bone called `DEF_Skirt01` drives a g
 hiding it would do nothing while implying it had.
 
 `attributes.parts_unclassified` is **reported, not swallowed** — it is the vocabulary's backlog and the
-only honest measure of its coverage. Across all twenty captured figures exactly one name is unclassified:
-`Beer`, genuinely a prop mesh inside a figure.
+only honest measure of its coverage, and it works as one: `Beer` sat on it as the single unclassified
+name across the twenty captured figures until `held` was added for it (revision 2). What remains there is
+one mesh literally named `New Entity`, and that stays unclassified, because inventing a category for a
+name that means nothing is how a classifier starts lying.
+
+**Scoped to the captures, and the scope shows.** The vocabulary was fitted to 96 mesh names from one
+origin, and the dev-library models use a different dialect: 30 names across nine of them are
+unclassified — `Genesis 8 Female Mesh`, `Grace_Mesh`, `Character`, `Woman`, `Shaun` are all bodies, and
+`Eye_L`, `eyelid`, `Mouth`, `Face`, `Tearline` are all face. Neither is a defect in the classifier; it
+is what "the vocabulary is data and is never finished" means in practice, and the backlog list is doing
+exactly the job it exists for. The Quest controller and the VR hands are unclassified too and should
+stay so — they are the app's own machinery rather than figures, and a controller button is not clothing.
 
 `body` and `face` are **never removable**: taking the eyes out of a head is not undressing it. `hair` is
 removable and is **not** clothing — stripping a figure to check its integrity should not scalp it.
+
+**`held` is what the figure carries, not what she wears.** Oktoberfest's beer is the case: `accessory`
+means worn, so filing a pint there means "take off your beer". It is removable — putting it down is a
+thing people ask for — and ordered after `shoes` and before `accessory`, which matters both ways.
+
+The tempting rule was structural and is wrong. The beer is the only unskinned mesh in the corpus
+parented to a HAND bone (`DEF-hand.R`), so it rides her arm through a clip — but bone-parenting alone
+misclassifies three of the four cases that have it: bride's two heels hang off `DEF-foot` and teacher's
+glasses off the head. Telling them apart needs the humanoid map, and the names answer it correctly
+without one. **The structure is why the category exists; the vocabulary is how it is decided.**
 
 ## 6. Placement
 
@@ -463,11 +483,27 @@ graph.**
 ## 7. `FRAME_REV` — a catalog row is a snapshot of what we understood
 
 A figure's map, frame and limits are **cached in the catalog**, and understanding keeps changing while
-rows do not. `figures.FRAME_REV` (**14** today) is bumped whenever anything that changes a derived
+rows do not. `figures.FRAME_REV` (**18** today) is bumped whenever anything that changes a derived
 result changes — inference, the axes, `validate()`, the convention table, which skin is chosen, the
 parts vocabulary.
 
-`figures.RIG_SIG_REV` (**1**) is a **separate** stamp, and the separation is the point: a discovery fix
+`retarget.RETARGET_REV` (**7**) is the same idea for a different artefact. A retargeted clip is
+DERIVED and cached under a content address, and a content address fingerprints the bytes rather than the
+method that made them — so without a stamp, a pair retargeted by an older build is handed back forever.
+That is not hypothetical: the fix for an unmapped rotating ancestor landed, the server was restarted,
+and the figure kept swinging exactly as before, because the cache still held the clip made before it.
+**Anything derived and cached carries the revision of the code that derived it**; this is the second
+artefact to need that rule and it should be assumed for the third.
+
+**A signature is a comparison between two rows, so backfilling one side is worse than backfilling
+neither.** `RIG_SIG_REV` 1 → 2 respelled every FIGURE's signature when the humanoid grew fingers, and
+`refresh-models` walked the models and stopped there, because the name says models. Every clip stayed
+stamped with a signature computed over the old vocabulary — so Alice stopped matching her OWN clip, the
+server read a mismatch and offered to retarget her onto herself, and every shipped-clip lookup came back
+empty. A backfill that reported success and broke the catalog's playback. `refresh-models` now
+re-derives both sides in one pass.
+
+`figures.RIG_SIG_REV` (**3**) is a **separate** stamp, and the separation is the point: a discovery fix
 can change a signature without changing what a signature *means*, and the two need telling apart when
 regrouping a catalog. Bump it only when the definition changes — which bones the fingerprint covers, or
 how it is spelled.
@@ -497,6 +533,11 @@ A sibling to `figure`, and deliberately **generic**: it hides the glTF nodes it 
 nothing about garments. One field, `hidden` — a JSON array of node names — because what counts as
 clothing was decided at import where the answer is recorded and correctable.
 
+`inspect_figure` reports what comes **off** beside what bends, and that is not decoration: it is the
+tool a director reaches for when asked "what is she wearing", and while it listed only bones the
+director answered *"a unified mesh with no detachable parts"* about a figure carrying seven. A tool's
+silence gets quoted back as fact.
+
 `POST /figure/parts` (`dress_figure`) resolves the semantics: it takes **categories** or node names,
 expands categories against the entity's `meta.parts`, and writes node names to the component. So the
 classifier proposes and **the entity holds the truth** — a wrong grouping is corrected by naming the
@@ -511,6 +552,361 @@ does nothing and looks like a broken tool.
 **A figure with no classified parts is not a figure that cannot be undressed.** Its clothing may be a
 separate container — Jane's `hair.glb` and `underwear.glb` are their own assets — which is a different
 mechanism: remove that entity. The endpoint says so rather than returning success and doing nothing.
+
+### 8b. The `figure-clip` component — playing a captured animation
+
+A clip is a GLB containing **animation channels and no mesh at all** — which is how these builds ship
+motion: 47.7 MB of clips against a 5 MB character, loaded only when one is played. It binds to a figure
+**by node name**, and that is the whole reason it is reusable.
+
+The numbers are measured, not assumed. Jane's `1_idle` names 222 target nodes; on three other figures
+sharing her rig signature it resolves **222 of 222**, and on the rest of the `85e41f9b8e` cast 171–187.
+Her model has **21 clips that shipped with it and 314 that merely fit**. Channels naming a bone the
+target does not have are dropped before the mixer is built, because three's alternative is one console
+warning per unresolved binding and no way to tell whether the clip half-played or not at all.
+
+**What a clip is allowed to write, and it is less than it contains.** A captured clip states far more
+than motion — the exporter writes a channel per bone per property — and the surplus is actively
+dangerous. Four rules, and all four came from one playback: Alice animated with
+`WhiteboardIdleFIXFIXU` grew a hundredfold, left the room through the ceiling, lost her clothes, and
+appeared pinned to the viewer, because a figure that large has no parallax.
+
+| dropped | why |
+|---|---|
+| any track on the node the mixer is ROOTED at | that node is placement and unit conversion. Alice's `RootNode` carries `scale 0.01`, cm→m, and the clip carries a `RootNode` scale track of `[1,1,1]`. Writing 1 over 0.01 is the whole bug |
+| a CONSTANT scale track, anywhere | measured over 120 clips, **22,714 of 22,718 scale tracks never change value**. They animate nothing and each is the same trap waiting for a model whose rest scale is not 1. The 4 that move are kept |
+| a CONSTANT position track | a rest offset restated. Dropping it leaves the TARGET's own proportions in place, which is what retargeting wants |
+| a track whose node the model lacks | three warns once per unresolved binding — 51 lines for one clip — and the warning is all you get |
+
+An **animating** position track is not dropped but **re-based**: frame 0 is pinned to the model's own
+rest and the curve rides on top. `CC_Base_BoneRoot` sweeps 294→316 units where Alice rests at 0, which
+is three metres of displacement before she has moved — the clip is stating where the figure stood in
+the scene it was captured from. **Motion is the clip's business and location is the entity's.**
+
+**Time comes from the shared clock, never from frame deltas.** The entity stores the instant the clip
+STARTED and each client computes its own offset into it. Two headsets are then on the same frame with no
+per-frame message, and a client that joins late, stalls, or backgrounds for a minute lands on the right
+frame the next time it draws. Accumulating `delta` per client guarantees the opposite: they start at
+different moments, drop different frames, and nothing ever pulls them back. So `tick` SEEKS —
+`action.time = f(sharedClock)` then `mixer.update(0)` — rather than advancing.
+
+**Precedence, stated rather than discovered: a playing clip wins, a pose applies when idle.** Both write
+the same bones, so without a rule the mixer wins every frame simply by running later and the pose looks
+broken rather than overridden. Stopping calls `figure.restore()`, which puts EVERY bone back on its bind
+pose — rotation and position, since a clip translates and a pose never does — and re-applies the pose.
+`figure.apply()` could not do this job: it only resets bones it posed, and a clip writes 222 of Jane's
+while a pose names six.
+
+**Across rig signatures, binding by name resolves nothing**, and it is the failure that does not
+announce itself: the clip resolves whichever handful of names happen to coincide and drives the figure
+by those, which reads as a broken figure rather than a mismatched clip. So the channels are **rewritten**
+rather than bound — §8c — and `force` still exists for binding by name across the mismatch and looking
+at the wreck deliberately.
+
+**A label resolves to HER clip first.** `10_action` is eleven different clips across the library, but
+asked of a particular figure the question is not ambiguous: it means the one that shipped with her. Only
+when no shipped clip matches does the endpoint fall back to refusing and listing candidates — refusing
+outright made the label path useless for the only caller that has one, since an asset id is not
+something a person says out loud.
+
+**The voice is part of the clip, and the tool surface has to SAY so.** On device the director
+answered *"I don't have a way to add audio/sound to the scene — there's no audio tool available to me"*
+while Barbie's voice was already playing: the capability existed, and nothing a director reads
+mentioned it. So `play_clip`'s description states it outright, a silent clip reports how many of hers
+are voiced rather than reporting no audio, and `list_clips(voiced=True)` exists because "animate her
+with sound" is a FILTER, not a missing feature. A tool's silence gets quoted back to the user as a
+limitation — the same failure as `inspect_figure` omitting parts and the director then calling a figure
+with seven of them "a unified mesh".
+
+**The voice travels with the clip.** 20 of Jane's 21 clips have one, and the link is many-to-many — one
+file serves four clips — so it is a `voiced_by` relation rather than a column. It is sent in the same
+patch, off the same stamped instant, because two arrivals would mean two start times and a body out of
+sync with its own speech is the one thing an audience notices immediately. Played through a media
+element rather than a decoded buffer for one reason: `currentTime` is writable, so a client joining
+mid-clip starts the voice where the body already is. A browser may refuse to start audio without a
+gesture; that is a refusal and not an error — the clip keeps playing and the voice joins on the next
+one.
+
+**A resolved `play()` is not a sound, and that is the trap.** An `AudioContext` created outside a user
+gesture starts SUSPENDED, and routing a media element through it means the element plays, the promise
+resolves, nothing throws — and the output goes into a stopped graph. Silence that reports success. It
+shipped that way and the director duly announced *"her voice is playing along with it"* to a browser
+making no noise. So the context state is re-checked AFTER the promise resolves, not only in the catch,
+and the gesture hook resumes the context as well as replaying the element — and re-seeks, because the
+body has moved on while the voice was waiting.
+
+**One element per voice, and the guard is on the URL rather than on the clip.** `_audio` runs twice per
+clip change — from `update`, and again when the GLB finishes loading — and `update` only tears down
+when the CLIP ID changes. So replaying one clip at a different rate, or any patch touching the
+component without changing the clip, reached `_audio` with nothing torn down; it built a second media
+element for the same URL and overwrote `_media` with it, leaving the first unreachable. Nothing
+referenced it, so no later `_silence()` could pause it, and it played on underneath everything after
+it — reported from a headset as *"sometimes I think the old sound is still playing"*. A voice already
+playing is now re-seeked in place, and the deferred `begin()` checks it has not been superseded, which
+is the guard the gesture hook beside it always had.
+
+`GET /figure/clips` answers with **two lists that are never merged**: what `shipped_with` this figure,
+and what its `rig_sig` says can play. Compatibility is not sufficiency — 93 of 206 clip names call out a
+fixture (bed 30, sink 18, toilet 12) — so a clip that binds perfectly still puts a figure leaning on a
+sink that is not there. The authored set is the default and reaching past it takes `all=true`. See
+[`decisions.md`](../decisions.md) §27.
+
+### 8c. Retargeting — a clip rewritten for a rig it was not authored for
+
+`conjure/retarget.py`, server-side, producing an ordinary clip. Until it existed, ten figures in the
+catalog could be offered no clip at all.
+
+**On the server, and the output is just a clip.** The alternative was to send both skeletons to the
+client and do the algebra there, and it is worse in every way that matters: the output is a function of
+two files and nothing else, so it content-addresses and is computed once per (clip, rig) pair ever; the
+client keeps its one bind-by-name path; and the arithmetic stays next to the tests that pin it.
+
+**Both inputs describe themselves.** A clip GLB carries no mesh and no skin, but it does carry its
+authoring rig's NODES, so the source rig's rest pose and its humanoid map are both recoverable from the
+clip alone and nothing has to be looked up.
+
+#### The law: carry the pose ABSOLUTELY
+
+Preserving each bone's rotation relative to its own rest is the obvious method and it is wrong, because
+two rigs rest differently: if one rests arms-down and the other arms-out, a clip that puts the first's
+arms straight down sends the second's half way. What survives the crossing is **where the limb IS**. So
+each rig's axis CONVENTION is divided out instead of its rest POSE:
+
+```
+C   a convention-free rest frame per bone, built from where its limb POINTS
+K   = C⁻¹ · R           what is left of the authored rest once the physical part is removed
+Wt  = Ws · Ks⁻¹ · Kt    the source's orientation, respelled in the target's convention
+```
+
+Then, top-down, the local rotation that achieves `Wt` against the parent's **already-moved** world.
+Using the parent's rest instead is the obvious shortcut and it fails the identity case by 32°.
+
+**There is no whole-body term, and there was one.** `swing = Bt · Bs⁻¹` aligned the two rigs' rest body
+frames, on the reasoning that a figure whose armature rests leaning should perform in HER frame. Wrong
+twice. glTF fixes the world frame at Y-up, so there is no world-frame CONVENTION between two GLBs to
+divide out — a difference between two rest body frames is a difference in rest POSE, and not carrying
+rest pose is the whole of this law. Measured across every rig signature in the catalog: all eleven are
+Y-up and Z-forward, their body frames 0.1°–9.6° off world, and every one of those is a lean about the
+side axis, never a right angle. And the lean is a lean of the spine BONES, which the absolute carry
+already reproduces — so `swing` added it a second time. On `LayTableIdle` that was the whole of a
+reported tilt: figures spread over 11.7° from vertical, and 2.9° without the term.
+
+**`hips → neck` is the chord of a curved spine, not an axis**, which is why the rest geometry cannot
+name a convention to better than about 10°. A body is not square. Building the body frame from the legs
+instead is no better (0.4°–7.9°).
+
+#### What the law does not carry, and the number for it
+
+Limb directions land within **4.9–7.2°** of the source across the catalog, against a **5.3° floor** —
+the floor being `Jane → Jane`, the same clip on its own rig, where the only difference is channel loss.
+Read every figure as its excess over that, never as an absolute.
+
+The residual is **the law's approximation, not a defect**: `K = C⁻¹·R` is exact only where two rigs'
+rest limbs point the same way, and where a limb bends away from that the conversion carries a few
+degrees. It shows up in the time domain as a body wobble of 2–8° against a native 0.7°, alternating
+perfectly with the pose — agreeing exactly at the ends of a cycle and differing in the middle.
+
+**Three refusals**, all of which are better than an approximation: a clip whose own rig has no humanoid
+map (there is nothing to map its channels *through*), a figure with no map (Tamaki — binding by name
+would resolve nothing and play silence while reporting success), and a clip that drives no bone the
+target has.
+
+**Three notes it reports rather than swallows.** Channels that drive bones the humanoid does not name —
+skirt, breast and secondary chains, 52 of them on a 104-channel clip. A target whose bone map is not a
+CHAIN, so motion cannot compose through it and that part of the body lags; reported separately for the
+body and for the fingers, because a broken torso is the performance and a broken finger is cosmetic.
+And bones the clip SLIDES that have nowhere on the target to land.
+
+#### What a rewrite has to carry beyond rotation
+
+Each of these was a defect seen on a headset before it was a rule.
+
+| | |
+|---|---|
+| **an unmapped ANCESTOR is part of the pose** | Alice's `CC_Base_BoneRoot` rotates 36.3° while the hips under it rotate 38.6° the other way; the two nearly cancel and what you see is a SLIDE. Reading the hips' world from the mapped subset reported the full 38.6° as real, and the figure swung bodily about her own axis |
+| **translation, for every shared bone** | not only the rotated ones. A hip shifts weight without turning, and keying translation off the rotation set dropped exactly those |
+| **the armature's UNITS, not only its axes** | a carried translation goes out to world and back. Alice's armature bakes centimetres (parent scale 0.01), Grace's metres; converting axes alone slid a figure a metre |
+| **an ancestor's slide, into the hips** | when the sliding node has no counterpart on the target, its displacement folds into the target's hips rather than being lost |
+| **LINEAR output** | keys are emitted at the union of every source key time, so between two output keys no source channel has one either — the source interpolates there and the target must too. Written `STEP`, the target held each pose and jumped |
+
+#### The fingers
+
+The humanoid names **52 bones, not 22**: five fingers × three joints × two hands, spelled as VRM 0.x
+spells them, because `vrm_humanoid` already hands us `leftIndexProximal` from a file's own extension
+block. Kept out of `CORE_BONES`, which is what a map is JUDGED on — most rigs are missing some finger or
+other, and folding them in would report thirty bones missing on a figure whose body map is perfect.
+
+**A finger cannot be squared up against a BODY axis.** A hand turns freely at the wrist, so no fixed
+body direction stays perpendicular to a finger: measured, the best body axis available still reads 0.966
+against one rig's index finger and 0.996 against another's thumb, either of which is a degenerate frame.
+Arms and legs get away with it because a rest pose holds them roughly fixed against the torso. So the
+reference comes from the hand's own bones — **across the knuckles** (`indexProximal → littleProximal`)
+for the four fingers, worst 0.251, and **the palm normal** for the thumb, worst 0.382, because a thumb
+points across the palm and the knuckle axis is exactly wrong for it.
+
+The HANDS stay chain ends. A hand's canonical frame has always come from `lowerArm → hand`, and letting
+a thumb redefine it would move every wrist in the corpus to fix nothing.
+
+#### Caching, and why it carries a revision
+
+Content-addressed: a (clip, rig) pair is computed once ever and every later play is a lookup — the
+rewrite is seconds on a 40-second clip and it used to run on every play. But **a content address
+fingerprints the bytes, not the method that made them**, so the cache lookup is gated on
+`retargeted_from` + `rig_sig` + `RETARGET_REV`. Without the stamp a pair retargeted by an older build is
+handed back forever and a fix reaches nobody — which happened: the fix landed, the server restarted, and
+the figure kept swinging because the cache still held the clip made before it.
+
+**The voice comes with it.** A rewritten clip is the same performance on another body, and the voice was
+recorded against the performance rather than against the skeleton.
+
+### 8d. The face — `figure-face`, and the two expression rigs
+
+A figure who blinks and looks at you is a different presence. Driving one is small: a morph weight is
+one scalar per target, so there is no new client path.
+
+**Measured across 38 rigged figures. 22 carry morph targets; two carry a face.**
+
+| figure | targets | facial | vocabulary |
+|---|---|---|---|
+| Saka | 57 | **57** | VRM presets — `Fcl_ALL_Joy`, `Fcl_BRW_Angry`, `Fcl_MTH_A` |
+| Alice | 34 | **26** | Character Creator / ARKit-ish — `Brow_Raise_Inner_L`, `Jaw_Open` |
+| Bianca, Blondie | 22, 21 | 0 | **tongue only** — no brows, no eyes |
+| Moon Girl, Kawaii, Goddess | 14, 3, 3 | 1 | one stray `closed_eyes_correction` |
+| everyone else | 2–17 | 0 | skin and clothing colour, anatomy |
+
+So `smile` cannot be a target name. It is a semantic request — exactly as `leftUpperArm` is a semantic
+bone — resolved per scheme by `conjure/expressions.py` into whatever that figure's author called it.
+`set_expression` / `POST /figure/expression` take `{smile: 1}`, `{blink: 1, look_left: 1}` or a RAW
+target name, which wins over the table so an inspected figure can be driven directly — including the
+tongue-only rigs, which have no scheme and are perfectly drivable by name.
+
+Weights compose **additively and clamp at 1**: a `surprised` and an `aa` both reach for `Jaw_Open`, and
+letting whichever came last in a dict win would make the result depend on key order.
+
+**A request a figure cannot meet is reported, never approximated.** VRM aims the eyes with BONES, so
+that rig has no `look_*` morphs at all; substituting a head turn would be a lie and returning nothing
+silently reads as the tool being broken.
+
+Its own component and not a property of `figure`, for the reason `figure-parts` is: `figure` refuses to
+act without a humanoid map and an anatomical frame, and a face needs neither.
+
+#### Why a table here is not the thing §8c warns about
+
+[`backlogs/figures.md`](../backlogs/figures.md) argues that a morph *retarget* has "names and nothing
+else" — `Fcl_ALL_Joy` is not `Brow_Raise_Inner_L` in any sense a measurement can establish. That stands,
+and it is about carrying one figure's PERFORMANCE onto another.
+
+This is a different job, and unlike that one **it is checkable**. Mapping `smile` → `Fcl_ALL_Fun` reads
+the author's own label (discovery layer 0, the same move as `vrm_humanoid()`), and a morph target
+carries position deltas — so a claim about what it does can be tested against where and how it moves
+the mesh. Two independent checks, both green on both rigs:
+
+**`check_regions`** — brow above eye above mouth, which is anatomy, not convention. The bands do not
+overlap at all, so anything looser would pass a table that has genuinely gone wrong:
+
+| | brow | eye | mouth |
+|---|---|---|---|
+| Saka | 1.4228–1.4257 | 1.3973–1.4104 | 1.3387–1.3440 |
+| Alice | 1.5989–1.6018 | 1.5658–1.5854 | 1.5135–1.5237 |
+
+**`check_directions`** — a shape must move the mesh the way its NAME says. This catches what the region
+check cannot: a rig with `Brow_Raise` and `Brow_Drop` modelled the wrong way round passes the regions
+completely (both are brows, both in the brow band) and puts an angry face on every request for a
+surprised one.
+
+Three things these checks caught while being built, and each was a real defect rather than a hypothetical:
+
+- **A vacuous pass.** `_read_vec3` returned early on an accessor with no `bufferView`, which is exactly
+  how a **sparse** accessor is stored — and sparse is how a morph target is normally stored, because a
+  target moves a few hundred vertices of a mesh with sixty thousand. Alice's entire face measured as
+  moving nothing, so there were no bands, so there were no violations, so the check reported OK. A green
+  result that cannot go red is worse than no check, because it is trusted. `check_regions` now
+  distinguishes *not applicable* (a figure with one stray facial shape makes no ordering claim) from
+  *not measured* (a recognised expression rig that yields no bands is a failure).
+- **A composite is not a feature.** `Fcl_ALL_Joy` is facial — the most facial thing on the rig — and has
+  no band of its own, because it moves brows, eyes and mouth together. The same shape of mistake was
+  then made twice: the direction check asserted it must RISE, on the reasoning that joy is a smile.
+  Measured, it falls (-0.00376), and correctly — `Fcl_EYE_Joy` is -0.00584, because happy eyes close and
+  an eyelid closes downward, and `Fcl_MTH_Joy` is -0.00246 because the mouth opens. Both checks now
+  exclude whole-face composites, for one reason.
+- **The catalog count meant nothing.** `morph_targets` summed `len(primitive.targets)` over every
+  primitive of every mesh, so a vocabulary shared by four primitives counted four times: **Saka read 399
+  for 57 real targets and Alice 172 for 34.** "Who can smile" was already a query and it was querying
+  that number. It is now a count of DISTINCT names, beside `morph_names`, `expression_scheme` and
+  `facial_morphs` — and `facial_morphs` is the one that answers the question, because a count of targets
+  says a figure is expressive when it can only change its shorts.
+
+#### What has the least evidence behind it
+
+Stated rather than implied, in `expressions.PROVENANCE`. The VRM table is one entry per expression and
+the author states the emotion outright. The Character Creator table names muscles, so its **emotions are
+composites we author** — FACS-ish readings (a smile is zygomatic; a real one crinkles the eyes; anger
+drops the brows) and not measured. Its **visemes are weaker still**: that rig has no `A/I/U/E/O`, so
+`ee` is a spread mouth and `ou` a pursed one, good enough to read as speech at conversational distance
+and not claimed to be more.
+
+### 8e. Carrying the FACE through a retarget
+
+*The approaches this rejected on the way — and they are the reusable part — are in
+[`investigations/facial-expression.md`](../investigations/facial-expression.md).*
+
+§8c maps a clip through the humanoid map, and the map has **51 bones — core plus fingers — none of
+them facial**. So every retargeted clip arrived with a dead face, and that was almost the whole corpus:
+**519 of 543 captured clips rotate a facial bone**, and not the handful with facial names. `1_idle`
+spends **9,031° on a face** with `DEF-lid.T.L`/`.R` as its top two movers at 15% and 14%; a figure
+playing it *natively* has been blinking all along.
+
+Facial bones are carried by their **local delta** — the rotation the clip applies to its own rest,
+re-applied to the target's rest — and not through the law. That is forced, not preferred: the law
+squares a bone up against a frame derived from **where it points**, and a facial bone frequently points
+nowhere. Every `DEF-jaw` in the corpus is a leaf, and so is every one of Eve Maccaro's lids.
+
+Never the source's absolute local, either. Two faces of the same build rest differently because they
+*are* different faces; pasting one rest onto the other is a shape transplant, not a performance.
+
+#### The gate, and the two frames that were wrong first
+
+A name match is **not** evidence. Eve Maccaro's facial bones carry the identical Rigify names and rest
+inverted; carried by name alone, a blink swings her lid the wrong way while every count says it worked.
+So each bone is gated on how far the two rigs' rests disagree, and refused past `FACE_REST_TOLERANCE`
+(30°, against a blink of 16–26°).
+
+**Which rest** took two wrong answers to find:
+
+| frame | why it fails |
+|---|---|
+| **world** | a clip and a figure disagree about the whole armature — `1_idle`'s head rests **180°** from Barbie's — so every facial bone reads ~175° apart and every one is refused, on rigs that agree to 14° |
+| **head-relative** | depends on both humanoid maps choosing the same vertebra, and they do not: office-babe's `head` is `DEF-spine.007` where Barbie's and the clip's are `DEF-spine.006`, injecting 73° of pure bookkeeping |
+| **local** ✓ | a local delta is indifferent to every ancestor above the bone, so this is the only frame neither the armature nor the bone-map's choice can corrupt |
+
+Measured against `1_idle`'s 65 facial bones: Akari 11.2° median, Barbie 14.0°, office-babe 14.3° —
+and **Eve Maccaro 142.6°**, refused. Per bone rather than per rig, so a figure carries what can be
+justified and drops what cannot, and both counts appear in the clip's notes.
+
+#### What it actually buys, measured
+
+**The direction matters, and measuring only one of them understates it by an order of magnitude.**
+Carrying the capture set's own clips outward reaches one figure. Carrying office-babe's clips *inward*
+reaches all sixteen — and hers include `1_idle_speaking`, which is lip sync.
+
+| borrow | body bones | face carried |
+|---|---|---|
+| **office-babe's 21 face-driving clips → each of the 16 capture figures** | 116–131 | **~50: jaw 6, lips 6–8, eyelids 8–16, brows 16–18** |
+| the capture set's 455 face-driving clips → office-babe | 127 | 61, incl. 16 eyelids |
+| the Character Creator rig's 14 → 9 capture figures | ~55 | 2 eyelids — a fragment |
+| → Eve Maccaro | 27 | 6 carried, **63 correctly refused** |
+| → Grace, Trish, Yuffie, Alice, Blondie, Saka | — | **nothing** |
+
+Across the whole library, **28 of 132 cross-rig figure pairings carry eyelids**; weighted by clips that
+is roughly 1,400 (clip, figure) borrowings that now deliver a face where **none did before**.
+
+Within the 16 figures sharing the capture rig nothing is borrowed at all — a native play keeps every
+track whose name resolves, which is 38% of all pairings in the library and has always worked.
+
+The figures that gain nothing are blocked on a different problem: Daz spells an eyelid
+`eyelidUpper.L`, Character Creator `lEyelidUpper`, Rigify `DEF-lid.T.L`. Carrying between families
+needs a name map, and the local-rest gate cannot justify one — across two different rig builds the
+rests disagree by construction, so the check that makes this safe would refuse it.
 
 ## 8. The runtime — the `figure` component
 
@@ -551,178 +947,157 @@ arrives first would find no skeleton. Every `/static/*.js` reference is mtime-st
 `server.py`; `figure.js` shipped without a stamp once and the headset served a stale copy through several
 reloads, so three fixes never ran.
 
-## 9a. Re-assembling a PlayCanvas build
+### 8f. Hands you WEAR — `hand-rig`
 
-`conjure/playcanvas.py` + `scripts/playcanvas_rebuild.py`. A second out-of-band ingest path, and the
-only one that needs no Blender at all.
+A placed hand model driven by the headset's own hand tracking, all 25 joints, every frame. It is not a
+figure: nothing about it is posable, no clip plays on it, and while worn it **is** the wearer's hand.
 
-PlayCanvas's converter splits an upload deliberately: geometry and skinning into the GLB, materials and
-textures into separate registry entries the engine rejoins at load time. A build downloaded from it
-therefore hands over a model that renders **flat white in any ordinary viewer**, with every texture
-sitting beside it and nothing in the file saying which goes where. Jane arrived exactly like that —
-4.5 MB of correct geometry, zero materials, 87 MB of orphaned 4K PNGs.
+**It needs no discovery layer, and that is the whole reason it is cheap.** These models are authored in
+the WebXR joint frame — their nodes carry the WebXR joint names exactly and each bone lies along its own
+local −Z — so the two indirections the rest of this document rests on, *which node* (§3) and *which way*
+(§4), collapse to identity. A bone's world transform **is** the joint pose. Nothing is inferred, and a
+hand named any other way is refused with a reason rather than guessed at
+([`decisions.md`](../decisions.md) §31).
 
-The binding is stated outright, so this **transcribes rather than guesses**:
+**What import records** (`conjure/hands.py`, `FRAME_REV` 20):
 
-```
-config.json   -> assets by id (containers, renders, materials, textures)
-<scene>.json  -> entities, each with a `render` component holding
-                   `asset`          -> a render asset -> (containerAsset, renderIndex)
-                   `materialAssets` -> ONE PER PRIMITIVE, in order
-```
-
-A glTF mesh is split into primitives precisely because each had its own material, so the ordering
-survived conversion and the list drops straight back on. **The materials are on the SCENE, not the
-container**: a container ships whatever its own import produced and the scene overrides it — Jane's hair
-container carries an untextured grey, and reading it instead of the scene gives grey hair with the real
-texture unused on disk.
-
-**`template` assets carry the same bindings and are read too**, after the scenes so a scene wins where
-both speak. Not a fallback bolted on: a template is a serialised entity hierarchy, which is how
-PlayCanvas packages a reusable thing, and a character is exactly that. The second capture had NO scene
-file on disk and sixteen templates — one per skin-tone variant, each binding its own container, so
-nothing to disambiguate — and reading them is what makes it convertible at all. It also retired
-`--adopt` for Jane, whose template binds the in-file hair copy to the textured hair material: the
-build's own answer in place of a name-match guess.
-
-The blend and cull constants and the `glossPS` shader chunk are read out of the `playcanvas-stable.min.js`
-shipped **in the build being converted**, not remembered. Each is a silent wrongness if guessed: a wrong
-blend mode is invisible until something stands behind the figure, and an inverted roughness map reads as
-a lighting problem.
-
-Four things it detects rather than assumes, all of which Jane exercises:
-
-| | |
+| attribute | |
 |---|---|
-| an `opacityMap` on a texture with **no alpha channel** | a no-op — five of her eight materials do this, and believing them emits `MASK` and punches holes through her |
-| an indexed PNG with a `tRNS` chunk | alpha that is not a channel; her eyelashes are one, and read as RGB become a rectangle across her face |
-| `glossInvert` | decides whether the source is gloss or roughness. One build uses it **both ways** — her lips (invert, shininess 0) and her mouth (no invert, shininess 90) are both wet, from opposite settings |
-| `alphaToCoverage` | a CUTOUT, so it becomes `MASK` whatever the blend mode says. One model shares a single atlas between shorts, shirt and hair with a separate mask selecting each garment's region; read as `BLEND`, the regions that should vanish came through as patches of the other garments' colours |
-| a mesh no entity binds | left untextured, and the note says so — the scene does not render such a mesh at all, so grey is the one outcome the source never produces. `--adopt` takes the material from an identically-named render asset elsewhere, reported as INFERRED. Reading templates removed the need for it on both models here |
+| `hand_joints` | `{webxrJointName: nodeName}` — an identity map today, written out anyway so a second naming scheme changes one place |
+| `hand_side` | `left`/`right`, **measured** from the hand's own chirality, never read from the `_L` in a filename |
+| `hand_wearable` | did it pass the gate |
+| `hand_materials`, `hand_images` | what it is dressed in, so a **pair** can be chosen. The catalog's five hand files are not one pair: two are the textured VR set, one an orphaned AR left, and two rights carry no materials at all. Taken in order, the first wearing put a grey untextured right beside a textured left — which reads as a broken import rather than as two files that were never a pair. `conjure-ctl wear --pair` matches on material NAMES, which is a stronger signal than counting textures because the orphaned left is textured too. |
+| `hand_problems` | why not, when it did not — recorded rather than swallowed, so "not a hand" and "a hand we rejected" are distinguishable |
 
-**Nothing in it is keyed to any particular model** — every string in the module is a PlayCanvas or glTF
-schema key, and the one heuristic (`--adopt`) matches on render-asset names read from the build. But the
-coverage was shaped by one character, so what it CANNOT carry is listed in `_UNCARRIED` and warned about
-per material rather than dropped quietly: the specular/gloss workflow, light and environment maps,
-height maps, clear coat, sheen, refraction, iridescence, and texture tiling/offset/rotation. Second UV
-sets, `emissiveIntensity` and `aoIntensity` are carried.
+The gate asks two things: all 25 joints present, and every bone along its own local −Z. **Not** that the
+joints form a parent→child chain — the catalog's five hand files are two skeletons whose 25 joints are
+*siblings* under one node, so that check would have refused the files it was written for. And the
+**wrist is exempt** from the axis test: five bones leave one frame and it cannot point along all of them
+(measured 0.706–0.975 there against ≥0.986 down every finger), which is exactly why the WebXR spec
+leaves that joint loose.
 
-Those tests gate on PlayCanvas's `use*` flags, never on a value, and that distinction is measured: it
-leaves `sheen` at a default WHITE with `useSheen: false`, so a check keyed on the colour fires for all
-208 materials across the three builds here — and a warning that always fires is one nobody reads.
-`useDynamicRefraction` is true exactly **once** in those 208, on Jane's eyes, which is the case the list
-earns its keep for and the one visible thing this does not reproduce.
+**State** is `components.hand-rig = {hand, joints}` — durable world state, not a per-client setting, so
+it persists, replays on reload, and taking it off names a real place to put it
+([`decisions.md`](../decisions.md) §30).
 
-It is **additive**: images become buffer views on the end of the existing binary chunk and nothing that
-was in the file moves, so the geometry comes out bit-identical and a map derived from the original still
-applies. Measured on Jane — same 22-bone `rigify-def` map, same 1.82 m, same 110,870 triangles, 17/17
-named poses — with 8 materials where there were none.
+**The runtime** composes each bone's **world** matrix from the joint pose and a scale, then divides it
+back through the parent. Going through world is what stops the scale compounding: a bone's world scale
+is exactly `s` however deep it sits, and the same code works whether a file's joints are a chain or
+siblings.
 
-**Basis textures are decoded by a pre-pass**, `scripts/basis_to_png.js`, which writes `Foo.png` beside
-`Foo.basis` — the exact name the registry already gives that texture, so the rebuild finds it knowing
-nothing about Basis at all. The transcoder is **found, not required**: `--transcoder` if given, else the one the build ships
-(`basis.wasm.js` + `basis.wasm.wasm`, two separate PlayCanvas assets in unrelated directories), else the
-upstream build committed in `vendor/basis`. The capture's own copy is preferred because a decoder
-shipped beside the data is the one certain to read it; the vendored one exists because a capture only
-contains one if the grabber happened to save it, and that is the file everything else depends on. Their
-output is byte-identical on the textures here. The PNG is written by hand over `zlib`, Node shipping no encoder
-and a truecolour-with-alpha PNG being cheaper to write than to justify a dependency for.
+**`s` is the median ratio over the 14 real BONES, not all 24 inter-joint distances.** `wrist →
+*-metacarpal` is the offset between an arbitrary frame origin and the hand; `*-distal → *-tip` compares a
+runtime-derived surface point against an authored tip bone. Neither is a bone length. Measured on a
+Quest 3, including them spread the ratios **36%** on a hand whose real bones agree to **5%** — so a
+scale taken over 24 would be biased by several per cent on every wearer.
 
-**A normal map needs unpacking.** Basis stores one as X in RGB and Y in alpha, which transcodes to a
-greyscale image with an independent alpha — and handed to glTF's `normalTexture` that way, grey remaps
-to a ZERO-LENGTH normal and the lighting breaks out in dark blotches over every surface using it. Z is
-recomputed and the alpha dropped. Which textures to treat this way comes from the REGISTRY, not from the
-pixels: a genuine greyscale mask with an alpha channel is indistinguishable, and one build has both — a
-pixel heuristic alone wrecked its specular maps while fixing its normals.
+`s` does one job and it is worth being precise about which: **joint positions carry length and never
+girth.** Every joint is placed at the pose the runtime reports, so positions are exact by construction
+and a scale error cannot accumulate down a chain; `s` scales the flesh, and 5% of a finger's girth is
+under a millimetre. It is eased frame to frame, because girth is a slowly-varying property of a hand
+rather than a per-frame measurement.
 
-Measured on Akari: 42 files decoded, 0 failed, and she rebuilt at 9 materials over 3 meshes.
+**`tipOut` — fingertips, and a tunable that is marked as one.** Worn on a Quest 3, the wearer's real
+fingertips protruded about 5 mm beyond the virtual ones. Not a placement error: the tip joint lands
+exactly where the runtime says, as every joint does. It is the *flesh* — the fingertip cap is bound to
+the tip bone, and `s` scales it by the girth ratio, which says nothing about how far a fingertip sticks
+out.
 
-**A texture may be on disk in a form nothing here can read.** PlayCanvas transcodes textures to Basis
-Universal and the engine asks for that in preference, so a capture made by BROWSING holds `.basis` and
-never the PNG beside it — 91 of Akari's 105 textures declare such a variant. Basis is GPU-compressed,
-Pillow cannot open it, and decoding wants a transcoder this does not carry. So `variant_only` reports
-those separately from absent ones, with the URL of the uncompressed original, and counting them as
-missing (which an earlier pass did) overstated one capture's gap by eight files.
+`tipOut` pushes each tip bone along its own local −Z (the bone direction away from the wrist) — a
+number of millimetres, or `radius`. **The defaults are `radius` and a thumb coefficient of `0.7`**,
+stated once in `conjure/hands.py` (`TIP_OUT_DEFAULT`, `TIP_THUMB_DEFAULT`) and pinned against the
+component's own schema by a test, since every path that sets `hand-rig` goes through the server and a
+drift would be invisible. `off` returns to exactly where the runtime says.
 
-**What the capture does not hold is reported as a list, with URLs.** Akari's release references 105
-textures and holds none of them; reported per use that was 200-odd identical lines burying the two
-findings that mattered, so missing files are collected once and `--fetch-list` writes their addresses
-for `curl` or `wget`.
+**It is dialled live.** `conjure-ctl wear --tip-out MM` with no id adjusts every worn hand and takes
+effect on the next frame. The component reads `tipOut` per frame and has **no `update` handler** — so
+A-Frame replaces `this.data` on the patch and `init` does not re-run, leaving the collected skeleton,
+the captured bind positions and the rest matrices intact. Finding a number by trying numbers should not
+cost a page reload each time, and it does not.
 
-**A capture without a registry is a different failure, and it is reported as one.** The second one to
-arrive had the right layout, valid GLBs, and no `config.json` anywhere — so there was nothing saying
-which material went where, and no texture files either. `find_orphans` reports that shape and derives
-the address to fetch from the directory path, because a capture mirrors the URL it came from: a path
-segment with a dot in it is the host, and everything between it and `files` is the build.
+*It is a tunable and not a derivation, and the first attempt at making it one is worth keeping.* That
+version scaled each tip bone by its finger's tracked ÷ bind ratio for `*-distal → *-tip`, reasoning from
+§8f's phase-0 measurement that this is the one segment where the model and the runtime measure different
+things. It is — but the ratio came out **below one**, so the caps shrank: the fingers went pointy and
+got shorter still. The reasoning was sound and **the sign was an assumption**, and that segment being
+unreliable does not tell you which way it is unreliable.
 
-**`--max-texture` defaults to 1024, and that is a budget rather than an optimisation.** Her textures are
-4096 square throughout: roughly 90 MB of VRAM each once mipmapped, nine of them for one character who
-already costs 111k triangles. At the default the whole capture — 9 containers across 3 nested builds —
-rebuilds in about four seconds and she lands at 6.8 MB.
+**`radius` — the candidate rule.** `tipOut` also takes `radius` (or `radius:0.8`), which pushes each
+finger out by **its own** reported `XRJointPose.radius`. Worth trying because **8 mm** landed it for one
+wearer and a human fingertip radius is about 8 mm — and there is a reason that would be no coincidence:
+the WebXR tip joint sits at the **centre** of the fingertip and `radius` is that fingertip's radius, so
+the surface is one radius further out. If that is the rule then it is not one person's 8 mm at all: it
+is per-finger (a thumb is fatter than a pinky) and it generalises to any hand the runtime measures.
 
-## 9. Conversion — out of band, and Blender-only
+The two modes are distinguishable on device precisely because of that per-finger difference, which a
+flat 8 mm cannot reproduce. A missing or preposterous radius falls back to **no offset**, never to `NaN`.
 
-`.blend` cannot be loaded by a browser and has no third-party reader worth trusting, so something must
-convert. That something is headless Blender — and it stays **outside the server**: `importer.py` carries
-no server dependency and must never need a 3 GB application, so a machine without Blender imports GLBs
-fine and simply cannot convert. The scripts are invoked by hand; nothing in `conjure/` calls them and
-there is no config setting or `doctor` row for the Blender path.
+`off` (or `none`, or `0`) puts them back exactly where the runtime says, and `GET /figure/hands`
+reports the current value per worn hand. Both because the knob was one-way by accident: an unparseable
+value already fell through to zero, and nothing on screen said what was set — so *"how do I turn this
+off?"* had no answer, which is the first question anyone asks after dialling something on.
 
-`scripts/blend_to_glb.py` — the conversion pass, which is mostly **stripping**:
+The component logs what is knowable once per wearing under `--debug-log` — each finger's tracked and
+bind `distal → tip`, their ratio, the radius reported at the tip, and the offset each mode resolves to
+— so the question can be read off a headset rather than reasoned to.
 
-| Stripped | Why |
-|---|---|
-| rig widget meshes | UI, not content. Found **by reference** (`pose_bone.custom_shape`), never by name prefix — one rig spells them `WGT-`, another `GZM_` |
-| unselected collections | outfits and hair variants are alternatives; one set is worn at a time |
-| shape keys | Daz JCMs are driver-fired and glTF has no drivers (`--keep-morphs` to retain) |
-| non-mesh/armature objects | empties, cameras, lights, lattices |
+**Measured on a Quest 3: `radius` lands all four fingers, and leaves the thumb slightly long.** So the
+radius rule holds, and the thumb is its own case — which is a fact about thumbs rather than about a
+hand. A thumb has one fewer phalanx and a broad, flat pad, so its reported radius is the half-width of
+that pad and **overstates** how far the tip protrudes, where on a rounder fingertip the radius and the
+protrusion are nearly the same.
 
-Visibility is checked at **both** the object and the collection level, because one porter marks the worn
-set at one and another at the other. Naming a collection overrides *its* hidden flag but not per-object
-hiding.
+`tipThumb` is therefore its own axis: a coefficient on the thumb's radius, default `1` (no special
+case), composing with `radius:k` rather than replacing it, and ignored in the flat-millimetre mode where
+there is no radius to correct. A bare `--tip-thumb` leaves the offset already set alone, which is the
+point of dialling one number at a time.
 
-`reparent_deform_bones` (on by default, `--no-reparent` to disable) converts the relationship glTF cannot
-carry into one it can: every bone that deforms **or carries deformers beneath it** is re-parented onto its
-constraint target. `export_def_bones=True` was tried and is worse — Blender can only preserve a hierarchy
-that exists, so it flattens constraint-linked deformers to the armature root.
+**Measured: the thumb wants 0.7.** So the pair `radius` + `0.7` is the default, and the reason it is
+defensible off one pair of hands is that **neither value is a length**. A radius comes from the
+runtime's own per-finger measurement, and 0.7 is a ratio between two things that vary together — a
+thumb's pad half-width and its tip protrusion. The 8 mm that got there first *was* one person's hand,
+and would have been wrong for the next.
 
-Materials are resolved in a ladder, and the discipline is the same at every rung — **measure the artifact,
-do not reason about the pipeline**:
+Read on one wearer (2026-09-17), which is the honest limit of it. A second pair of hands is the cheap
+check and nothing here depends on it: `off` and a millimetre figure both remain.
 
-1. **`--max-texture N`** rescales image datablocks before export (Blender's exporter re-encodes but will
-   not resize). The single biggest size lever: 229 MB → 37 MB on one model, of which 210 MB was textures.
-2. **Probe.** Export once, then read back which materials the exporter genuinely failed — no
-   `baseColorTexture` and a near-black (`max < 0.15`) or absent `baseColorFactor`. The exporter's own
-   output is the only oracle that cannot disagree with the exporter.
-3. **`use_colour_images`.** Before baking, rebuild each failed material as a plain Principled around the
-   one image the file itself tags as **colour data** (sRGB, against the Non-Color bump/spec/normal maps).
-   A colour-space tag is authored metadata; a `_B` filename suffix is a guess.
-4. **`bake_materials`.** Only what is left. Every non-target material on the baked object is handed a
-   throwaway 4×4 destination first, because `bpy.ops.object.bake()` writes into the active image node of
-   **every** material on the object — that is what silently blackened bystander textures.
-5. **Black-bake fallback.** A bake that comes out black had no view-independent colour. `is_translucent`
-   separates a lens from a fingernail by the Principled `Transmission Weight` (glTF's `alphaMode` does
-   not: a lens exports OPAQUE); transparent for the former, a neutral base for the latter.
+**Precedence: live hand > clip > pose.** Settled by taking the other two writers *off* — `figure-clip`
+is paused and `figure.restore()` is called on wear — rather than by winning a race with them, since
+A-Frame gives no tick order between components on one entity.
 
-`--fix-udim` and `--strip-constraints` exist and default **off**. Both are sound for a genuine multi-tile
-or cyclic case; neither should run speculatively, since each perturbed a bake and cost a debugging cycle.
-`export_animations` is hard-coded **off**.
+**All or nothing per frame.** A partial joint read is discarded: some bones driven and the rest at rest
+renders as a hand tearing itself apart, which is worse than a hand that stops. Tracking loss is held for
+400 ms before the skeleton goes back to rest, because hand tracking blinks out constantly and snapping
+on every gap reads as a twitch rather than as loss.
 
-The script `os._exit(0)` after flushing, because Blender can fault during *shutdown* on multi-GB scenes
-long after the file is written and valid — a teardown bug must not masquerade as a conversion failure.
+**Two exemptions while worn**, both because the entity's transform is meaningless then: it is skipped by
+`_placeContent`'s plane-relative anchor re-solve (skipped, not cleared — `_frefPose` is where it goes
+back to), and excluded from `grab`'s picking, where a selection box would otherwise sit metres from the
+hand you can see.
 
-Three companion scripts:
+**Surface:** `POST /figure/hand` · `wear_hand` for the director · `conjure-ctl wear <id> --hand
+auto|left|right|off`. `auto` pairs on the measured side; asking for the **wrong** side is refused, because
+a mirrored glove reads as broken tracking rather than as a mistake anyone made.
 
-| Script | Job |
-|---|---|
-| `scripts/inspect_blend.py` | structural dump of a `.blend` to JSON — reads `bpy.data`, not the scene, because these are "append model" files whose objects are often linked into no scene at all |
-| `scripts/blend_summary.py` | human-readable digest of those dumps |
-| `scripts/glb_preview.py` | render a GLB from several angles (Workbench), printing the imported bbox and height so "is it life size" is answered numerically |
-| `scripts/pose_test.py` | the **functional** test of a map: drives the real `best_humanoid` / `anatomical_axes` / `resolve_pose` and renders **front and side**, always — a front view cannot tell a raised knee from a leg swung backwards. Also accepts raw euler on a rig bone by its own name as an escape hatch |
+`GET /figure/hands` answers *which* — wearable hands in the library, and hands already placed, with
+which of them is worn. It exists because `wear <entity>` is otherwise unanswerable: a hand has to be
+placed before it can be worn and nothing in the CLI placed a library model, so `conjure-ctl wear` with
+no id lists both and `--pair` places both sides and wears them. Same gap `scripts/faces.py` filled for
+faces — `dir` lists assets and `inspect_figure` answers for one already placed, and neither answers
+*which of these can do the thing*.
 
-`pose_test` writes the pose both as node rotations **and** as a one-keyframe animation, because Blender's
-glTF importer reads a joint node's TRS as the bone's *rest* and reconciles the difference silently — an
-animation channel is the one thing it applies over everything else.
+**Not verified on a headset.** The arithmetic is tested against a fake skeleton in `tests/js/` and the
+extraction in `tests/test_hands.py`; the XR read itself needs the device.
+
+## 9. How a figure gets here
+
+Two out-of-band ingest paths, and **both moved to [`specs/captures.md`](./captures.md)** on 2026-09-13:
+re-assembling a captured PlayCanvas build (§3 there) and the Blender conversion for a `.blend` or a
+Daz/Reallusion export (§5). They left because the same pipeline now carries rooms, props and audio, so
+describing it under "figures" sent anyone looking for a captured prop to the wrong spec.
+
+What stays here is everything that happens once the bytes arrive — what makes a model a figure (§1),
+what import records about one (§2), and how its bone map is recovered (§3).
 
 ## 10. Verification
 
@@ -739,6 +1114,49 @@ images, and in the client, which drives the headset — and that is only safe wh
 digit. It covers what is easy to get subtly different: composition order, side mirroring, the
 antiparallel half-turn, and every clamp. (Comparisons are by quaternion **dot product**: three's
 `Quaternion.angleTo` has a ~3e-8 noise floor even between bit-identical quaternions.)
+
+### Measuring a retarget — and why a model of the client is not the client
+
+Everything else here models the client in Python and compares files. For retargeting that hid **four
+separate defects in a row** — a rotating ancestor nothing carried, translation channels dropped
+wholesale, an armature's units, and a cache serving a clip from an older build — because a model of the
+client is not the client. So these run the real thing: `figure-clip.js`'s own `retarget()`, a real
+`AnimationMixer`, seeked exactly the way `tick()` seeks it.
+
+| harness | the question it answers |
+|---|---|
+| `scripts/retarget_probe.py` | **the specification.** Every rigged figure in the catalog, naive vs delta vs absolute, limbs and whole-body. `--control N` rolls every bone's rest, a case whose right answer is known to be 0. `--swing` restores the term the law dropped, and is the only place it still exists |
+| `scripts/clip_diff.mjs` | are two (clip, figure) pairs doing the same thing over time — hips movement, body turn, worst single-segment limb |
+| `scripts/clip_tilt.mjs` | the ABSOLUTE body axis, which `clip_diff` structurally cannot see: it reports every angle relative to each figure's own `t=0`, so a constant lean reads clean |
+| `scripts/clip_stage.py` | resolves names against the library and writes clip, figure and retarget as files, so two builds can be compared with everything else held identical |
+| `scripts/clip_check.mjs` | binding, plus the client's own drop report |
+
+**Read every row as its excess over the floor.** `Jane → Jane` — the same clip on its own rig — scores
+5.3° on limbs and 4.0° on the body, because channel loss is not retargeting's to fix. A figure scoring
+*below* the floor is not doing well; it is the tell that the metric is measuring the thing it grades.
+
+#### Eight ways a metric has been wrong here, and only twice was the code
+
+This campaign's record is that **every hypothesis reasoned to was wrong and every one a measurement
+found was right** — but a measurement is only as good as what it measures, and these cost more time than
+the defects did.
+
+- A limb metric in each figure's **own body frame** cannot see a figure turned bodily, which is the
+  largest error there is. The naive copy left Alice 79° out and still scored well.
+- `hips → hand` spans the whole torso AND the whole arm, so its direction is set by **proportion**, not
+  pose: one figure's arm-to-torso ratio is 1.24 against another's 0.96, and the two differ by 31° at rest
+  with nothing playing. Reported as retargeting error it made a correct pair look 50° wrong.
+- Posing the two sides with **different bone sets** fakes an identity match.
+- Measuring a bone against its parent's **rest** rather than where the parent actually moved: 32°.
+- A threshold chosen by geometry — `abs(dot(along, up)) < 0.99` — put two rigs in the same rest pose on
+  either side of the cut and ended them a half-turn apart. **A fixed table, never a measurement.**
+- The body metric is the angle between two POSED body frames, and `swing` was constructed to null
+  exactly that, so **the term graded itself**. Four figures scored below the floor.
+- A **range** metric (min/max over a clip) cannot see an interpolation defect, because `STEP` and
+  `LINEAR` visit the same extremes. Only a comparison at an instant exposes it.
+- A **rendered thumbnail of every mesh** describes a figure's whole wardrobe stacked on itself, and a
+  vision model narrates the result fluently and with confidence. Not a retargeting metric, but the same
+  failure: the instrument was pointed at the wrong thing and answered anyway.
 
 ### The utterance layer — `scripts/pose_eval.py`
 
@@ -830,17 +1248,36 @@ tool-description edit can actually break, needs no Blender and no judge, and tak
 | Endpoint | Purpose |
 |---|---|
 | `POST /figure` | pose a placed figure by bone or by `named` pose, or `clear=true` to return it to rest. Owner-gated (`_OWNER_ONLY_PATHS`) |
+| `POST /figure/parts` | hide/show parts of a figure by category or mesh name (§8a) |
+| `POST /figure/clip` | play a clip on a figure, or `stop=true`. Refuses a clip from another rig unless `force` (§8b) |
+| `GET /figure/clips` | what shipped with a figure; `all=true` reaches past it, `voiced=true` keeps only clips with a voice |
 | `POST /library/import` | ingest a `.glb`/`.vrm` — the figure attributes come out of this path |
 | `POST /library/refresh-models` | re-derive every model row's attributes |
 
 **MCP tools:** `inspect_figure` (height, triangle count, the bones this figure actually has, current
-pose), `list_poses` (the named library, read from the data rather than written into a prompt) and
-`pose_figure`. Neither is in `_READONLY_TOOLS`, so a `access: "read"` agent gets neither.
+pose), `list_poses` (the named library, read from the data rather than written into a prompt),
+`pose_figure`, `dress_figure` (§8a), and `list_clips` / `play_clip` / `stop_clip` (§8b). Neither is in `_READONLY_TOOLS`, so a `access: "read"` agent gets neither.
 `search_library` annotates a rigged hit with `[figure 1.76 m, 348k tris]` — the two facts that decide
 which of six near-identical figures to place.
 
-**CLI:** `conjure-import` (ingest; `--label` names the asset, defaulting to the filename stem, and is
-distinct from `--creator`, which is whoever made it), `conjure-ctl refresh-models [--force]`,
+**CLI — the deterministic figure surface, no LLM.** One verb per director tool, so anything the
+director can do to a figure can be reproduced without one; this is the path for debugging a figure when
+the answer is "it looked wrong in the headset".
+
+| Command | |
+|---|---|
+| `conjure-ctl pose <entity> [named] [--bone N:AXIS=V] [--clear]` | `--bone` repeats and composes onto a named pose; it reports joints that clamped |
+| `conjure-ctl dress <entity> [--hide C] [--show C] [--only-body]` | categories or mesh names; reports what is still ON, not what the figure owns |
+| `conjure-ctl clips <entity> [--all] [--kind K]` | what shipped with her, apart from what merely fits |
+| `conjure-ctl clip <entity> <label\|id> [--stop] [--once] [--speed] [--force]` | naming no clip is the same request as `--stop` |
+
+These live in `ctl` and not in the shell because the shell proxies only the world server's CONTROL
+surface — `/admin/{tree,show,match,file,delete}`, `/admin/gc`, `/admin/settings`, `/agent/last`,
+`/scope/activate` — and every one of those calls carries a namespace PATH. A figure verb carries an
+entity id, hits a content route, and authenticates with `x-conjure-scope` rather than `X-Conjure-User`.
+
+`conjure-import` (ingest; `--label` names the asset, defaulting to the filename stem, and
+is distinct from `--creator`, which is whoever made it), `conjure-ctl refresh-models [--force]`,
 `python scripts/pose_eval.py` (the utterance-layer battery), `scripts/pose_test.py` (render one pose).
 
 **Deps:** none new. GLB reading is stdlib; `trimesh` was already there. Blender is a soft dependency of
@@ -851,8 +1288,13 @@ the conversion scripts only, never of the world server.
 Recorded here so the spec can be trusted about its own edges; the design work is in
 [`backlogs/figures.md`](../backlogs/figures.md).
 
-- **No animation.** `clips` is recorded and never read. There is no mixer component, no `animate_model`,
-  no retargeting, and no decision yet on how a pose and a clip compose.
+- ~~**No animation.**~~ Built 2026-09-13 as §8b: `figure-clip`, `POST /figure/clip`, and
+  `play_clip` / `list_clips` for the director. A pose and a clip compose by the rule in §8b — the clip
+  wins, the pose returns on stop. **Retargeting** followed on 2026-09-16 (§8c), so a clip is rewritten
+  for a rig it was not authored for rather than refused — which is what the last ten figures in the
+  catalog needed to be offered a clip at all. The
+  teacher's shut eyes are now a thing that can be fixed by playing her `Blink.glb` rather than a thing
+  with no mechanism, though nothing plays it automatically at placement.
 - ~~**No outfits.**~~ Built 2026-09-13 as §8a: a parts vocabulary classifies each mesh at import, and
   `dress_figure` / `POST /figure/parts` turn categories off and on at runtime. What is still absent is
   the other mechanism — clothing that arrived as a SEPARATE CONTAINER (Jane's `hair.glb`) is a separate
@@ -874,11 +1316,40 @@ Recorded here so the spec can be trusted about its own edges; the design work is
 - The judge exists and the renderer exists, but nothing yet proposes
   a pose, renders it, verifies it and freezes it into a library.
 - **No FBX front door**, so no Mixamo.
-- **No morph, spring-bone or MToon support.** VRM material data is in the file and A-Frame's plain glTF
+- ~~**No morph support.**~~ Built 2026-09-16 as §8d: `figure-face`, `POST /figure/expression` and
+  `set_expression`, over a semantic vocabulary resolved per expression rig. **Driving** a face, not
+  retargeting one — §8d says why that distinction is what makes the tables checkable. Two figures in the
+  catalog can use it, which is a fact about the corpus and not a limit of the mechanism.
+- ~~**Bone-driven facial performance is unreachable.**~~ Carried since 2026-09-16 — see §8e. What is
+  still unreachable is a face across a NAMING FAMILY: Daz spells an eyelid `eyelidUpper.L` and
+  Character Creator `lEyelidUpper`, neither of which a Rigify clip names, so nothing maps.
+- **No MORPH-driven facial performance to carry.**
+  Corrected 2026-09-16 after measuring rather than counting channels. 249 of 543 captured clips drive
+  morph weights and **none of them drive a facial target** — those channels are `Dress` and `Body`, and
+  a clip GLB carries no meshes, so the weights are anonymous anyway.
+
+  The facial performance in this corpus is on **bones**. These captures use a Rigify facial rig, and
+  `pc_blink` spends 83° of its travel on `DEF-lid.T.L`/`.R` with the top six movers all eyelids;
+  `1_idle_speaking` puts **74.9% of all its motion into `DEF-jaw_master`**, which is lip sync. 29 of 543
+  clips have a facial name.
+
+  Two things follow, and both are open:
+  - **They play natively but cannot be retargeted.** `pc_blink` matches 16 figures by rig signature, so
+    `play_clip` offers it on all of them today. But the humanoid map covers 51 bones — core plus
+    fingers — and **none are facial**, so §8c cannot carry a facial clip onto a rig that does not
+    already share the skeleton.
+  - **`clip_activity` cannot see a held pose.** It measures angular TRAVEL, so a two-keyframe clip that
+    holds an expression reads as motionless: `pc_mouth_opened` has 3° of travel and sits 16° off rest.
+    Measured this way `pc_squint` is a genuine no-op — 0.13° from rest — so a facial-sounding name is
+    not evidence that a clip does anything.
+- **No spring-bone or MToon support.** VRM material data is in the file and A-Frame's plain glTF
   loader ignores it.
 
 ## 13. Related specs
 
+- [`specs/captures.md`](./captures.md) — how a captured build becomes a figure at all: the
+  grabber, PlayCanvas reconstruction, import, and the Blender path. Was §9a/§9 here until
+  2026-09-13.
 - [`specs/library.md`](./library.md) — the catalog, the `attributes` bag, and the one ingest
   write-through these attributes ride.
 - [`specs/worlds-surfaces.md`](./worlds-surfaces.md) — how a placed asset becomes an entity.

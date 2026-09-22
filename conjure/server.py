@@ -28,6 +28,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from types import SimpleNamespace
 from typing import NamedTuple, Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -42,8 +43,10 @@ from .agents import load_agent, resolve_agent_dir
 from .config import (CACHE_ROOT, CONFIG_DIR, DATA_DIR, DEFAULT_USER, PROJECT_CACHE, VOID, agent_of,
                      ensure_settings_file, get_settings, scope_for)
 from .embeddings import build_embedder
+from . import expressions
+from . import hands
 from . import poses
-from .figures import FRAME_REV, POSE_AXES, clean_pose, resolve_pose
+from .figures import FRAME_REV, POSE_AXES, RIG_SIG_REV, clean_pose, resolve_pose
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
 from .rooms import display_name as rooms_display_name, resolve_rooms
@@ -84,7 +87,12 @@ DEFAULT_SCOPE = scope_for(DEFAULT_USER, "builder")
 # in-project .cache and NOT the precious DATA tree (docs/specs/config.md §7). The script resolves the
 # same CACHE_ROOT from config, so both ends agree on one location.
 TUNNEL_FILE = CACHE_ROOT / "tunnel_url"
-MEDIA_TYPES = {".glb": "model/gltf-binary", ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}
+# An audio element is far stricter about Content-Type than an <img> is, and the fallback below is
+# `application/octet-stream` — which Chromium will refuse to decode in some paths and always refuses
+# on a media element it cannot sniff. 226 of the cache's files are `.mp3`, so the omission silently
+# muted every clip's voice.
+MEDIA_TYPES = {".glb": "model/gltf-binary", ".png": "image/png", ".jpg": "image/jpeg",
+               ".webp": "image/webp", ".mp3": "audio/mpeg", ".json": "application/json"}
 
 def _has_alpha(im) -> bool:
     """True if an opened PIL image carries real (non-opaque) transparency."""
@@ -1105,8 +1113,25 @@ def _content_anchor(transform: dict, placement: str) -> Optional[dict]:
 #: Everything about a model that is DERIVED from its bytes. Extraction owns these outright — a stale one
 #: is not worth keeping, since it was computed from the same file by older code.
 _DERIVED_MODEL_ATTRS = ("bbox_min", "bbox_max", "rigged", "height_m", "joints", "clips", "morph_targets",
+                        # The face. `morph_targets` was a COUNT and a wrong one — summed per primitive,
+                        # so Saka read 399 for 57 — and these three are what replaced it. Listed here so
+                        # a refresh re-derives them onto every model catalogued before faces existed.
+                        "morph_names", "expression_scheme", "facial_morphs", "expression_rev",
                         "humanoid", "humanoid_source", "humanoid_axes", "humanoid_follows",
-                        "spring_bones", "tris", "parts", "parts_rev", "parts_unclassified")
+                        "spring_bones", "tris", "parts", "parts_rev", "parts_unclassified",
+                        # `rig_sig` was written ONLY by the import path and never backfilled here, so a
+                        # model catalogued before the signature existed kept `None` forever — and
+                        # `_clip_rows_for` needs it to offer a clip at all. Nine dev-library figures
+                        # were in that state, including the three phase 5 exists to be tested on: their
+                        # signatures compute fine from the bytes (Grace and Trish c6e3c61972, Saka
+                        # 9b9a660f1d, Eve fe4965ce0f, Steve c773b69506) and simply never reached a row.
+                        "rig_sig", "rig_sig_rev",
+                        # The hand. `hand_wearable` is deliberately in the list even though it is a
+                        # bool that is usually False: a refresh must be able to CLEAR a claim it can no
+                        # longer justify, and "this used to be wearable" is the shape of stale that
+                        # silently puts a broken model on someone's wrist.
+                        "hand_joints", "hand_side", "hand_rev", "hand_wearable", "hand_problems",
+                        "hand_materials", "hand_images")
 
 
 def _extracted_model_attrs(asset_id: str) -> dict:
@@ -1150,6 +1175,11 @@ def _refresh_model_attrs(asset_id: str, attrs: dict, force: bool = False) -> dic
     write = {k: fresh.get(k) for k in _DERIVED_MODEL_ATTRS if fresh.get(k) is not None}
     for k in ("humanoid", "humanoid_axes", "humanoid_follows"):
         write[k] = fresh.get(k) or {}
+    # Same reason, one type down: `""` rather than absent, so a signature extraction can no longer
+    # justify is CLEARED rather than left standing. Tamaki is the case — no map, so no signature — and a
+    # stale one would offer her every clip on a rig she does not have. Every reader already treats the
+    # empty string as "no signature"; `_clip_rows_for` gates the compatible-clip query on it.
+    write["rig_sig"] = fresh.get("rig_sig") or ""
     write["frame_rev"] = FRAME_REV
     library.upsert(asset_id, attributes=write)
     if bool(attrs.get("rigged")) != bool(fresh.get("rigged")) or attrs.get("humanoid") != fresh.get("humanoid"):
@@ -1158,10 +1188,46 @@ def _refresh_model_attrs(asset_id: str, attrs: dict, force: bool = False) -> dic
     return {**attrs, **write}
 
 
+def _refresh_clip_sig(asset_id: str, attrs: dict, force: bool = False) -> dict:
+    """A clip's rig signature, re-derived from its bytes when the stored one predates this build.
+
+    **A signature is a two-sided comparison, so backfilling one side is worse than backfilling neither.**
+    `RIG_SIG_REV` 1 → 2 respelled every FIGURE's signature — the humanoid grew thirty finger bones — and
+    `refresh-models` walked the models and stopped there, because the name says models. Every clip was
+    left stamped rev 1 with a signature computed over the old vocabulary, so Alice stopped matching her
+    OWN clip: the server read a mismatch and offered to retarget her onto herself, and every
+    shipped-clip lookup keyed on the signature came back empty. That is the whole catalog's playback,
+    broken by a backfill that ran successfully.
+
+    Narrow on purpose — only the signature, not the clip's whole extraction. Duration, activity and
+    channel counts are functions of the bytes and have not changed; re-deriving them here would widen
+    the blast radius of a signature bump to everything a clip knows about itself.
+    """
+    if not force and attrs.get("rig_sig_rev") == RIG_SIG_REV:
+        return attrs
+    path = ASSET_CACHE / asset_id
+    if not path.exists():
+        return attrs
+    from .figures import rig_signature, split_glb
+    try:
+        doc, blob = split_glb(path.read_bytes())
+        sig = rig_signature(doc, blob) or ""
+    except Exception as exc:                      # noqa: BLE001 — one bad file must not stop the pass
+        _slog("figure", f"{asset_id}: clip signature re-derive failed: {exc}")
+        return attrs
+    # `""` and not absent, for the reason `_refresh_model_attrs` gives: a signature that can no longer
+    # be justified has to be CLEARED, or it goes on offering a clip to a rig it does not fit.
+    write = {"rig_sig": sig, "rig_sig_rev": RIG_SIG_REV}
+    library.upsert(asset_id, attributes=write)
+    return {**attrs, **write}
+
+
 def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, creator, tris, source,
                      bbox_min, bbox_max, pos, size_m, placement="grounded", rigged=False,
                      humanoid=None, humanoid_axes=None, humanoid_follows=None,
-                     parts=None) -> dict:
+                     parts=None, parts_hidden=None, morph_names=None,
+                     expression_scheme="", hand_joints=None, hand_side="",
+                     hand_wearable=False) -> dict:
     """Build the `add` op for a glTF model entity, auto-scaled and carrying its license/attribution. Shared
     by /place_asset (web) and /place_cached_asset (library reuse). `placement` (docs §5b/c) drives how each
     client re-solves it: "grounded" (default — sits on the LOCAL floor, upright) or "free" (keeps the full
@@ -1205,6 +1271,31 @@ def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, cr
             # same motion on a VRM and on a re-parented Daz rig. Measured from the bind pose at import
             # (figures.anatomical_axes) — a property of the file, so it travels with the entity too.
             meta["humanoid_axes"] = dict(humanoid_axes)
+        if morph_names:
+            # The figure's own morph vocabulary, travelling for exactly the reason the bone map does:
+            # `/figure/expression` resolves "smile" into whatever this author called it without a
+            # catalog lookup, and the client stays generic — it writes the weights it is given and
+            # knows nothing about expressions.
+            meta["morph_names"] = list(morph_names)
+            meta["expression_scheme"] = expression_scheme or ""
+        if hand_wearable and hand_joints:
+            # A HAND YOU CAN WEAR. Travels for the same reason as everything above — `/figure/hand`
+            # needs no catalog lookup and the client writes the joints it is given — and `hand_side`
+            # travels too because it was MEASURED from the geometry at import, which is the only place
+            # it can be. `wear` uses it to pair a hand with a hand rather than trusting a filename.
+            meta["hand_joints"] = dict(hand_joints)
+            meta["hand_side"] = hand_side or ""
+    components: dict = {"gltf-model": f"/assets/{model_id}"}
+    if parts_hidden:
+        # WHAT THE SOURCE HAD SWITCHED OFF, applied from the first frame. A composed capture carries its
+        # own wardrobe — the scene states which pieces are off, and the asset keeps them so they can be
+        # switched back on (docs/specs/captures.md § 3) — so placing one without this draws every variant
+        # at once: Alice arrived with two heads of hair superimposed and a spare pair of underwear.
+        #
+        # A JSON STRING because A-Frame schema types are strings, and the same field `dress_figure`
+        # writes, so the two compose: this is the opening state and that edits it.
+        components["figure-parts"] = {"hidden": json.dumps(sorted(set(parts_hidden)))}
+
     # Step 7c: author + persist the plane-relative anchor now (server-side, once) so the client can SOLVE it
     # rather than re-author from the F_ref pose against its docSurfaces copy every capture. Client ignores it
     # until step 7b/c flips it to consume it; None (too few seed walls) leaves the entity on its F_ref pose.
@@ -1215,8 +1306,7 @@ def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, cr
                         f"floor={'y' if anchor['floor'] else 'n'} walls={len(anchor['walls'])} "
                         f"[{', '.join(w['id'].split('_')[-1] for w in anchor['walls'])}]")
     return {"op": "add", "entity": {
-        "id": eid, "transform": transform,
-        "components": {"gltf-model": f"/assets/{model_id}"}, "meta": meta,
+        "id": eid, "transform": transform, "components": components, "meta": meta,
     }}
 
 
@@ -1518,16 +1608,28 @@ async def server_time() -> dict:
 
 @app.get("/tunnel")
 @app.get("/tunnel/{user}")
-async def tunnel(user: str = DEFAULT_USER) -> RedirectResponse:
+async def tunnel(request: Request, user: str = DEFAULT_USER) -> RedirectResponse:
     """Redirect to the current cloudflared tunnel URL (written by scripts/tunnel.sh). Lets you type a
     short, fixed LAN address (http://<this-machine>:<port>/tunnel) on the Quest instead of the long
     random trycloudflare URL that changes every session. `/tunnel/<user>` logs that user in for the web
-    session by carrying it through as `?user=<user>` (the headset client reads it)."""
+    session by carrying it through as `?user=<user>` (the headset client reads it).
+
+    **The incoming query string is carried across**, which it was not until 2026-09-17. Every
+    client-side debug mode is a query parameter — `?hands=fit`, `?occlusion=`, `?stereodebug=`,
+    `?user=` — and this is the only address anyone types on a headset. So `/tunnel?hands=fit` silently
+    redirected to the bare tunnel root and the overlay never came on, which looks exactly like an
+    overlay that does not work. What the caller typed wins over anything in the tunnel file, and the
+    `/tunnel/<user>` path form still wins over both, since naming a user in the path is the more
+    specific request."""
     url = TUNNEL_FILE.read_text().strip() if TUNNEL_FILE.exists() else ""
     if not url:
         raise HTTPException(status_code=404, detail="No tunnel running — start one with scripts/tunnel.sh")
+    parts = urlsplit(url)
+    params = dict(parse_qsl(parts.query, keep_blank_values=True))
+    params.update({k: v for k, v in request.query_params.items()})
     if user and user != DEFAULT_USER:
-        url = url + ("&" if "?" in url else "?") + "user=" + user
+        params["user"] = user
+    url = urlunsplit(parts._replace(query=urlencode(params)))
     # Temporary (the URL changes each run) + no-store so the browser never caches a stale tunnel.
     return RedirectResponse(url, status_code=307, headers=_NO_STORE)
 
@@ -1554,6 +1656,20 @@ async def world_model_js() -> FileResponse:
 async def grounded_skybox_js() -> FileResponse:
     # Explicit no-store route for the grounded-skybox module (loaded before conjure-client.js).
     return FileResponse(CLIENT_DIR / "grounded-skybox.js", media_type="application/javascript", headers=_NO_STORE)
+
+
+@app.get("/static/figure-clip.js")
+async def figure_clip_js() -> FileResponse:
+    # Explicit no-store route for the clip-playback component (loaded beside figure.js).
+    return FileResponse(CLIENT_DIR / "figure-clip.js", media_type="application/javascript",
+                        headers=_NO_STORE)
+
+
+@app.get("/static/scene-environment.js")
+async def scene_environment_js() -> FileResponse:
+    # Explicit no-store route for the IBL environment module (loaded before conjure-client.js).
+    return FileResponse(CLIENT_DIR / "scene-environment.js", media_type="application/javascript",
+                        headers=_NO_STORE)
 
 
 @app.get("/static/conjure-pointers.js")
@@ -2642,6 +2758,14 @@ class AdminPath(BaseModel):
     kind: Optional[str] = None          # asset kind: model | animation | audio | image | set | …
     related: Optional[str] = None       # only assets related to this one (id or label)
     relation: Optional[str] = None      # ...by this relation type; any type when omitted
+    # Which WAY the edge points, from `related`'s end: "out" (related -> row), "in" (row -> related),
+    # or both when omitted. Both is the right default — a figure's clips and the clips one audio voices
+    # are the same question from opposite ends — but direction is the difference between "the clips that
+    # shipped with jane" and "the set jane belongs to", and `part_of` fans in 107 where it fans out 15.
+    direction: Optional[str] = None
+    # How many rows to return. None is the default page of 200; 0 means ALL. The cap exists so a
+    # namespace holding 775 assets does not answer `dir` with 775 lines, not because more is unsafe.
+    limit: Optional[int] = None
 
 
 def _active_sid_for(scope: str) -> str:
@@ -2668,6 +2792,19 @@ def _row_asset_kind(row: dict) -> str:
     return cells[0] if row.get("kind") == "asset" and cells else ""
 
 
+def _row_cap(req: AdminPath) -> int:
+    """How many rows to SHOW. 0 means all — `dir --all`, for when 200 is the wrong page size."""
+    return 200 if req.limit is None else max(0, int(req.limit))
+
+
+def _fetch_width(req: AdminPath) -> int:
+    """How many rows to BUILD before filtering. Always wide enough that the filter, the glob and the
+    cap all see the same population: narrowing the input first is what made `--kind animation` show 98
+    of 364, and it is the same mistake whether the narrowing is a filter or a page size."""
+    cap = _row_cap(req)
+    return 10_000 if (cap == 0 or cap > 200 or req.kind or req.related) else 200
+
+
 def _filter_rows(rows: list[dict], req: AdminPath) -> list[dict]:
     """Narrow a listing by asset kind and by relation.
 
@@ -2678,31 +2815,27 @@ def _filter_rows(rows: list[dict], req: AdminPath) -> list[dict]:
     if req.kind:
         rows = [r for r in rows if _row_asset_kind(r) == req.kind]
     if req.related:
-        ids = _related_ids(req.related, req.relation)
+        ids = _related_ids(req.related, req.relation, req.direction)
         rows = [r for r in rows if (r.get("ref") or "") in ids]
     return rows
 
 
-def _related_problem(other: str) -> Optional[str]:
+def _related_problem(req: AdminPath) -> Optional[str]:
     """Why a `--with` name found nothing, when the reason is the NAME rather than the relation.
 
     An empty listing is the same shape whether a name is unknown, ambiguous, or simply has no
     relations — and those want different responses from a person. `3_idle` is ambiguous in a captured
     set, because the clip and the audio that voices it share a label by design.
+
+    Delegates to the same resolver the LOOKUP uses. It did not, once: the note went on saying a name
+    was ambiguous after the resolver had learned to disambiguate it, and the advice it gave —
+    *"add --kind to say which you mean"* — was wrong, because `--kind` filters the result rows and not
+    the `--with` target. Following it changed nothing and looked like the filter being broken.
     """
-    if library is None or library.get(other) is not None:
+    if library is None:
         return None
-    if not _safe_label(other):
-        return f"{other!r} is not a usable name"
-    hits = library.query(f"SELECT id, kind FROM assets WHERE label = '{other}'",
-                         scope=active_scope, limit=5)
-    if not hits:
-        return f"nothing here is called {other!r}"
-    if len(hits) > 1:
-        kinds = ", ".join(sorted({h["kind"] for h in hits}))
-        return (f"{other!r} is ambiguous — {len(hits)} assets share that label ({kinds}). "
-                f"Use an id, or add --kind to say which you mean.")
-    return None
+    _id, problem = _resolve_related(req.related or "", req.relation, req.direction)
+    return problem
 
 
 def _safe_label(text: str) -> bool:
@@ -2711,28 +2844,97 @@ def _safe_label(text: str) -> bool:
     return bool(re.fullmatch(r"[\w .:/-]{1,120}", text or ""))
 
 
-def _related_ids(other: str, relation: Optional[str]) -> set[str]:
-    """Asset ids on the far side of a relation from `other`, in EITHER direction.
+def _label_candidates(other: str) -> list[dict]:
+    """Every asset an id-or-label could mean. One row when it is an id."""
+    if library is None or not other:
+        return []
+    rec = library.get(other)
+    if rec is not None:
+        return [rec]
+    if not _safe_label(other):
+        return []
+    return library.query(f"SELECT * FROM assets WHERE label = '{other}'",
+                         scope=active_scope, limit=10) or []
 
-    Both directions because the useful questions point opposite ways: a figure's clips
-    (`shipped_with`, outbound) and the clips one audio file voices (`voiced_by`, inbound) are the same
-    query from different ends. `other` resolves as an id first, then as an exact label, because a
-    person types the label and a script has the id.
+
+def _resolve_related(other: str, relation: Optional[str],
+                     direction: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+    """`(id, problem)` for a `--with` name, disambiguated BY THE RELATION where it can be.
+
+    A label is ambiguous far more often than it looks: every capture names its set after its figure, so
+    `barbie` is both `set:barbie` and her model, and refusing outright made `--with barbie` useless for
+    the most ordinary question there is. But the relation usually settles it — only the model has
+    `shipped_with` edges and only the set has `part_of` inbound — so when exactly one candidate can
+    answer the relation asked for, that is the one meant. Genuine ambiguity is still refused.
     """
-    if library is None:
+    hits = _label_candidates(other)
+    if not hits:
+        return None, (f"{other!r} is not a usable name" if not _safe_label(other)
+                      else f"nothing here is called {other!r}")
+    if len(hits) == 1:
+        return hits[0]["id"], None
+    if relation:
+        able = [h for h in hits
+                if any(e["type"] == relation and (not direction or e["direction"] == direction)
+                       for e in library.relations_of(h["id"]))]
+        if len(able) == 1:
+            return able[0]["id"], None
+        hits = able or hits
+        if len(hits) == 1:
+            return hits[0]["id"], None
+    kinds = ", ".join(sorted({h.get("kind") or "?" for h in hits}))
+    return None, (f"{other!r} is ambiguous — {len(hits)} assets share that label ({kinds}). "
+                  f"Name one by id; --kind filters the RESULTS, not this.")
+
+
+def _related_ids(other: str, relation: Optional[str], direction: Optional[str] = None) -> set[str]:
+    """Asset ids on the far side of a relation from `other`.
+
+    Both directions by default, because the useful questions point opposite ways: a figure's clips
+    (`shipped_with`, outbound) and the clips one audio file voices (`voiced_by`, inbound) are the same
+    query from different ends. `direction` pins it when that matters — `part_of` fans IN 107 where it
+    fans out 15, so "the parts of this set" and "the set this belongs to" are very different lists.
+    """
+    resolved, _problem = _resolve_related(other, relation, direction)
+    if resolved is None:
         return set()
-    if library.get(other) is None:
-        hit = library.query(f"SELECT id FROM assets WHERE label = '{other}'",
-                            scope=active_scope, limit=2) if _safe_label(other) else []
-        if len(hit) != 1:                               # absent, or ambiguous — refuse rather than pick
-            return set()
-        other = hit[0]["id"]
     out = set()
-    for edge in library.relations_of(other):
+    for edge in library.relations_of(resolved):
         if relation and edge["type"] != relation:
+            continue
+        if direction and edge["direction"] != direction:
             continue
         out.add(edge["other"])
     return out
+
+
+def _relation_cells(rows: list[dict], relation: str, direction: Optional[str]) -> None:
+    """Append each row's links of one type as a CELL, in place — the join made visible.
+
+    `--rel` without `--with` used to be a no-op: you could FILTER a listing by a relation and never see
+    it, so checking a link meant `show`-ing one asset at a time. A column answers "which of these clips
+    has a voice" in one line per row, which is the question the linking actually raises.
+    """
+    if library is None:
+        return
+    for row in rows:
+        aid = row.get("ref") or ""
+        if row.get("kind") != "asset" or not aid:
+            row.setdefault("cells", []).append("")
+            continue
+        near: list[str] = []
+        if direction != "in":
+            near += [f"→ {r.get('label') or r['id']}" for r in library.related(aid, relation)]
+        if direction != "out":
+            near += [f"← {r.get('label') or r['id']}"
+                     for r in library.related(aid, relation, reverse=True)]
+        # Two names then a count. A figure has 21 clips and a set has 107 parts, and a cell that lists
+        # them is a cell that destroys the alignment the columns exist for.
+        if len(near) > 2:
+            cell = ", ".join(near[:2]) + f", +{len(near) - 2}"
+        else:
+            cell = ", ".join(near) or "—"
+        row.setdefault("cells", []).append(cell)
 
 
 @app.post("/admin/tree")
@@ -2745,18 +2947,31 @@ async def admin_tree(req: AdminPath) -> dict:
         row = namespace.leaf_row(loc)
         if row is None:
             return {"ok": False, "error": f"no {loc.kind} {loc.name!r}"}
+        cols = namespace.columns_for(loc.kind + "s")
+        if req.relation:
+            _relation_cells([row], req.relation, req.direction)
+            cols = cols + [req.relation]
         return {"ok": True, "path": namespace.loc_path(loc), "display": namespace.display_path(loc),
-                "kind": loc.kind, "self": row, "children": [row],
-                "columns": namespace.columns_for(loc.kind + "s")}
+                "kind": loc.kind, "self": row, "children": [row], "columns": cols}
     # `self` is the row for the node ITSELF when it has one (a session's own summary, say). A session's
     # children are just `worlds/` and `state/`, so without this a delete confirmation for one could only
     # say "nothing" — see Shell._summarize.
+    # Fetch WIDE when filtering, then cap. The cap used to sit inside the row builder, so a filter ran
+    # against an arbitrary first-200 slice of 775 assets — `--kind animation` showed 98 of 364 and
+    # `--with jane_export` found none of her 21 clips.
+    cap = _row_cap(req)
+    kids = namespace.children(loc, limit=_fetch_width(req))
+    kids = _filter_rows(kids, req)
+    if cap:
+        kids = namespace.cap_rows(kids, cap)
+    cols = namespace.columns_for(loc.kind)
+    if req.relation:
+        _relation_cells(kids, req.relation, req.direction)
+        cols = cols + [req.relation]
     out = {"ok": True, "path": namespace.loc_path(loc), "display": namespace.display_path(loc),
-           "kind": loc.kind, "self": namespace.leaf_row(loc),
-           "children": _filter_rows(namespace.children(loc), req),
-           "columns": namespace.columns_for(loc.kind)}
+           "kind": loc.kind, "self": namespace.leaf_row(loc), "children": kids, "columns": cols}
     if req.related:
-        problem = _related_problem(req.related)
+        problem = _related_problem(req)
         if problem:
             out["note"] = problem
     return out
@@ -2851,7 +3066,11 @@ async def admin_settings(req: SettingChange) -> dict:
 @app.post("/admin/match")
 async def admin_match(req: AdminPath) -> dict:
     """Every location `path` names — one, or many when its last segment is a pattern (shell globbing)."""
-    found = namespace.match(req.path)
+    # A glob always expands against EVERYTHING, whatever the page size: it is a search, and a search
+    # that only looks at the first page is not one. `dir *idle*` matched 32 of the 183 it should have
+    # and said nothing, because the truncation happened in the candidate set rather than in the result,
+    # so no "… (more than 200)" marker could ever appear. The cap below still limits what is SHOWN.
+    found = namespace.match(req.path, limit=10_000)
     if isinstance(found, str):
         return {"ok": False, "error": found}
     kind = found[0].kind if found else ""
@@ -2860,8 +3079,23 @@ async def admin_match(req: AdminPath) -> dict:
     if req.kind or req.related:
         keep = {id(r) for r in _filter_rows([m["row"] for m in matches if m.get("row")], req)}
         matches = [m for m in matches if m.get("row") is not None and id(m["row"]) in keep]
-    return {"ok": True, "glob": namespace.is_glob(req.path.rstrip("/").rsplit("/", 1)[-1]),
-            "columns": namespace.columns_for(kind + "s"), "matches": matches}
+    cols = namespace.columns_for(kind + "s")
+    cap = _row_cap(req)
+    if cap and len(matches) > cap:
+        # A glob truncates as visibly as a listing does. It used to drop the marker entirely, because
+        # `match` skips `note` rows and the note was the only thing saying the answer was partial.
+        out_note = f"… (more than {cap}) — --all for every match"
+        matches = matches[:cap]
+    else:
+        out_note = ""
+    if req.relation:
+        _relation_cells([m["row"] for m in matches if m.get("row")], req.relation, req.direction)
+        cols = cols + [req.relation]
+    result = {"ok": True, "glob": namespace.is_glob(req.path.rstrip("/").rsplit("/", 1)[-1]),
+              "columns": cols, "matches": matches}
+    if out_note:
+        result["note"] = out_note
+    return result
 
 
 @app.post("/admin/file")
@@ -3786,7 +4020,12 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
                           placement=req.placement, rigged=bool(attrs.get("rigged")),
                           humanoid=attrs.get("humanoid"), humanoid_axes=attrs.get("humanoid_axes"),
                           humanoid_follows=attrs.get("humanoid_follows"),
-                          parts=attrs.get("parts"))
+                          parts=attrs.get("parts"), parts_hidden=attrs.get("parts_hidden"),
+                          morph_names=attrs.get("morph_names"),
+                          expression_scheme=attrs.get("expression_scheme"),
+                          hand_joints=attrs.get("hand_joints"),
+                          hand_side=attrs.get("hand_side") or "",
+                          hand_wearable=bool(attrs.get("hand_wearable")))
     await _broadcast({"type": "patch", "patch": store.apply_patch([op], origin="asset")})
     library.touch(req.id)
     return _with_notice({"ok": True, "id": eid, "image_id": req.id, "title": rec["label"]},
@@ -3868,7 +4107,23 @@ async def library_refresh_models(req: RefreshModelsRequest) -> dict:
             changed.append({"id": row["id"], "label": row["label"],
                             "rigged": bool(after.get("rigged")),
                             "bones": len(after.get("humanoid") or {})})
-    return {"ok": True, "checked": len(rows), "updated": changed}
+    # AND THE CLIPS, because a signature is a comparison between the two. Bumping `RIG_SIG_REV` and
+    # refreshing only the models leaves every figure unable to match the clip that shipped with her —
+    # measured, on this catalog, the first time it happened. `_refresh_clip_sig` is a no-op for a clip
+    # already stamped current, so this costs nothing on the ordinary run.
+    clips = library.search(kind="animation", limit=20000, scope=_caller_scope.get())
+    respelled = 0
+    for row in clips:
+        before = json.loads(row["attributes"] or "{}")
+        if _refresh_clip_sig(row["id"], before, force=req.force) != before:
+            respelled += 1
+    # The revisions THIS PROCESS is running, so a caller can tell "nothing to do" from "this server is
+    # older than the code on disk". A refresh derives what the SERVER knows, and a server started
+    # before a build reports 0 updated and looks like the build needed no refresh — which is exactly
+    # what the FRAME_REV tripwire exists to prevent and cannot see from inside.
+    return {"ok": True, "checked": len(rows), "updated": changed,
+            "frame_rev": FRAME_REV, "rig_sig_rev": RIG_SIG_REV,
+            "clips_checked": len(clips), "clips_respelled": respelled}
 
 
 class RetagSkyboxesRequest(BaseModel):
@@ -4792,11 +5047,192 @@ class FigureRequest(BaseModel):
     clear: bool = False                           # drop the pose and return to the bind pose
 
 
+class FigureExpressionRequest(BaseModel):
+    id: str
+    expression: Optional[dict] = None    # {semantic name OR raw target: weight 0..1}
+    clear: bool = False                  # every weight back to zero
+
+
 class FigurePartsRequest(BaseModel):
     id: str
     hide: list[str] = []                 # categories or node names to hide
     show: list[str] = []                 # ...and to bring back
     only_body: bool = False              # strip everything removable, in one word
+
+
+@app.post("/figure/expression")
+async def figure_expression(req: FigureExpressionRequest) -> dict:
+    """Drive a figure's FACE — smile, blink, look, speak.
+
+    Semantic, like bone names and for the same reason: there are two expression rigs in the corpus and
+    they share no vocabulary. Saka's author states the emotion (`Fcl_ALL_Joy`); Alice's names muscles
+    (`Mouth_Smile_L`). A caller says `smile` and `expressions.resolve` turns that into whatever this
+    figure's author happened to call it — or reports that this figure cannot, which most cannot: 22 of
+    38 rigged figures carry morph targets and **two** carry a face. The rest are wardrobe, skin tone
+    and anatomy.
+
+    A RAW target name is also accepted and wins over the semantic table, so a caller that has inspected
+    a figure can drive anything it carries — including the tongue-only rigs, which have no expression
+    scheme at all but are perfectly drivable by name.
+
+    Weights compose additively and clamp at 1: a smile and a viseme both using `Jaw_Open` must not let
+    the last one silently win. Stored on the entity so a reload replays it, on its OWN component —
+    posing needs a bone map and a face does not, and plenty of figures have one without the other.
+    """
+    ent = next((e for e in store.doc["entities"] if e["id"] == req.id), None)
+    if ent is None:
+        return {"ok": False, "error": f"no entity {req.id!r}"}
+
+    if req.clear:
+        patch = [{"op": "update", "id": req.id,
+                  "set": {"components.figure-face": {"expression": ""}}}]
+        await _broadcast({"type": "patch", "patch": store.apply_patch(patch, origin="figure-face")})
+        return {"ok": True, "id": req.id, "cleared": True}
+
+    if not isinstance(req.expression, dict) or not req.expression:
+        return {"ok": False, "error": "pass an expression like {\"smile\": 1}, or clear=true"}
+
+    meta = ent.get("meta") or {}
+    names = meta.get("morph_names") or []
+    if not names:
+        # Two different absences with one appearance, so say which. A figure imported before faces
+        # existed has no `morph_names` recorded and needs re-placing; a figure that genuinely has no
+        # morph targets can never do this and re-placing it would waste the caller's time.
+        hint = (" It was placed before expressions were measured — place it again."
+                if meta.get("rigged") else "")
+        return {"ok": False, "error": f"{req.id!r} has no morph targets recorded.{hint}"}
+
+    weights, skipped = expressions.resolve(names, req.expression)
+    if not weights:
+        scheme = expressions.scheme_of(names)
+        face = expressions.facial(names)
+        if not face:
+            return {"ok": False, "error":
+                    f"{req.id!r} has {len(names)} morph target(s) and none of them are a face — "
+                    f"they are wardrobe, skin tone or anatomy. Nothing here can smile."}
+        return {"ok": False, "error":
+                f"{req.id!r} ({scheme or 'unrecognised'} scheme) cannot do "
+                f"{', '.join(skipped)}. It has: {', '.join(face[:12])}"}
+
+    patch = [{"op": "update", "id": req.id,
+              "set": {"components.figure-face":
+                      {"expression": json.dumps(weights, separators=(",", ":"))}}}]
+    await _broadcast({"type": "patch", "patch": store.apply_patch(patch, origin="figure-face")})
+    out = {"ok": True, "id": req.id, "applied": sorted(req.expression),
+           "targets": weights, "scheme": expressions.scheme_of(names)}
+    if skipped:
+        out["skipped"] = skipped
+    return out
+
+
+@app.get("/figure/hands")
+async def figure_hands() -> dict:
+    """Which hands can be worn — in the LIBRARY, and already placed in the world.
+
+    Exists because `wear <entity>` is unanswerable without it. A hand has to be placed before it can be
+    worn, nothing in the CLI placed a library model, and "what do I pass?" is not a question a feature
+    should leave to `world` and a squint. Same shape of gap `scripts/faces.py` filled for faces: `dir`
+    lists assets and `inspect_figure` answers for one already placed, and neither answers *which of
+    these can do the thing*.
+    """
+    out_lib = []
+    for row in library.search(kind="model", limit=5000):
+        attrs = row.get("attributes")
+        attrs = json.loads(attrs) if isinstance(attrs, str) else (attrs or {})
+        if not attrs.get("hand_wearable"):
+            continue
+        out_lib.append({"id": row["id"], "label": row.get("label") or "?",
+                        "side": attrs.get("hand_side") or "",
+                        "materials": attrs.get("hand_materials") or [],
+                        "images": int(attrs.get("hand_images") or 0)})
+    # Best-dressed first, so anything that takes "the left one" takes a textured left. Five hand files
+    # in the catalog and they are not five hands: two are a textured pair, one an orphaned AR left, and
+    # two rights carry no materials at all.
+    out_lib.sort(key=lambda h: (-h["images"], -len(h["materials"]), h["id"]))
+    placed = []
+    for ent in store.doc["entities"]:
+        meta = ent.get("meta") or {}
+        if not meta.get("hand_joints"):
+            continue
+        rig = (ent.get("components") or {}).get("hand-rig") or {}
+        placed.append({"id": ent["id"], "label": meta.get("title") or ent["id"],
+                       "side": meta.get("hand_side") or "",
+                       "worn": rig.get("hand") or "",
+                       # What the fingertip knob is actually set to. Absent from the listing at first,
+                       # and the omission made the knob one-way by accident: you could dial it and
+                       # not read it back, so "how do I turn this off" had no answer on screen.
+                       "tip_out": str(rig.get("tipOut") or hands.TIP_OUT_DEFAULT),
+                       "tip_thumb": str(rig.get("tipThumb") or hands.TIP_THUMB_DEFAULT)})
+    return {"ok": True, "library": out_lib, "placed": placed}
+
+
+class FigureHandRequest(BaseModel):
+    id: str
+    hand: str = "auto"                   # left | right | auto (pair on the MEASURED side) | off
+    #: How far to push each fingertip out along its own bone: a number of MILLIMETRES, or `radius`
+    #: for one tip radius as the runtime reports it (`radius:0.8` scales that). A TUNABLE, not a
+    #: derivation — see `specs/figures.md` §8f. `0` is "exactly where the runtime says the tip is".
+    #:
+    #: A STRING, because `radius` is a candidate RULE and a millimetre count is one wearer's setting,
+    #: and the whole open question is which of those the right answer is. A float field could not
+    #: carry the question.
+    tip_out: str = hands.TIP_OUT_DEFAULT
+    #: A coefficient on the THUMB's radius in `radius` mode. Its own axis because the thumb is its own
+    #: anatomical case: one radius lands all four fingers and leaves the thumb long, because a thumb's
+    #: reported radius is the half-width of a broad flat pad and overstates how far its tip protrudes.
+    tip_thumb: str = hands.TIP_THUMB_DEFAULT
+
+
+@app.post("/figure/hand")
+async def figure_hand(req: FigureHandRequest) -> dict:
+    """Wear a hand model, or take it off.
+
+    Wearing is durable world state on the entity, not a per-client setting (`decisions.md` §30). It
+    rides the existing patch/snapshot path, so it persists, replays on reload, and "put it down" names
+    a real place in the world — a preference would have nowhere to put the hand when you take it off.
+
+    `auto` pairs on the side MEASURED from the geometry at import, never on the `_L` in the filename.
+    Asking for the wrong side is refused rather than honoured: a left model on a right hand is a
+    mirrored glove, and it would look like a tracking fault rather than like a mistake anyone made.
+    """
+    ent = next((e for e in store.doc["entities"] if e["id"] == req.id), None)
+    if ent is None:
+        return {"ok": False, "error": f"no entity {req.id!r}"}
+    meta = ent.get("meta") or {}
+    want = (req.hand or "auto").strip().lower()
+
+    if want in ("off", "none", ""):
+        patch = [{"op": "update", "id": req.id, "set": {"components.hand-rig": {"hand": ""}}}]
+        await _broadcast({"type": "patch", "patch": store.apply_patch(patch, origin="hand-rig")})
+        return {"ok": True, "id": req.id, "worn": False}
+
+    joints = meta.get("hand_joints") or {}
+    if not joints:
+        hint = (" It was placed before hands were measured — place it again."
+                if meta.get("rigged") else "")
+        return {"ok": False, "error": f"{req.id!r} is not a wearable hand: no WebXR joint map "
+                                      f"recorded.{hint}"}
+    side = (meta.get("hand_side") or "").lower()
+    if want == "auto":
+        if not side:
+            return {"ok": False, "error": f"{req.id!r} has no measured side, so `auto` has nothing to "
+                                          f"pair on. Name left or right."}
+        want = side
+    if want not in ("left", "right"):
+        return {"ok": False, "error": f"hand must be left, right, auto or off — not {req.hand!r}"}
+    if side and want != side:
+        return {"ok": False, "error":
+                f"{req.id!r} is a {side} hand and you asked to wear it on the {want}. Mirrored, it "
+                f"reads as a tracking fault rather than as a mistake — place the {want} model instead."}
+
+    patch = [{"op": "update", "id": req.id,
+              "set": {"components.hand-rig": {"hand": want,
+                                              "joints": json.dumps(joints, separators=(",", ":")),
+                                              "tipOut": str(req.tip_out),
+                                              "tipThumb": str(req.tip_thumb)}}}]
+    await _broadcast({"type": "patch", "patch": store.apply_patch(patch, origin="hand-rig")})
+    return {"ok": True, "id": req.id, "worn": True, "hand": want, "joints": len(joints),
+            "tip_out": str(req.tip_out), "tip_thumb": str(req.tip_thumb)}
 
 
 @app.post("/figure/parts")
@@ -4863,10 +5299,300 @@ async def figure_parts(req: FigurePartsRequest) -> dict:
     patch = [{"op": "update", "id": req.id,
               "set": {"components.figure-parts": {"hidden": json.dumps(sorted(hidden))}}}]
     await _broadcast({"type": "patch", "patch": store.apply_patch(patch, origin="figure-parts")})
+    # Grouped as well as flat: the caller has to be able to SAY what it did, and a list of mesh names
+    # is not something anyone reads back to a user.
+    by_category: dict[str, list[str]] = {}
+    for node in sorted(hidden):
+        by_category.setdefault(parts.get(node, "other"), []).append(node)
     out = {"ok": True, "id": req.id, "hidden": sorted(hidden),
+           "hidden_by_category": by_category,
            "removable": {k: len(v) for k, v in groups.items()}}
     if unknown:
         out["unknown"] = unknown
+    return out
+
+
+def _entity_model_id(ent: dict) -> str:
+    """The library asset an entity was placed from, recovered from its `gltf-model` component.
+
+    Read back rather than stored in `meta`: figures are already placed in live worlds, and putting the id
+    in `meta` would only answer for the ones placed after the change. The component has always carried
+    it — `/assets/<id>` — which is why it is the thing to parse.
+    """
+    src = (ent.get("components") or {}).get("gltf-model") or ""
+    return src.rsplit("/", 1)[-1] if src.startswith("/assets/") else ""
+
+
+def _retargetable_rows(sig: str, known: set) -> list[dict]:
+    """Clips on OTHER rigs, which tier 2 can rewrite for this one.
+
+    A third tier and not a widening of the second. `compatible` means the channels bind as they are —
+    `shipped_with` is what the scene authored, `rig_sig` is what plays natively, and this is what plays
+    after being rewritten. Merging it into `compatible` would say a retargeted clip and a native one are
+    the same thing, and they are not: the rewrite drops every channel the humanoid does not name, which
+    on a captured clip is 200 of 222.
+    """
+    if library is None or not sig:
+        return []
+    rows = library.query("SELECT * FROM assets WHERE kind = 'animation' "
+                         "AND json_extract(attributes, '$.rig_sig') IS NOT NULL "
+                         f"AND json_extract(attributes, '$.rig_sig') != '{sig}'",
+                         scope=active_scope, limit=2000) or []
+    return [r for r in rows if r["id"] not in known]
+
+
+def _clip_rows_for(model_id: str) -> tuple[list[dict], list[dict], str]:
+    """`(shipped, compatible, rig_sig)` for a figure's model — what it was GIVEN, and what will play.
+
+    Two lists because they answer different questions and the second is much the larger (decisions.md
+    §27): `shipped_with` is what the original scene gave this figure, `rig_sig` is every clip whose
+    channels its bones can receive. The authored set is the default view and reaching past it is
+    deliberate, so they are never merged into one pool.
+    """
+    if library is None or not model_id:
+        return [], [], ""
+    rec = library.get(model_id) or {}
+    try:
+        attrs = json.loads(rec.get("attributes") or "{}")
+    except (TypeError, ValueError):
+        attrs = {}
+    sig = attrs.get("rig_sig") or ""
+    shipped = [r for r in library.related(model_id, "shipped_with") if r.get("kind") == "animation"]
+    compatible = []
+    if sig:
+        compatible = library.query(
+            "SELECT * FROM assets WHERE kind = 'animation' "
+            f"AND json_extract(attributes, '$.rig_sig') = '{sig}'", scope=active_scope, limit=2000) or []
+    return shipped, compatible, sig
+
+
+class FigureClipRequest(BaseModel):
+    id: str
+    clip: str = ""                       # asset id or exact label
+    stop: bool = False
+    loop: bool = True
+    # None means NOBODY SAID, which is not the same as 1.0 — the capture authors a rate per clip (0.5,
+    # 0.6 and 1.2 are all in this corpus) and a default of 1.0 here would silently override it.
+    speed: Optional[float] = None
+    # A clip whose rig signature differs needs its channels REWRITTEN, not just bound by name (phase 5).
+    # Playing one anyway is a legitimate thing to ask for once — it is how you find out what it looks
+    # like — but it must be asked for, because the failure mode is a figure folded into a knot.
+    force: bool = False
+
+
+@app.post("/figure/clip")
+async def figure_clip(req: FigureClipRequest) -> dict:
+    """Play a captured animation on a figure, or stop the one that is playing.
+
+    A clip binds BY NODE NAME, so it plays on more than the figure it shipped with: every figure sharing
+    a rig signature can receive it, which across this library is groups of sixteen rather than one. What
+    it cannot do is cross signatures — those channels name bones the target does not have, and binding by
+    name would drop most of them and leave a figure driven by the handful that happened to match.
+
+    The clip's START INSTANT is stamped here, on the shared clock, and every client computes its own
+    offset into it. That is what keeps two headsets on the same frame without a per-frame message, and
+    what lets a client that joins late land in the right place.
+    """
+    ent = next((e for e in store.doc["entities"] if e["id"] == req.id), None)
+    if ent is None:
+        return {"ok": False, "error": f"no entity {req.id!r}"}
+    if req.stop or not req.clip:
+        patch = [{"op": "update", "id": req.id,
+                  "set": {"components.figure-clip": {"clip": "", "playing": False}}}]
+        await _broadcast({"type": "patch", "patch": store.apply_patch(patch, origin="figure-clip")})
+        return {"ok": True, "id": req.id, "playing": None}
+    if not (ent.get("meta") or {}).get("rigged"):
+        return {"ok": False, "error": f"{req.id!r} is not a rigged figure, so there is nothing to animate"}
+    if library is None:
+        return {"ok": False, "error": "no asset library"}
+
+    shipped_rows, _compat_rows, sig = _clip_rows_for(_entity_model_id(ent))
+    rec = library.get(req.clip)
+    if rec is None and _safe_label(req.clip):
+        hits = library.query(f"SELECT * FROM assets WHERE kind = 'animation' AND label = '{req.clip}'",
+                             scope=active_scope, limit=50) or []
+        # HER clip first. Labels repeat across captures — `10_action` is eleven different clips — but
+        # asked of a particular figure the question is not ambiguous at all: it means the one that
+        # shipped with her. Falling straight to "ask by id" made the label path useless for the only
+        # caller that has one, and the id is not something a person says out loud.
+        mine = [h for h in hits if h["id"] in {r["id"] for r in shipped_rows}]
+        if len(mine) == 1:
+            hits = mine
+        if len(hits) > 1:
+            # Still ambiguous, and that is not the same as absent: 400 of 524 clips appear in exactly
+            # one capture, so a duplicated label means the same clip name on a different figure.
+            return {"ok": False, "error": f"{req.clip!r} matches {len(hits)} clips, none of them hers "
+                                          f"— ask by id",
+                    "candidates": [{"id": h["id"], "tags": h.get("tags")} for h in hits[:10]]}
+        rec = hits[0] if hits else None
+    if rec is None:
+        return {"ok": False, "error": f"no clip {req.clip!r} in the library"}
+    if rec.get("kind") != "animation":
+        return {"ok": False, "error": f"{req.clip!r} is a {rec.get('kind')}, not an animation"}
+    if not _asset_in_agent_scope(rec):
+        return {"ok": False, "error": f"no clip {req.clip!r} in the library"}
+
+    try:
+        clip_attrs = json.loads(rec.get("attributes") or "{}")
+    except (TypeError, ValueError):
+        clip_attrs = {}
+    clip_sig = clip_attrs.get("rig_sig") or ""
+    mismatch = bool(sig and clip_sig and sig != clip_sig)
+    # A figure with NO map at all and a clip that has one is the same problem with a worse failure: it
+    # binds by name, resolves nothing, and plays silence while reporting success. Tamaki is the real
+    # case — rigged, and no humanoid map recoverable. Retargeting cannot help her either, because there
+    # is nothing to map her channels THROUGH, so this is a refusal that says what is missing.
+    if clip_sig and not sig and not req.force:
+        return {"ok": False, "error":
+                f"{req.id!r} has no humanoid map, so a clip cannot be aimed at it — binding by name "
+                f"would resolve nothing and play silence. {rec.get('label')!r} is rigged {clip_sig}. "
+                f"Pass force to bind it by name anyway."}
+    # ---- TIER 2: a clip from a DIFFERENT rig is rewritten rather than refused ---------------------
+    #
+    # Binding by node name resolves nothing across rigs, so until this existed a mismatch was a refusal
+    # and ten figures in the catalog could be offered no clip at all. `conjure.retarget` maps both
+    # skeletons through the canonical humanoid and rewrites every channel it can carry; what comes back
+    # is an ordinary clip spelled in the TARGET's node names, so the client's one bind-by-name path
+    # resolves it with no new code.
+    #
+    # Content-addressed, so a (clip, rig) pair is computed once ever and every later play is a lookup.
+    # `--force` still means what it did: bind by name across the mismatch and look at the wreck.
+    retarget_notes: list[str] = []
+    if mismatch and not req.force:
+        # ALREADY DONE? Content-addressing dedupes the BYTES, not the work: the rewrite is ~9 s on a
+        # 40-second clip and it ran on every play, producing the same id each time. Measured on device.
+        # A (clip, rig) pair has one answer forever, so the second play is this lookup.
+        from .retarget import RETARGET_REV
+        made = library.query(
+            "SELECT * FROM assets WHERE kind = 'animation' "
+            f"AND json_extract(attributes, '$.retargeted_from') = '{rec['id']}' "
+            f"AND json_extract(attributes, '$.rig_sig') = '{sig}' "
+            f"AND json_extract(attributes, '$.retarget_rev') = {RETARGET_REV}",
+            scope=active_scope, limit=1) or []
+        if made and (ASSET_CACHE / made[0]["id"]).exists():
+            rec, mismatch = made[0], False
+            clip_attrs = json.loads(rec.get("attributes") or "{}")
+            # The caveats are a property of the PAIR, not of this call, so they are stored with the
+            # asset and replayed. A cached play that said nothing would quietly stop mentioning the
+            # skirt that does not move and the torso that lags.
+            retarget_notes = clip_attrs.get("retarget_notes") or []
+    if mismatch and not req.force:
+        clip_path, fig_path = ASSET_CACHE / rec["id"], ASSET_CACHE / _entity_model_id(ent)
+        if not (clip_path.exists() and fig_path.exists()):
+            return {"ok": False, "error": f"{rec.get('label')!r} is rigged {clip_sig} and {req.id!r} "
+                                          f"is {sig}, and the bytes to retarget from are not cached"}
+        why: list[str] = []
+        try:
+            from .retarget import RETARGET_REV, retarget_clip
+            done = retarget_clip(clip_path.read_bytes(), fig_path.read_bytes(), why.append)
+        except Exception as exc:                # noqa: BLE001 — a failed retarget must not 500
+            _slog("figure", f"retarget {rec['id']} -> {sig} failed: {exc}")
+            done = None
+            why.append(str(exc))
+        if done is None:
+            return {"ok": False, "error":
+                    f"{rec.get('label')!r} is rigged {clip_sig} and {req.id!r} is {sig}, and it cannot "
+                    f"be retargeted: {'; '.join(why) or 'no reason given'}. Pass force to bind it by "
+                    f"name anyway and see the wreck."}
+        new_id = register_asset(done.data, kind="animation", ext=".glb",
+                                label=f"{rec.get('label') or rec['id']} ({sig})",
+                                attributes={**clip_attrs, "rig_sig": sig, "rig_sig_rev": RIG_SIG_REV,
+                                            "retargeted_from": rec["id"], "clip_bones": done.bones,
+                                            "clip_dropped": done.dropped,
+                                            "retarget_slid": done.slid,
+                                            "retarget_rev": RETARGET_REV,
+                                            "retarget_notes": done.notes})
+        library.add_relation(new_id, rec["id"], "retargeted_from")
+        # THE VOICE COMES WITH IT. A rewritten clip is the same performance on another body, and the
+        # voice was recorded against the performance rather than against the skeleton — so dropping it
+        # here would make every retargeted clip silent, which is half of what these clips are. Found on
+        # device: the first cross-rig play came back `voiced: null` on a clip that is voiced.
+        for v in library.related(rec["id"], "voiced_by"):
+            library.add_relation(new_id, v["id"], "voiced_by")
+        retarget_notes = done.notes
+        rec = library.get(new_id) or rec
+
+    # The voice recorded against this clip, if there is one — 20 of Jane's 21 have one, and the link is
+    # many-to-many (one file serves four clips), so it is a relation and not a column. Sent WITH the
+    # clip so both start from the same stamped instant rather than from two arrivals.
+    voice = [v for v in library.related(rec["id"], "voiced_by") if v.get("kind") == "audio"]
+
+    # THE RATE THE CAPTURE AUTHORED, unless the caller asked for one. The source plays a clip with
+    # `assignAnimation(name, resource, "Base", animSpeed, true)` where `animSpeed` comes straight from
+    # the position config's `idle.speed` / `action.speedAction` / `action.speedRough` — so a clip run at
+    # 1.0 because nobody thought to ask is run wrong, which is what "the playback speed seemed wrong for
+    # susan/Alice" was. `positions.py` records only a rate that differs from 1.0, so its absence here
+    # genuinely means the author said nothing.
+    speed = float(req.speed) if req.speed is not None else float(clip_attrs.get("speed") or 1.0)
+    started = time.time() * 1000.0
+    patch = [{"op": "update", "id": req.id, "set": {"components.figure-clip": {
+        "clip": f"/assets/{rec['id']}", "name": "", "playing": True,
+        "loop": bool(req.loop), "speed": speed, "startedAt": started,
+        "audio": f"/assets/{voice[0]['id']}" if voice else ""}}}]
+    await _broadcast({"type": "patch", "patch": store.apply_patch(patch, origin="figure-clip")})
+    out = {"ok": True, "id": req.id, "clip": rec["id"], "label": rec.get("label"),
+           "duration_s": clip_attrs.get("duration_s"), "kind": clip_attrs.get("clip_kind"),
+           "loop": bool(req.loop), "started_at": started, "speed": speed,
+           "authored_speed": clip_attrs.get("speed"),
+           "voiced": voice[0]["id"] if voice else None}
+    if retarget_notes:
+        out["retargeted"] = True
+        out["notes"] = retarget_notes
+    if not voice:
+        # "Play something with sound" lands on a silent clip roughly one time in twenty, and the honest
+        # answer is not "no audio" — it is "not this one". Count hers so the caller can offer a swap
+        # instead of reporting a missing capability, which is exactly what happened on device.
+        others = sum(1 for r in shipped_rows
+                     if any(v.get("kind") == "audio" for v in library.related(r["id"], "voiced_by")))
+        if others:
+            out["voiced_alternatives"] = others
+    if mismatch and req.force:
+        out["warning"] = f"rig {clip_sig} on a {sig} figure — forced, so it is bound by NAME and most "
+        out["warning"] += "channels resolve to nothing. Without force this is retargeted instead."
+    return out
+
+
+@app.get("/figure/clips")
+async def figure_clips(id: str, all: bool = False, kind: str = "", voiced: bool = False) -> dict:
+    """What this figure can dance to: what SHIPPED with it, and what merely fits.
+
+    Separate lists on purpose. Compatibility is not sufficiency — 93 of 206 clip names call out a
+    fixture (bed 30, sink 18, toilet 12), so a clip that binds perfectly can still be wrong for a figure
+    standing in a field. `all` includes the compatible-but-not-shipped set, which is the much larger one.
+    """
+    ent = next((e for e in store.doc["entities"] if e["id"] == id), None)
+    if ent is None:
+        return {"ok": False, "error": f"no entity {id!r}"}
+    model_id = _entity_model_id(ent)
+    shipped, compatible, sig = _clip_rows_for(model_id)
+
+    def row(r: dict) -> dict:
+        try:
+            a = json.loads(r.get("attributes") or "{}")
+        except (TypeError, ValueError):
+            a = {}
+        voiced = [v for v in library.related(r["id"], "voiced_by") if v.get("kind") == "audio"]
+        return {"id": r["id"], "label": r.get("label"), "kind": a.get("clip_kind"),
+                "duration_s": a.get("duration_s"), "tags": r.get("tags"), "voiced": bool(voiced)}
+
+    def keep(rows: list[dict]) -> list[dict]:
+        out = [row(r) for r in rows]
+        if kind:
+            out = [r for r in out if r["kind"] == kind]
+        if voiced:
+            out = [r for r in out if r["voiced"]]
+        return out
+
+    shipped_ids = {r["id"] for r in shipped}
+    fits = [r for r in compatible if r["id"] not in shipped_ids]
+    others = _retargetable_rows(sig, shipped_ids | {r["id"] for r in compatible})
+    out = {"ok": True, "id": id, "model": model_id, "rig_sig": sig, "shipped": keep(shipped)}
+    if all:
+        out["compatible"] = keep(fits)
+        out["retargetable"] = keep(others)
+    else:
+        out["compatible_count"] = len(fits)
+        out["retargetable_count"] = len(others)
     return out
 
 

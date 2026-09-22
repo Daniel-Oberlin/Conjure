@@ -1,0 +1,316 @@
+// Unit tests for the hand-fit overlay's numeric half (client/hands-fit.js), run with `node --test`.
+//
+// The drawing half needs a headset and is untestable here. The ARITHMETIC is not, and it is the part that
+// produces a verdict a human will act on — "the runtime is serving a static hand model" is a claim about
+// 24 numbers, and getting the statistic wrong would produce a confident wrong answer rather than no
+// answer. So the thresholds and the two probes are pinned here.
+//
+// The load-bearing test is the last one: our own two hand models are NOT a mirrored pair, and that is
+// encoded as an assertion because it is the premise the ratio probe rests on. If a re-import ever makes
+// them mirrors, this test fails and the comment in BIND (and the caveat in the spec) must be re-measured
+// rather than quietly inherited.
+const { test } = require("node:test");
+const assert = require("node:assert");
+
+global.window = global.window || {};
+require("../../client/hands-fit.js");
+const H = global.window.HandsFit;
+
+/** A synthetic hand: every joint on the +X axis, `step` metres apart down each chain from the wrist.
+ *  Joints from different fingers coincide, which is fine — only the 24 PAIRS are ever measured. */
+function ladder(step) {
+  const pos = { wrist: { x: 0, y: 0, z: 0 } };
+  H.CHAINS.forEach((chain) => {
+    for (let i = 1; i < chain.length; i++) pos[chain[i]] = { x: i * step, y: 0, z: 0 };
+  });
+  return pos;
+}
+
+/** Index of the bone ENDING at `child`, so a test never has to count SEGMENTS by hand. */
+function bone(child) {
+  const i = H.SEGMENTS.findIndex((s) => s[1] === child);
+  assert.ok(i >= 0, `no bone ends at ${child}`);
+  return i;
+}
+
+/** A sampler accumulator as the component builds it, filled from a list of length-arrays. */
+function accumulate(frames) {
+  const n = H.SEGMENTS.length;
+  const acc = { frames: 0, n: new Array(n).fill(0), sum: new Array(n).fill(0),
+                sq: new Array(n).fill(0),
+                min: new Array(n).fill(Infinity), max: new Array(n).fill(-Infinity) };
+  frames.forEach((L) => {
+    acc.frames++;
+    for (let i = 0; i < n; i++) {
+      if (L[i] == null) continue;
+      acc.n[i]++; acc.sum[i] += L[i]; acc.sq[i] += L[i] * L[i];
+      acc.min[i] = Math.min(acc.min[i], L[i]);
+      acc.max[i] = Math.max(acc.max[i], L[i]);
+    }
+  });
+  return acc;
+}
+
+test("the joint set and the bone set are the WebXR ones, and the bind tables match", () => {
+  assert.equal(H.JOINTS.length, 25);
+  assert.equal(H.SEGMENTS.length, 24);
+  assert.equal(H.BIND.left.length, 24);
+  assert.equal(H.BIND.right.length, 24);
+  for (const side of ["left", "right"]) {
+    H.BIND[side].forEach((v, i) => {
+      assert.ok(Number.isFinite(v) && v > 0.005 && v < 0.08,
+        `${side}[${i}] = ${v} is not a plausible bone length in metres`);
+    });
+  }
+  // Every joint except the wrist is some bone's child, exactly once; the wrist is the parent of five.
+  const children = H.SEGMENTS.map((s) => s[1]);
+  assert.equal(new Set(children).size, 24);
+  assert.deepEqual(new Set([...children, "wrist"]), new Set(H.JOINTS));
+  assert.equal(H.SEGMENTS.filter((s) => s[0] === "wrist").length, 5);
+});
+
+test("segmentLengths measures each bone, and reports a missing joint rather than guessing", () => {
+  const L = H.segmentLengths(ladder(0.02));
+  assert.equal(L.length, 24);
+  L.forEach((v) => assert.ok(Math.abs(v - 0.02) < 1e-12));
+
+  const holed = ladder(0.02);
+  delete holed["index-finger-phalanx-intermediate"];
+  const L2 = H.segmentLengths(holed);
+  // The missing joint is the child of one bone and the parent of the next, so it costs exactly two.
+  assert.equal(L2.filter((v) => v === null).length, 2);
+  assert.equal(H.ratioStats(L2, H.BIND.left).n, 22);
+});
+
+test("a uniform scale of our model reads as UNIFORM, and the median IS the scale", () => {
+  const scaled = H.BIND.left.map((v) => v * 1.0734);
+  const r = H.ratioStats(scaled, H.BIND.left);
+  assert.equal(r.n, 24);
+  assert.ok(Math.abs(r.median - 1.0734) < 1e-9);
+  assert.ok(r.cv < 1e-9, `cv ${r.cv} should be zero for a uniform scale`);
+  assert.match(H.ratioVerdict(r), /^UNIFORM/);
+  assert.match(H.ratioVerdict(r), /1\.0734/);
+});
+
+test("a hand of different PROPORTIONS does not read as uniform, whatever its size", () => {
+  // Fingers 12% longer, thumb 4% shorter — a real difference in shape, not in scale.
+  const odd = H.BIND.left.map((v, i) => v * (i < 4 ? 0.96 : 1.12));
+  const r = H.ratioStats(odd, H.BIND.left);
+  assert.ok(r.cv > 0.03, `cv ${r.cv} should exceed the CLOSE threshold`);
+  assert.match(H.ratioVerdict(r), /^DIFFERENT PROPORTIONS/);
+  // It must NAME the bones, not only the spread — a number cannot be acted on and a bone can.
+  assert.ok(r.maxAt && r.minAt, "the widest and narrowest bones must be named");
+  assert.match(H.ratioVerdict(r), /widest at \S+ .*narrowest at \S+/);
+  // And the verdict is monotone: scattering more never reads as more uniform.
+  const worse = H.BIND.left.map((v, i) => v * (1 + 0.3 * Math.sin(i)));
+  assert.ok(H.ratioStats(worse, H.BIND.left).cv > r.cv);
+});
+
+test("the premise-free probe: constant lengths mean a POSED skeleton, moving ones do not", () => {
+  const still = accumulate([0, 1, 2, 3].map(() => H.BIND.left.slice()));
+  const j = H.jitterStats(still);
+  assert.equal(j.bones, 24);
+  assert.equal(j.max, 0);
+  assert.match(H.jitterVerdict(j), /^RIGID/);
+
+  const wander = bone("index-finger-phalanx-proximal");
+  const moving = [H.BIND.left.slice(), H.BIND.left.slice()];
+  moving[1][wander] = moving[1][wander] * 1.05;                // index proximal wanders 5%
+  const j2 = H.jitterStats(accumulate(moving));
+  assert.ok(j2.max > 0.02);
+  assert.equal(j2.name, "index-finger-phalanx-proximal");      // it names the bone, not just the number
+  assert.match(H.jitterVerdict(j2), /^NOT RIGID/);
+
+  // Float noise is not re-estimation: one part in ten thousand still reads as a posed skeleton.
+  const noisy = [H.BIND.left.slice(), H.BIND.left.map((v) => v * 1.0001)];
+  assert.match(H.jitterVerdict(H.jitterStats(accumulate(noisy))), /^RIGID/);
+});
+
+test("the verdict claims RIGIDITY and not measurement — the distinction it got wrong first", () => {
+  // Measured on a Quest 3: ~2.5%. The sound inference is that joints are positioned independently,
+  // because posing a stored skeleton cannot change a bone's LENGTH however noisy the pose. That is not
+  // the same as "this is your hand", and the wording must not claim it.
+  const real = H.jitterStats(accumulate([H.BIND.left.slice(), H.BIND.left.map((v, i) => v * (1 + (i % 3) * 0.025))]));
+  const said = H.jitterVerdict(real);
+  assert.match(said, /positioned independently/);
+  assert.match(said, /says nothing yet about whose hand/);
+  assert.doesNotMatch(said, /from the image/, "that was an inference the number does not license");
+});
+
+test("jitterStats and ratioStats say NOTHING rather than something wrong when there is no data", () => {
+  const empty = accumulate([]);
+  assert.equal(H.jitterStats(empty), null);
+  assert.match(H.jitterVerdict(null), /no bones measured/);
+  assert.equal(H.ratioStats(new Array(24).fill(null), H.BIND.left), null);
+  assert.match(H.ratioVerdict(null), /no bind length/);
+  assert.equal(H.compareHands(new Array(24).fill(null), H.BIND.left), null);
+});
+
+test("?hands= parses to a mode, and anything unrecognised is off rather than a guess", () => {
+  const at = (search) => { global.location = { search }; return H.resolveMode(); };
+  assert.equal(at(""), "off");
+  assert.equal(at("?hands=fit"), "fit");
+  assert.equal(at("?hands=JOINTS"), "joints");
+  assert.equal(at("?hands=axes"), "axes");
+  assert.equal(at("?hands=1"), "fit");
+  assert.equal(at("?hands=true"), "fit");
+  assert.equal(at("?hands=on"), "fit");
+  assert.equal(at("?hands=wear"), "off");
+  assert.equal(at("?occlusion=hands"), "off");
+});
+
+test("a table compared with itself is a mirror; our OWN hand pair is not", () => {
+  const same = H.compareHands(H.BIND.left, H.BIND.left);
+  assert.equal(same.maxAbs, 0);
+  assert.equal(same.rms, 0);
+
+  // Measured 2026-09-17 from b8f676bea0758536 (L) and f586068580143caa (R). The pair agrees closely on
+  // middle, ring and pinky and disagrees on the INDEX by more than 6 mm — so they cannot both be the
+  // canonical WebXR skeleton, which is why the ratio probe carries a premise and the jitter probe does not.
+  const pair = H.compareHands(H.BIND.left, H.BIND.right);
+  assert.equal(pair.bones, 24);
+  assert.equal(pair.name, "index-finger-metacarpal");
+  assert.ok(pair.maxAbs > 0.006, `max |Δ| was ${pair.maxAbs} m; re-measure BIND and the spec's caveat`);
+  assert.ok(pair.rms > 0.001);
+
+  // ...and the agreement on the other three fingers is what makes the index disagreement notable.
+  for (const child of ["middle-finger-metacarpal", "ring-finger-metacarpal", "pinky-finger-metacarpal"]) {
+    const i = bone(child);
+    assert.ok(Math.abs(H.BIND.left[i] - H.BIND.right[i]) < 0.0005, `${child} should agree to 0.5 mm`);
+  }
+});
+
+test("two windows per acquisition, so convergence is not mistaken for steady state", () => {
+  // The first reading conflated them: ~2.5% jitter, sampled over the 30 frames immediately after
+  // acquisition, which is exactly when an estimate is still settling. A non-zero figure there already
+  // rules out a stored skeleton — a stored one cannot converge — but its MAGNITUDE said nothing.
+  assert.ok(H.SAMPLES > 0 && H.SETTLE > 0, "both windows must exist");
+  // fresh = 1..SAMPLES, a gap of SETTLE, settled = SAMPLES+SETTLE+1 .. SAMPLES+SETTLE+SAMPLES
+  const total = H.SAMPLES + H.SETTLE + H.SAMPLES;
+  const which = (frame) => frame <= H.SAMPLES ? "fresh"
+                         : frame > H.SAMPLES + H.SETTLE ? "settled" : "gap";
+  assert.equal(which(1), "fresh");
+  assert.equal(which(H.SAMPLES), "fresh");
+  assert.equal(which(H.SAMPLES + 1), "gap");
+  assert.equal(which(H.SAMPLES + H.SETTLE), "gap");
+  assert.equal(which(H.SAMPLES + H.SETTLE + 1), "settled");
+  assert.equal(which(total), "settled");
+  // ~1.25 s at 72 Hz: long enough to settle, short enough that nobody holds a pose waiting for it.
+  assert.ok(total / 72 < 2, `${total} frames is ${(total / 72).toFixed(2)} s — too long to hold still`);
+});
+
+test("your numbers, reproduced: four collapsed metacarpals give s=1.017 and cv=36%", () => {
+  // Measured on a Quest 3, 2026-09-17: s=1.017, cv~36% on BOTH hands, and left-vs-right max delta
+  // displayed as zero. Those do not fit "a hand of different proportions" — a real pair differs, and
+  // 36% is not a proportion difference, it is a category difference.
+  //
+  // They fit one thing exactly: the four finger metacarpals reported at the WRIST, so
+  // `wrist -> X-finger-metacarpal` measures ~0 for four of the 24 bones while the other twenty sit at
+  // a uniform 1.017. This test is that hypothesis, written down so the next reading either confirms
+  // or kills it.
+  const tracked = H.BIND.left.map((v) => v * 1.017);
+  for (const n of ["index-finger-metacarpal", "middle-finger-metacarpal",
+                   "ring-finger-metacarpal", "pinky-finger-metacarpal"]) {
+    tracked[bone(n)] = 0.0005;                                  // half a millimetre: a collapsed joint
+  }
+  const r = H.ratioStats(tracked, H.BIND.left);
+  assert.ok(Math.abs(r.median - 1.017) < 0.001, `median ${r.median}`);
+  assert.ok(r.cv > 0.30 && r.cv < 0.45, `cv ${r.cv} should land near the measured 36%`);
+  assert.equal(r.collapsed.length, 4);
+
+  // And the verdict must say MISSING JOINTS, not "different proportions": they call for opposite
+  // responses — do not drive those bones, versus rescale the model.
+  const said = H.ratioVerdict(r);
+  assert.match(said, /^MISSING JOINTS/);
+  assert.match(said, /must not be driven from tracked data/);
+  assert.doesNotMatch(said, /DIFFERENT PROPORTIONS/);
+});
+
+test("14 of the 24 segments are bones; the other 10 are conventions", () => {
+  // Measured on a Quest 3 against our own model: the middle of every chain agrees to about 1.02, and
+  // BOTH ENDS disagree — the first column varies per finger, the last varies most of all. Two
+  // conventions meeting, not a hand of different proportions:
+  //   wrist -> metacarpal   an offset between a frame origin and the hand, pointing differently per
+  //                         finger, carrying no information about how long anything is
+  //   distal -> tip         the WebXR tip is at the fingertip SURFACE, derived from the runtime's own
+  //                         estimate; our model's tip bone is authored. Different measurements.
+  const groups = {};
+  H.SEGMENTS.forEach((s) => {
+    const k = s[0] === "wrist" ? "wrist" : /-tip$/.test(s[1]) ? "tip" : "bone";
+    groups[k] = (groups[k] || 0) + 1;
+  });
+  assert.deepEqual(groups, { wrist: 5, bone: 14, tip: 5 });
+
+  // The measured shape: ends scattered, middle uniform. It must report s from the bones and a clean
+  // cv, not a 36% spread over a set that should never have been mixed.
+  const tracked = H.BIND.left.map((v, i) => {
+    const s = H.SEGMENTS[i];
+    if (s[0] === "wrist") return v * (1.0 + Math.abs(Math.sin(i)));
+    if (/-tip$/.test(s[1])) return v * (0.7 + Math.abs(Math.cos(i)) * 1.2);
+    return v * 1.017;
+  });
+  const r = H.ratioStats(tracked, H.BIND.left);
+  assert.ok(Math.abs(r.s - 1.017) < 1e-6, `s should come from the bones; got ${r.s}`);
+  assert.ok(r.bone.cv < 1e-9, `the 14 bones must be uniform; cv was ${r.bone.cv}`);
+  assert.ok(r.cv > 0.25, "...while the all-24 figure is still wide, which is the point");
+  assert.equal(r.bone.n, 14);
+  assert.equal(r.wrist.n, 5);
+  assert.equal(r.tip.n, 5);
+
+  const said = H.ratioVerdict(r);
+  assert.match(said, /^UNIFORM on the 14 bones/);
+  assert.match(said, /conventions, not bones/);
+});
+
+test("the wrist-offset half of it, on its own", () => {
+  // The collapsed-metacarpal hypothesis died on the headset — the HUD reported no bones near zero.
+  // What still reproduces s=1.017 with cv~36% and NOTHING collapsed is the five wrist-rooted
+  // segments reading long, which is what a wrist origin sitting further back would do.
+  //
+  // The point is not the number. It is that `wrist -> X-metacarpal` IS NOT A BONE: it is the offset
+  // between an arbitrary frame origin and the hand, so it says nothing about hand SIZE and should not
+  // be inside a scale estimate. 19 of the 24 segments are real phalanges; those are the ones `s`
+  // should be the median of.
+  const tracked = H.BIND.left.map((v) => v * 1.017);
+  H.SEGMENTS.forEach((s, i) => { if (s[0] === "wrist") tracked[i] *= 1.9; });
+  const r = H.ratioStats(tracked, H.BIND.left);
+  assert.ok(Math.abs(r.median - 1.017) < 0.001, `median ${r.median}`);
+  assert.ok(r.cv > 0.30 && r.cv < 0.45, `cv ${r.cv} should land near the measured 36%`);
+  assert.equal(r.collapsed.length, 0, "and nothing reads as missing, which is what was seen");
+  assert.ok(Math.abs(r.s - 1.017) < 1e-9, "and s is unaffected, because it comes from the bones");
+
+  // Excluding the five wrist-rooted segments recovers a clean uniform scale — the test of the claim.
+  const phalanx = [], bind = [];
+  H.SEGMENTS.forEach((s, i) => {
+    if (s[0] === "wrist") return;
+    phalanx.push(tracked[i]); bind.push(H.BIND.left[i]);
+  });
+  assert.equal(phalanx.length, 19);
+  const mean = phalanx.reduce((a, b, i) => a + b / bind[i], 0) / 19;
+  const sd = Math.sqrt(phalanx.reduce((a, b, i) => a + (b / bind[i] - mean) ** 2, 0) / 19);
+  assert.ok(sd / mean < 1e-9, `the 19 real bones must be uniform; cv was ${sd / mean}`);
+});
+
+test("range and SD are reported together, because range is one bad frame wide", () => {
+  // 29 identical frames and one outlier give a 2.5% RANGE on a table that never changed — which is
+  // how a mirrored table first read as a per-joint estimate.
+  const frames = [];
+  for (let i = 0; i < 29; i++) frames.push(H.BIND.left.slice());
+  const odd = H.BIND.left.slice();
+  odd[bone("index-finger-phalanx-proximal")] *= 1.025;
+  frames.push(odd);
+  const j = H.jitterStats(accumulate(frames));
+  assert.ok(j.max > 0.02, "the range sees the outlier");
+  assert.ok(j.sd < j.max / 4, `sd ${j.sd} must be far below the range ${j.max}`);
+  // Reported as a CLAUSE and not as a different verdict: over 30 samples even ordinary noise gives a
+  // range about four times the SD, so this says where to look, not what it is.
+  assert.match(H.jitterVerdict(j), /concentrated in a few frames/);
+  assert.match(H.jitterVerdict(j), /^NOT RIGID/);
+
+  // Whereas movement on every frame carries no such clause — there is nowhere else to look.
+  const moving = [];
+  for (let i = 0; i < 30; i++) moving.push(H.BIND.left.map((v, k) => v * (1 + 0.02 * Math.sin(i + k))));
+  const spread = H.jitterVerdict(H.jitterStats(accumulate(moving)));
+  assert.match(spread, /^NOT RIGID/);
+  assert.doesNotMatch(spread, /concentrated/);
+});

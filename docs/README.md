@@ -42,8 +42,14 @@ split exists so a spec can be trusted: nothing in it is a plan, an intention, or
   namespace, sessions (disk layout, state store, constructor), the agent server's protocol and its
   follow loop, and the one-shared-reality permission model. ([backlog](./backlogs/agents.md))
 - **[specs/dynamics.md](./specs/dynamics.md)** — dynamic modules: the manifest, the client contract, the
-  shared clock/bus/pointer runtime, XR actions and pointer arbitration, placement, and the tier-C commit
-  path. ([backlog](./backlogs/dynamics.md))
+  shared clock and event bus, placement, and the tier-C commit path. Input moved out to `specs/input.md`.
+  ([backlog](./backlogs/dynamics.md))
+- **[specs/input.md](./specs/input.md)** — **XR input, as actions**: the one reader of the XR frame,
+  the control vocabulary and the binding table that keeps buttons out of module code, what a pointer
+  carries, `armed()` as the single definition of "in use", and the capture/reservation arbitration that
+  lets two consumers share a trigger. Its own area because its consumers are not all modules — the
+  beams, the gaze picker and the surface overlay read it too ([decisions.md](./decisions.md) §29).
+  ([backlog](./backlogs/input.md))
 - **[specs/spaces.md](./specs/spaces.md)** — the **space**: the persistent record of a real physical
   environment (surfaces, boundary, geolocation, owner), how a headset decides which space it is standing
   in, admission tiers, the occupancy claim, authority vs. edit rights, and co-location.
@@ -62,8 +68,13 @@ split exists so a spec can be trusted: nothing in it is a plan, an intention, or
 - **[specs/figures.md](./specs/figures.md)** — **figures**: rigged humanoids, and the per-model
   vocabulary that makes them posable — what import extracts from a GLB, the discovery layers that
   recover a semantic bone map and the validator that gates them, the anatomical frame and joint limits,
-  life-size placement, the catalog revision stamp, the runtime `figure` component, and the headless
-  Blender conversion that feeds it. ([backlog](./backlogs/figures.md))
+  life-size placement, the catalog revision stamp, and the runtime `figure`, `figure-parts` and
+  `figure-clip` components. ([backlog](./backlogs/figures.md))
+- **[specs/captures.md](./specs/captures.md)** — **captures**: the pipeline from someone else's 3D web
+  app to a row in the catalog — the browser extension that pulls a published build, the reconstruction
+  that rejoins materials a PlayCanvas export split apart, the import that files the result with its
+  relations, and the headless Blender path beside it. Each stage fails in ways the next cannot detect,
+  which is why they are specified together. ([backlog](./backlogs/captures.md))
 - **[specs/occlusion.md](./specs/occlusion.md)** — real-world depth occlusion: the global depth pre-pass
   and the `off`/`hands`/`hands-solid` modes. ([backlog](./backlogs/occlusion.md))
 - **[specs/voice.md](./specs/voice.md)** — the **ears-and-mouth front-end**: the thin-client contract
@@ -96,7 +107,10 @@ the three space specs above, with `pops-and-jitters-journey.md` and `wall-art-45
 [specs/library.md](./specs/library.md) + its backlog; and the flat `backlog.md` + `known-issues.md`
 distributed into the per-area backlogs — all 2026-08-26. `user-home-plan.md` →
 [specs/config.md](./specs/config.md) + its backlog, with the layout forks to
-[decisions.md](./decisions.md) §21, on 2026-08-27.)*
+[decisions.md](./decisions.md) §21, on 2026-08-27. `specs/dynamics.md` §6's XR-input half →
+[specs/input.md](./specs/input.md) + its backlog, with the fork at
+[decisions.md](./decisions.md) §29, on 2026-09-17 — a split rather than a consolidation, and the
+first one: the layer's consumers had stopped being modules.)*
 
 > For current project status / what works today, see the top-level [README](../README.md) — it's
 > the single source of truth for status, so these docs don't drift.

@@ -19,10 +19,12 @@ import struct
 import pytest
 
 from conjure.figures import split_glb, write_glb
-from conjure.playcanvas import (BLEND_NONE, BLEND_NORMAL, Build, adopt_unbound, build_origin,
-                                by_container, find_builds, find_orphans, has_alpha, load_image,
-                                material_from, missing_files, read_build, rebuild, report_orphans,
-                                variant_only, _Textures)
+from conjure.playcanvas import (BLEND_NONE, BLEND_NORMAL, BLEND_PREMULTIPLIED, Build, adopt_unbound, build_origin,
+                                by_container, container_meshes, dangling, dead_meshes, find_builds,
+                                load_thing_rules, thing_notes, things,
+                                find_orphans, has_alpha, load_image, material_from, missing_files,
+                                read_build, rebuild, regroup_materials, report_orphans, variant_only,
+                                _Textures)
 
 PIL = pytest.importorskip("PIL.Image")
 
@@ -41,6 +43,31 @@ def _glb(meshes=(1, 3)) -> bytes:
                    for n in meshes],
         "nodes": [{"name": "root", "mesh": 0}],
         "scenes": [{"nodes": [0]}], "scene": 0,
+    }
+    return write_glb(doc, b"01234567")
+
+
+def _glb_named(meshes) -> bytes:
+    """A GLB whose meshes carry NAMES and real vertex counts — `[(name, [count, ...]), ...]`.
+
+    `adopt_unbound` reads both off the container FILE, because the registry does not always describe
+    every mesh in it: office-babe's body has no render asset at all, and her file still calls it `Body`.
+    """
+    accessors, prims = [], []
+    for _name, counts in meshes:
+        row = []
+        for n in counts:
+            accessors.append({"componentType": 5126, "count": n, "type": "VEC3"})
+            row.append({"attributes": {"POSITION": len(accessors) - 1}})
+        prims.append(row)
+    doc = {
+        "asset": {"version": "2.0", "generator": "test"},
+        "buffers": [{"byteLength": 8}],
+        "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 8}],
+        "accessors": accessors,
+        "meshes": [{"primitives": p} for p in prims],
+        "nodes": [{"name": n, "mesh": i} for i, (n, _c) in enumerate(meshes)],
+        "scenes": [{"nodes": list(range(len(meshes)))}], "scene": 0,
     }
     return write_glb(doc, b"01234567")
 
@@ -70,8 +97,38 @@ def _png(path, mode, *, transparent=False, size=(8, 8)):
     return str(path)
 
 
+def _scene(spec) -> dict:
+    """`{entities: …}` for a scene whose `Root` holds `spec`, from nested
+    `(name, {fields}, [children])`.
+
+    A TREE and not a flat list, because that is the thing under test: a container is a file and a thing
+    is a SUBTREE, so a fixture that flattens has nothing to say about any of it.
+    """
+    out: dict = {}
+    counter = [0]
+
+    def add(node) -> str:
+        name, fields, kids = node
+        counter[0] += 1
+        guid = f"g{counter[0]}"
+        out[guid] = {"name": name, "children": [], **fields}
+        out[guid]["children"] = [add(k) for k in kids]
+        return guid
+
+    add(("Root", {}, [spec]))
+    return {"entities": out}
+
+
+def _render(container, index, materials):
+    """The `components.render` an entity needs to draw one mesh. The render ASSET id is derived so a
+    fixture only has to say `(container, index)` once — `_build`'s `renders` must match."""
+    return {"components": {"render": {"enabled": True, "type": "asset",
+                                      "asset": container * 1000 + index,
+                                      "materialAssets": materials}}}
+
+
 def _build(tmp_path, *, materials=None, entities=None, renders=None, containers=None, textures=(),
-           templates=(), scene=True):
+           templates=(), scene=True, glbs=(), scene_tree=None):
     """Write a minimal published build to disk and return its directory.
 
     `templates` is `[(id, name, [(entity, render, [materials])])]`; `scene=False` leaves the scene
@@ -101,10 +158,14 @@ def _build(tmp_path, *, materials=None, entities=None, renders=None, containers=
                             "data": {"entities": hierarchy(specs)}}
     os.makedirs(tmp_path / "files", exist_ok=True)
     (tmp_path / "files" / "body.glb").write_bytes(_glb())
+    for url, data in glbs:                       # containers that are not all the same file
+        os.makedirs(os.path.dirname(tmp_path / url), exist_ok=True)
+        (tmp_path / url).write_bytes(data)
     (tmp_path / "config.json").write_text(json.dumps(
         {"assets": assets, "scenes": [{"name": "main", "url": "scene.json"}]}))
     if scene:
-        (tmp_path / "scene.json").write_text(json.dumps({"entities": ents}))
+        (tmp_path / "scene.json").write_text(
+            json.dumps(_scene(scene_tree) if scene_tree else {"entities": ents}))
     return str(tmp_path)
 
 
@@ -199,6 +260,410 @@ def test_an_unbound_mesh_can_adopt_a_material_by_render_name(tmp_path):
     got = [b for b in build.bindings if b.container == 10 and b.mesh == 1][0]
     assert got.materials == (31,) and got.adopted, "flagged, because a name match is evidence not proof"
     assert any("INFERRED" in n for n in build.notes)
+
+
+def test_a_mesh_no_render_asset_describes_at_all_can_still_adopt(tmp_path):
+    """Office-babe came out matte black and her body was the reason. The scene renders it from
+    `manager_fixing.glb`, so her OWN container's copy is bound by nobody — and, unlike Jane's hair, the
+    registry has no render asset for it either: her eight render assets start at index 1. A search that
+    only ever looked at render assets could not see the mesh, let alone adopt for it. The file still
+    calls it `Body`, which is where the name has to come from."""
+    root = _build(
+        tmp_path,
+        containers=[(10, "office-babe.glb", "files/office-babe.glb"),
+                    (11, "manager_fixing.glb", "files/manager_fixing.glb")],
+        # Note what is NOT here: nothing describes (10, 0). Her registry begins at mesh 1.
+        renders=[(21, "Hair", 10, 1), (22, "Body", 11, 0)],
+        entities=[("Hair", 21, [31]), ("Body", 22, [30])],
+        glbs=[("files/office-babe.glb", _glb_named([("Body", [7]), ("Hair", [1])])),
+              ("files/manager_fixing.glb", _glb_named([("Body", [7])]))],
+    )
+    build = read_build(root)
+    assert not [b for b in build.bindings if b.container == 10 and b.mesh == 0], "nobody binds her body"
+    assert adopt_unbound(build) == 1
+    got = [b for b in build.bindings if b.container == 10 and b.mesh == 0][0]
+    assert got.materials == (30,) and got.adopted
+
+
+def test_adoption_carries_materials_across_a_different_primitive_split(tmp_path):
+    """A glTF primitive break IS a material break, so two copies of one mesh need not be split the same
+    way: the copy exported WITH materials splits where they change and the copy exported without them
+    does not. Office-babe's body is 5 primitives in her container and 6 in the one the scene renders —
+    the mouth, one span there and two here, both wearing `Mouth`. Match by vertex count and the spans
+    line up."""
+    root = _build(
+        tmp_path,
+        containers=[(10, "her.glb", "files/her.glb"), (11, "fixing.glb", "files/fixing.glb")],
+        renders=[(21, "Hair", 10, 1), (22, "Body", 11, 0)],
+        entities=[("Hair", 21, [31]), ("Body", 22, [30, 31, 31])],
+        glbs=[("files/her.glb", _glb_named([("Body", [4, 2]), ("Hair", [1])])),
+              ("files/fixing.glb", _glb_named([("Body", [4, 1, 1])]))],
+    )
+    build = read_build(root)
+    assert adopt_unbound(build) == 1
+    got = [b for b in build.bindings if b.container == 10 and b.mesh == 0][0]
+    assert got.materials == (30, 31), "the merged span takes the material its parts agree on"
+    assert "regrouped" in " ".join(build.notes)
+
+
+def test_adoption_refuses_a_name_match_whose_vertices_do_not_line_up(tmp_path):
+    """A name match is evidence, not proof, and exporters hand out names like `Object_4` — `computer_desk`
+    and `cool_button` each have one, at 2,147 and 149 vertices. Adopting across that paints a desk with a
+    button's material and looks exactly like a conversion bug. Different vertex counts mean different
+    meshes, so refuse and say why."""
+    root = _build(
+        tmp_path,
+        containers=[(10, "computer_desk.glb", "files/desk.glb"),
+                    (11, "cool_button.glb", "files/button.glb")],
+        renders=[(21, "Lamp", 10, 1), (22, "Object_4", 11, 0)],
+        entities=[("Lamp", 21, [31]), ("Object_4", 22, [30])],
+        glbs=[("files/desk.glb", _glb_named([("Object_4", [2147]), ("Lamp", [5])])),
+              ("files/button.glb", _glb_named([("Object_4", [149])]))],
+    )
+    build = read_build(root)
+    assert adopt_unbound(build) == 0
+    assert any("NOT adopting" in n for n in build.notes)
+
+
+def test_regroup_refuses_a_span_that_covers_two_materials():
+    """A merged primitive whose parts wore DIFFERENT materials has no answer in a format that allows one
+    material per primitive. Picking either is a coin toss, so pick neither."""
+    assert regroup_materials((4, 1, 1), (30, 31, 31), (4, 2)) == (30, 31)
+    assert regroup_materials((4, 1, 1), (30, 31, 32), (4, 2)) is None, "the span disagrees with itself"
+    assert regroup_materials((4, 2), (30, 31), (4, 3)) is None, "a sum that never lands"
+    assert regroup_materials((4, 2), (30, 31), (4,)) is None, "donor primitives left over"
+
+
+def test_container_meshes_reports_unknown_counts_rather_than_guessing(tmp_path):
+    """A count it cannot resolve is not a count of zero. All-or-nothing, because a partial list cannot
+    align two primitive runs — and `adopt_unbound` then falls back to carrying the materials as they are,
+    which is what it always did."""
+    root = _build(tmp_path, glbs=[("files/named.glb", _glb_named([("Body", [7, 2])]))],
+                  containers=[(10, "named.glb", "files/named.glb")])
+    build = read_build(root)
+    assert container_meshes(build, 10) == [("Body", (7, 2))]
+    build.assets[10]["file"]["url"] = "files/body.glb"          # the fixture GLB: no accessors at all
+    assert container_meshes(build, 10) == [("root", ()), ("", ())], "unknown, not zero"
+
+
+def test_a_THING_spans_containers_and_leaves_the_dead_twin_behind(tmp_path):
+    """The unit a container is not. office-babe draws from three files — her clothes from her own, her
+    BODY from `manager_fixing.glb`, her underwear from a third — while the copy of the body inside her
+    own container is drawn by nobody. Walking containers emits that twin and misses the real body;
+    walking the subtree does the opposite, with no special case for either."""
+    root = _build(
+        tmp_path,
+        containers=[(10, "her.glb", "files/body.glb"), (11, "fixing.glb", "files/body.glb"),
+                    (12, "underwear.glb", "files/body.glb")],
+        renders=[(10000, "Jacket", 10, 0), (10001, "DeadBody", 10, 1),
+                 (11000, "Body", 11, 0), (12000, "underwear", 12, 0)],
+        scene_tree=("office-babe", {}, [
+            ("Jacket", _render(10, 0, [30]), []),
+            ("Body", _render(11, 0, [31]), []),
+            ("underwear", {"enabled": False, **_render(12, 0, [31])}, []),
+        ]),
+        templates=[])
+    build = read_build(root)
+    thing = next(t for t in things(build) if t.name == "office-babe")
+    assert thing.containers == {10: 1, 11: 1, 12: 1}, "three files, one thing"
+    assert {(p.container, p.mesh) for p in thing.live} == {(10, 0), (11, 0)}
+    assert (10, 1) not in {(p.container, p.mesh) for p in thing.pieces}, "the dead twin is not drawn"
+
+
+def test_a_piece_the_scene_switched_OFF_is_optional_not_dead(tmp_path):
+    """`enabled: false` on a piece is the site's own wardrobe switch — `underwear` is exactly this in
+    office-babe, Oktoberfest and bride — and it is what the parts classifier has been reconstructing
+    from mesh names. Emit it HIDDEN; dropping it loses a garment the source offers."""
+    root = _build(tmp_path,
+                  renders=[(10000, "a", 10, 0), (10001, "b", 10, 1)],
+                  scene_tree=("figure", {}, [
+                      ("skin", _render(10, 0, [30]), []),
+                      ("underwear", {"enabled": False, **_render(10, 1, [31])}, [])]),
+                  templates=[])
+    thing = things(read_build(root))[0]
+    assert [p.entity for p in thing.live] == ["skin"]
+    assert [p.entity for p in thing.optional] == ["underwear"]
+
+
+def test_enabled_composes_DOWN_the_chain(tmp_path):
+    """An ancestor switched off takes its children with it, however enabled they say they are."""
+    root = _build(tmp_path, renders=[(10000, "a", 10, 0)],
+                  scene_tree=("figure", {}, [
+                      ("outfit", {"enabled": False}, [("shirt", _render(10, 0, [30]), [])])]),
+                  templates=[])
+    thing = things(read_build(root))[0]
+    assert thing.live == [] and [p.entity for p in thing.optional] == ["shirt"]
+
+
+def test_a_piece_remembers_the_BONE_it_hangs_off(tmp_path):
+    """Oktoberfest's beer is parented to `DEF-hand.R` and bride's heels to `DEF-foot.L`/`.R`. That
+    relationship lives on the ENTITY, not in the container, so a merge that flattens nodes drops the
+    beer on the floor and loses a shoe."""
+    root = _build(tmp_path, containers=[(10, "her.glb", "files/body.glb")],
+                  renders=[(10000, "beer", 10, 0)],
+                  scene_tree=("figure", {}, [
+                      ("DEF-spine", {}, [("DEF-hand.R", {}, [("Beer", _render(10, 0, [30]), [])])])]),
+                  templates=[])
+    thing = things(read_build(root))[0]
+    piece = thing.pieces[0]
+    assert piece.parent == "DEF-hand.R"
+    assert piece.path == ("figure", "DEF-spine", "DEF-hand.R", "Beer")
+
+
+def test_one_mesh_drawn_by_two_nodes_stays_two_pieces(tmp_path):
+    """Bride's heels are ONE mesh instanced by two entities, one per foot. A reader that keys on
+    (container, mesh) collapses them and she loses a shoe."""
+    root = _build(tmp_path, renders=[(10000, "heel", 10, 0)],
+                  scene_tree=("bride", {}, [
+                      ("DEF-foot.L", {}, [("heel_L", _render(10, 0, [30]), [])]),
+                      ("DEF-foot.R", {}, [("heel_R", _render(10, 0, [30]), [])])]),
+                  templates=[])
+    thing = things(read_build(root))[0]
+    assert len(thing.pieces) == 2
+    assert {p.parent for p in thing.pieces} == {"DEF-foot.L", "DEF-foot.R"}
+    assert {(p.container, p.mesh) for p in thing.pieces} == {(10, 0)}, "the same mesh, twice"
+
+
+def test_a_transform_is_the_PRODUCT_of_the_chain(tmp_path):
+    """A banana that skips its catalogue wrapper's 0.5 arrives twice life size, and `WOODout.glb` is
+    meaningless at the origin — the scene puts it at -10 under a house scaled 0.01, which is -0.1."""
+    root = _build(tmp_path, renders=[(10000, "a", 10, 0)],
+                  scene_tree=("Banana", {"scale": [0.5, 0.5, 0.5]}, [
+                      ("BANANA", {"position": [0, -10, 0], "scale": [0.9, 1.0, 2.0],
+                                  **_render(10, 0, [30])}, [])]),
+                  templates=[])
+    piece = things(read_build(root))[0].pieces[0]
+    assert piece.scale == (0.45, 0.5, 1.0), "0.5 × the inner scale"
+    assert piece.position == (0.0, -5.0, 0.0), "-10 through the parent's 0.5"
+    assert piece.rotated is False
+
+
+def test_a_ROTATION_in_the_chain_is_flagged_rather_than_mis_composed(tmp_path):
+    """Euler order is a decision this does not get to guess at, so a non-zero rotation is reported and
+    the merge deals with it properly rather than inheriting a plausible wrong matrix."""
+    root = _build(tmp_path, renders=[(10000, "a", 10, 0)],
+                  scene_tree=("thing", {"rotation": [0, 90, 0]}, [
+                      ("mesh", _render(10, 0, [30]), [])]),
+                  templates=[])
+    assert things(read_build(root))[0].pieces[0].rotated is True
+
+
+def test_a_thing_is_enabled_or_CATALOGUED_and_that_is_not_a_reason_to_skip_it(tmp_path):
+    """`enabled: false` means two different things and the LEVEL decides which. On a piece it is
+    optional. On a thing it is *in the catalogue, not placed in this scene* — which is the entire props
+    library: all 15 tools and all 13 skin-tone variants are disabled Root children. Reading the flag
+    uniformly would import none of them."""
+    root = _build(tmp_path, renders=[(10000, "a", 10, 0)],
+                  scene_tree=("Banana", {"enabled": False}, [("BANANA", _render(10, 0, [30]), [])]),
+                  templates=[])
+    thing = things(read_build(root))[0]
+    assert thing.enabled is False, "not placed here"
+    assert len(thing.live) == 1, "...and still entirely importable"
+
+
+def test_the_app_shell_is_excluded_SITE_WIDE_not_per_capture(tmp_path):
+    """The eight false positives are the same eight names in every capture: `2049393.json` is the app's
+    own scene and every capture ships it identically. `LeftController`, `Gestures`, `TRASH` and the rest
+    render meshes and are not things anybody places. One list, written once, applies everywhere — which
+    is the difference between "manual guidance per import" and "a file you write once"."""
+    rules = {"exclude": ["Gestures"], "captures": {}}
+    root = _build(tmp_path, renders=[(10000, "a", 10, 0)],
+                  scene_tree=("Gestures", {}, [("hand", _render(10, 0, [30]), [])]), templates=[])
+    build = read_build(root)
+    assert [t.name for t in things(build, rules={"exclude": [], "captures": {}})] == ["Gestures"]
+    assert things(build, rules=rules) == [], "excluded by name, in any scene"
+
+
+def test_a_capture_override_NAMES_things_at_any_depth_and_can_rename_them(tmp_path):
+    """susan is the one measured capture the convention bundles: her Root child `aula` is a classroom
+    with Alice standing in it, and the two useful things — `ModelParent` (the figure) and
+    `EnvironmentVR` (the room) — sit two levels down. A filter over Root's CHILDREN could only ever
+    have dropped her, which is exactly what it did until this.
+
+    A list names them; a map also renames, because `ModelParent` is the app's internal name and no use
+    as an asset label."""
+    root = _build(tmp_path, renders=[(10000, "a", 10, 0), (10001, "b", 10, 1)],
+                  scene_tree=("aula", {}, [
+                      ("ModelParent", {}, [("figure", _render(10, 0, [30]), [])]),
+                      ("EnvironmentVR", {}, [("room", _render(10, 1, [31]), [])])]),
+                  templates=[])
+    build = read_build(root)
+    plain = {"exclude": [], "captures": {}}
+    assert [t.name for t in things(build, rules=plain)] == ["aula"], "the convention bundles them"
+
+    picked = {"exclude": [], "captures": {"cap": {"scene.json": ["ModelParent", "EnvironmentVR"]}}}
+    assert sorted(t.name for t in things(build, capture="cap", rules=picked)) == \
+        ["EnvironmentVR", "ModelParent"], "named at depth"
+
+    named = {"exclude": [], "captures": {"cap": {"scene.json": {"ModelParent": "Alice"}}}}
+    got = things(build, capture="cap", rules=named)
+    assert [t.name for t in got] == ["Alice"] and len(got[0].live) == 1
+
+
+def test_a_template_derived_thing_is_named_after_the_TEMPLATE(tmp_path):
+    """A template's root entity is called `RootNode` in six builds, which is no use as a label. The
+    ASSET's name is the one that means something — `VR_hand_R`, `Dilda`, `watchesbuttons`."""
+    root = _build(tmp_path, scene=False, entities=[],
+                  templates=[(40, "VR_hand_R", [("RootNode", 20, [30])])])
+    build = read_build(root)
+    assert [t.name for t in things(build)] == ["VR_hand_R"]
+
+
+def test_the_thing_rules_are_DATA_and_a_broken_edit_does_not_stop_a_build(tmp_path):
+    """Same discipline as `parts.json`: a user file shadows the bundled one entirely, and unreadable
+    JSON is reported and ignored rather than raised — a conversion must not die on a typo."""
+    (tmp_path / "things.json").write_text('{"revision": 9, "exclude": ["X"], "captures": {}}')
+    assert load_thing_rules([tmp_path])["revision"] == 9
+    (tmp_path / "things.json").write_text("{not json")
+    assert load_thing_rules([tmp_path])["exclude"] == [], "ignored, not raised"
+    assert load_thing_rules([tmp_path / "nowhere"])["captures"] == {}
+
+
+def test_which_entity_is_a_thing_is_CORRECTABLE(tmp_path):
+    """The rule is this app's convention, not the format: "a direct child of Root whose subtree
+    renders" holds in the content scenes and is FALSE in the app's own, where Root's children are
+    `ToolModeStore`, `TRASH` and `Gestures` — machinery nested several levels deep. So it proposes,
+    reports, and takes an override."""
+    root = _build(tmp_path, renders=[(10000, "a", 10, 0), (10001, "b", 10, 1)],
+                  scene_tree=("Gestures", {}, [("hand", _render(10, 0, [30]), [])]),
+                  templates=[])
+    build = read_build(root)
+    # Explicit rules, because the SHIPPED `things.json` excludes `Gestures` by name — a test that
+    # depends on the data file is testing the data file.
+    plain = {"exclude": [], "captures": {}}
+    assert [t.name for t in things(build, rules=plain)] == ["Gestures"], "the convention, proposing"
+    assert things(build, roots={"scene.json": {"nothing-here"}}, rules=plain) == [], "and overruled"
+    assert any("convention and not the format" in n for n in thing_notes(build, rules=plain))
+
+
+def test_a_mesh_only_a_TEMPLATE_claims_is_flagged_as_probably_dead(tmp_path):
+    """A template is the container's own default binding; a scene is what runs. `read_build` reads
+    scenes first so a scene wins, which makes a surviving template binding a mesh no scene asked for —
+    and that is the only signal for the whole dead-mesh family. Alice's `Scalp_Female` is bound, to a
+    scalp material with no maps, so it renders opaque WHITE while the site never draws it; the Japanese
+    house's deck is the same shape, replaced in the scene by `WOODout.glb`."""
+    root = _build(tmp_path,
+                  entities=[("body", 20, [30])],                        # the SCENE dresses mesh 0
+                  templates=[(40, "T", [("hair", 21, [31])])])          # a TEMPLATE dresses mesh 1
+    build = read_build(root)
+    assert {b.mesh: b.source for b in build.bindings} == {0: "scene", 1: "template"}
+    assert [b.mesh for b in dead_meshes(build)] == [1]
+    assert any("bound ONLY by a template" in n for n in build.notes)
+
+
+def test_a_mesh_the_scene_DOES_claim_is_not_dead_even_if_a_template_dressed_it(tmp_path):
+    """Two different questions, and conflating them produced a false positive on real data. `dead_meshes`
+    used to ask *which claim won the material tie-break*; the question is *does any scene claim it at
+    all*. Alice's `CC_Base_Eye` is drawn by a scene entity, and only looked dead because the template's
+    richer materials won — she was reported as having a dead eye mesh for half a day."""
+    root = _build(tmp_path,
+                  materials=[(30, "plain", {}), (31, "rich", {"diffuseMap": 40, "normalMap": 40})],
+                  textures=[(40, "t.png", "files/t.png")],
+                  entities=[("eye", 20, [30])],                       # the SCENE dresses it plainly
+                  templates=[(50, "T", [("eye", 20, [31])])])         # the TEMPLATE dresses it richly
+    build = read_build(root)
+    assert (10, 0) in build.scene_claims, "the scene claimed the MESH"
+    assert dead_meshes(build) == [], "so it is not dead, whoever's materials won"
+
+
+def test_which_claim_wins_a_scene_vs_template_disagreement_is_SWITCHABLE(tmp_path):
+    """The one real judgment in the module. A template is the default a container shipped with and a
+    scene is what actually runs, so the scene wins — defensible, and still a choice: it is what makes
+    the Japanese deck and Alice's scalp disappear rather than be painted.
+
+    `prefer` beats richness, which is what makes it mean anything. Measured over the captures: of 1,340
+    meshes both claim, 952 are equally dressed and 384 favour the scene either way — but 4 have a
+    better-dressed TEMPLATE, and there "what runs" has to outrank "what has more maps"."""
+    kw = dict(materials=[(30, "plain", {}), (31, "rich", {"diffuseMap": 40, "normalMap": 40})],
+              textures=[(40, "t.png", "files/t.png")],
+              entities=[("a", 20, [30])], templates=[(50, "T", [("a", 20, [31])])])
+    # The scene's material is the POORER one here, and it still wins — that is the whole point.
+    assert next(b for b in read_build(_build(tmp_path / "s", **kw)).bindings
+                if b.mesh == 0).materials == (30,), "what runs beats what has more maps"
+    assert next(b for b in read_build(_build(tmp_path / "t", **kw), prefer="template").bindings
+                if b.mesh == 0).materials == (31,), "...and reversing it asks the other question"
+
+    # Where two claims SHARE a source, richness still settles it — Jane's right hand is bound by three
+    # scene entities and the one listed first wears a placeholder.
+    kw3 = dict(materials=[(30, "placeholder", {}), (31, "real", {"diffuseMap": 40})],
+               textures=[(40, "t.png", "files/t.png")],
+               entities=[("tutorial", 20, [30]), ("real", 20, [31])], templates=[])
+    assert next(b for b in read_build(_build(tmp_path / "w", **kw3)).bindings
+                if b.mesh == 0).materials == (31,), "best-dressed, within one source"
+
+
+def test_a_build_with_no_scene_falls_back_to_its_TEMPLATES_for_things(tmp_path):
+    """Two of 58 builds declare a scene that is not on disk. A template IS a serialised entity
+    hierarchy — the same shape and the same walk — so falling back is what makes them readable at all
+    rather than a special case bolted on for them."""
+    root = _build(tmp_path, scene=False, entities=[],
+                  templates=[(40, "T", [("body", 20, [30])])])
+    build = read_build(root)
+    assert not build.scened and build.templates
+    # A template IS one thing, so its ROOT is the thing — not its children, which would return a
+    # hand's fingers as three separate props.
+    assert [t.name for t in things(build)] == ["body"]
+
+
+def test_a_container_the_scene_never_touches_is_NOT_a_pile_of_dead_meshes(tmp_path):
+    """The rule that turns 725 rows of noise into 47 of signal. A container no scene mentions is not
+    full of dead meshes — it is a container this scene does not use, which is ordinary: the VR shell's
+    controllers and the props library are template-bound in every capture. What is suspicious is a mesh
+    whose SIBLINGS the scene dressed and which it left alone."""
+    root = _build(tmp_path,
+                  containers=[(10, "used.glb", "files/body.glb"), (11, "unused.glb", "files/body.glb")],
+                  renders=[(20, "a", 10, 0), (21, "b", 11, 0), (22, "c", 11, 1)],
+                  entities=[("a", 20, [30])],
+                  templates=[(40, "T", [("b", 21, [31]), ("c", 22, [31])])])
+    build = read_build(root)
+    assert [b.mesh for b in build.bindings if b.container == 11] == [0, 1], "still converted"
+    assert dead_meshes(build) == [], "the scene simply does not use that container"
+
+
+def test_nothing_is_dead_when_no_scene_was_read_at_all(tmp_path):
+    """Two of 58 builds have no scene file on disk. There every binding is template-only and none of
+    them is dead — the comparison the signal rests on does not exist."""
+    root = _build(tmp_path, scene=False, entities=[],
+                  templates=[(40, "T", [("body", 20, [30]), ("hair", 21, [31])])])
+    build = read_build(root)
+    assert len(build.bindings) == 2 and not build.scened
+    assert dead_meshes(build) == []
+
+
+def test_an_id_the_REGISTRY_NEVER_HAD_is_reported_apart_from_a_missing_file(tmp_path):
+    """`missing_files` walks the registry looking for files that are not on disk. An id the registry
+    never defined is not walked, so it reports nothing absent and the material converts flat. The
+    Japanese house's deck material points at texture `194421251`, which is in no `config.json` — and
+    *"no texture on the railing of the house"* cost a session and several re-downloads that could
+    never have helped. This is the difference between re-capturing and accepting the source."""
+    root = _build(tmp_path, materials=[(30, "WOODout", {"diffuseMap": 194421251}), (31, "hair", {})],
+                  entities=[("body", 20, [30])], templates=[])
+    build = read_build(root)
+    assert missing_files(build) == [], "nothing is referenced-and-absent — that is the trap"
+    assert 194421251 in dangling(build)
+    assert "WOODout" in dangling(build)[194421251][0]
+    assert any("NOT IN THE REGISTRY" in n for n in build.notes)
+
+
+def test_a_dangling_id_nothing_BINDS_is_not_worth_reporting(tmp_path):
+    """Scanning the whole registry finds 1,011 of these, almost all in the props library's own
+    materials — `SAUSAGE.diffuseMap`, `STICK.normalMap` — which nothing in the converted output binds,
+    so they cost nobody anything. A reference matters when it is reachable from a mesh we emit."""
+    root = _build(tmp_path,
+                  materials=[(30, "skin", {}), (31, "hair", {}),
+                             (32, "SAUSAGE", {"diffuseMap": 999999})],   # in the registry, bound by nobody
+                  entities=[("body", 20, [30])], templates=[])
+    build = read_build(root)
+    assert 999999 not in dangling(build)
+    assert not any("NOT IN THE REGISTRY" in n for n in build.notes)
+
+
+def test_a_BOUND_material_that_is_not_in_the_registry_is_dangling_too(tmp_path):
+    """The other half: the binding names a material id the registry never defined. A primitive wearing
+    one converts with no material at all, which glTF renders as polished metal — black."""
+    root = _build(tmp_path, entities=[("body", 20, [30]), ("ghost", 21, [777])], templates=[])
+    build = read_build(root)
+    assert 777 in dangling(build) and "mesh 1" in dangling(build)[777][0]
 
 
 def test_a_template_supplies_the_binding_when_the_scene_is_absent(tmp_path):
@@ -706,3 +1171,79 @@ def test_by_container_groups_what_rebuild_needs(tmp_path):
     build = read_build(_build(tmp_path))
     groups = by_container(build)
     assert set(groups) == {10} and len(groups[10]) == 2
+
+
+def test_the_shininess_scalar_is_BAKED_into_a_gloss_map_not_multiplied_beside_it(tmp_path):
+    """PlayCanvas computes `roughness = 1 - s*g`. glTF can only offer `roughnessFactor *
+    roughnessTexture`, and `(1-s) * (1-g)` is a DIFFERENT surface — about 0.5 too smooth across the
+    whole range, which on skin is the difference between matte and wet. The two agree only at g = 1.
+
+    Teacher's body is `shininess 60` over a roughness map, and she came out glossy.
+    """
+    build, ids = _tex(tmp_path, gloss=("RGB", False))
+    tex = _Textures(build, 1024, 90)
+    m = material_from({"glossMap": ids["gloss"], "glossMapChannel": "r", "shininess": 60,
+                       "glossInvert": False}, "skin", tex)
+    pbr = m["pbrMetallicRoughness"]
+    assert "metallicRoughnessTexture" in pbr
+    assert pbr["roughnessFactor"] == 1.0, \
+        "the scalar is inside the texture now — applying it again would apply it twice"
+
+    # And the scalar genuinely reaches the texture: a different shininess must produce a different
+    # image, or "baked in" would be a comment rather than a fact.
+    matte = material_from({"glossMap": ids["gloss"], "glossMapChannel": "r", "shininess": 5,
+                           "glossInvert": False}, "matte", tex)
+    assert (matte["pbrMetallicRoughness"]["metallicRoughnessTexture"]["index"]
+            != pbr["metallicRoughnessTexture"]["index"]), \
+        "shininess 5 and shininess 60 cannot share one roughness texture"
+
+
+def test_an_INVERTED_gloss_map_needs_no_baking(tmp_path):
+    """There `roughness = s*g`, which is already a product — so the factor carries the scalar and the
+    texture goes straight through, un-inverted."""
+    build, ids = _tex(tmp_path, gloss=("RGB", False))
+    tex = _Textures(build, 1024, 90)
+    m = material_from({"glossMap": ids["gloss"], "glossMapChannel": "r", "shininess": 60,
+                       "glossInvert": True}, "wet", tex)
+    assert m["pbrMetallicRoughness"]["roughnessFactor"] == pytest.approx(0.6)
+
+
+def test_with_no_gloss_MAP_the_factor_still_carries_the_scalar(tmp_path):
+    tex = _Textures(_tex(tmp_path)[0], 1024, 90)
+    m = material_from({"shininess": 60, "glossInvert": False}, "plain", tex)
+    assert m["pbrMetallicRoughness"]["roughnessFactor"] == pytest.approx(0.4)
+    assert "metallicRoughnessTexture" not in m["pbrMetallicRoughness"]
+
+
+def test_a_SEE_THROUGH_MIRROR_is_made_invisible_rather_than_drawn_black(tmp_path):
+    """A third way a layer can be all environment and no content. `useMetalness` with metalness 1, a
+    gloss of 100, a skybox and no texture of its own is a reflection shell — the wet film over an eye.
+    glTF carries no per-material environment, so it renders as a BLACK MIRROR: the teacher's `Sclera`
+    is its own primitive over the eye her body mesh draws, and came out as a dark disc that read as a
+    closed eye."""
+    tex = _Textures(_tex(tmp_path)[0], 1024, 90)
+    m = material_from({"diffuse": [0.8, 0.8, 0.8], "diffuseTint": True, "opacity": 0.2,
+                       "useMetalness": True, "metalness": 1, "shininess": 100,
+                       "useSkybox": True, "blendType": BLEND_PREMULTIPLIED}, "Sclera", tex)
+    assert m["alphaMode"] == "BLEND"
+    assert m["pbrMetallicRoughness"]["baseColorFactor"] == [0.0, 0.0, 0.0, 0.0]
+
+
+def test_a_mirror_you_cannot_see_THROUGH_is_the_object_and_is_left_alone(tmp_path):
+    """`DIAMANT` at 0.963 opacity is also a reflection material and also wrong without an environment —
+    but there is nothing behind it, so a dark gem is better than no gem. See-through is the line
+    between an overlay and an object."""
+    tex = _Textures(_tex(tmp_path)[0], 1024, 90)
+    m = material_from({"diffuse": [1, 1, 1], "diffuseTint": True, "opacity": 0.963,
+                       "useMetalness": True, "metalness": 1, "shininess": 100,
+                       "useSkybox": True, "blendType": BLEND_PREMULTIPLIED}, "DIAMANT", tex)
+    assert m["pbrMetallicRoughness"]["baseColorFactor"] != [0.0, 0.0, 0.0, 0.0]
+
+
+def test_a_textured_metal_is_not_a_mirror(tmp_path):
+    """The rule is for a layer with no colour of its OWN. A metal that carries a texture has one."""
+    build, ids = _tex(tmp_path, skin=("RGB", False))
+    tex = _Textures(build, 1024, 90)
+    m = material_from({"diffuseMap": ids["skin"], "opacity": 0.4, "useMetalness": True,
+                       "metalness": 1, "useSkybox": True}, "chrome", tex)
+    assert m["pbrMetallicRoughness"].get("baseColorFactor") != [0.0, 0.0, 0.0, 0.0]

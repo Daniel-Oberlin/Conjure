@@ -4,6 +4,7 @@ with external services faked. No network, no keys, no LLM."""
 import base64
 import json
 import struct
+import time
 
 import pytest
 
@@ -551,6 +552,32 @@ def test_a_rigged_model_keeps_its_authored_life_size(srv, client, tmp_path):
     assert ent["meta"]["rigged"] is True
 
 
+def test_a_composed_capture_arrives_with_its_wardrobe_already_switched_off(srv, client, tmp_path):
+    """A composed capture carries the parts the SOURCE had switched off, so they can be switched back on.
+
+    Placing one without applying that draws every variant at once: Alice arrived in the headset with two
+    heads of hair superimposed and a spare pair of underwear, which is not a defect in the asset — it is
+    the asset being complete and nobody telling the client which half to show. The import already
+    recorded `parts_hidden`; nothing read it.
+    """
+    aid = _catalog_figure(srv, client, tmp_path)
+    srv.library.upsert(aid, attributes={"parts_hidden": ["Side_Swept", "Underwear_Bottoms"]})
+    r = client.post("/place_cached_asset", json={"id": aid}).json()
+    ent = next(e for e in _entities(client) if e["id"] == r["id"])
+    assert json.loads(ent["components"]["figure-parts"]["hidden"]) == \
+        ["Side_Swept", "Underwear_Bottoms"], "hidden from the first frame, not after a dress call"
+    assert ent["components"]["gltf-model"].endswith(aid), "and the model is still there"
+
+
+def test_a_figure_with_nothing_switched_off_gets_no_parts_component(srv, client, tmp_path):
+    """Most figures have no wardrobe state to carry, and an empty component is noise the client would
+    still have to parse — `dress_figure` creates it when there is something to say."""
+    aid = _catalog_figure(srv, client, tmp_path)
+    r = client.post("/place_cached_asset", json={"id": aid}).json()
+    ent = next(e for e in _entities(client) if e["id"] == r["id"])
+    assert "figure-parts" not in ent["components"]
+
+
 def test_an_explicit_size_on_a_figure_means_HEIGHT_not_largest_extent(srv, client, tmp_path):
     """A T-posed figure's arm span rivals its height and a seated one's exceeds it, so max(size) sizes
     by the wrong axis. Asking for 3.5 m means 3.5 m TALL."""
@@ -941,6 +968,29 @@ def test_tunnel_redirects_to_published_url(srv, client, tmp_path, monkeypatch):
 def test_tunnel_404_when_none_running(srv, client, tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "TUNNEL_FILE", tmp_path / "absent")
     assert client.get("/tunnel", follow_redirects=False).status_code == 404
+
+
+def test_tunnel_carries_the_query_string_across(srv, client, tmp_path, monkeypatch):
+    """Every client-side debug mode is a query parameter and /tunnel is the only address anyone types
+    on a headset, so dropping the query meant `?hands=fit` silently never arrived — indistinguishable
+    from an overlay that does not work."""
+    f = tmp_path / "tunnel_url"
+    f.write_text("https://abc.trycloudflare.com")
+    monkeypatch.setattr(srv, "TUNNEL_FILE", f)
+    loc = client.get("/tunnel?hands=fit", follow_redirects=False).headers["location"]
+    assert loc.startswith("https://abc.trycloudflare.com?") and "hands=fit" in loc
+
+    # several parameters, and one that is empty — `?occlusion=` is a real way to clear an override
+    loc = client.get("/tunnel?hands=axes&occlusion=", follow_redirects=False).headers["location"]
+    assert "hands=axes" in loc and "occlusion=" in loc
+
+    # the path form still wins: naming a user in the path is the more specific request
+    loc = client.get("/tunnel/bob?hands=fit&user=eve", follow_redirects=False).headers["location"]
+    assert "user=bob" in loc and "user=eve" not in loc and "hands=fit" in loc
+
+    # and a bare /tunnel is unchanged — no stray `?`
+    assert client.get("/tunnel", follow_redirects=False).headers["location"] \
+        == "https://abc.trycloudflare.com"
 
 
 def test_capture_authority_rejects_other_headset(srv, client):
@@ -3704,7 +3754,14 @@ def test_index_injects_pointer_bindings_and_the_shared_reader(srv, client):
     # Control→action bindings are config, so re-binding (e.g. resize onto the trigger) needs no module edit.
     # resize shares the trigger with select; arbitration (grab reserves the pointer while the beam is on
     # one of its corner handles) is what keeps them apart — see client/conjure-pointers.js.
-    assert '"resize":"trigger"' in html and '"select":"trigger"' in html and '"grab":"grip"' in html
+    # A binding may name SEVERAL controls, which is how one action means one thing on a controller AND
+    # on a tracked hand: a controller's `pinch` is 0 and a hand's `trigger` is 0, so the vocabularies
+    # are disjoint and the largest wins with no device test anywhere.
+    assert '"select":["trigger","pinch"]' in html
+    assert '"grab":["grip","grasp"]' in html
+    assert '"resize":["trigger","pinch"]' in html
+    # ...and a single control still binds, since most of them are one: sticks stay sticks.
+    assert '"reel":"right.stickY"' in html
     rebound = '{"select":"trigger","grab":"grip","resize":"grip","reel":"stickY"}'
     monkey = dataclasses.replace(srv.settings, bindings=rebound)
     srv.settings, old = monkey, srv.settings
@@ -4597,6 +4654,91 @@ def test_a_map_that_cannot_be_repaired_is_cleared_rather_than_kept(srv, client, 
     assert r["ok"] is False and "humanoid" in r["error"]
 
 
+def _strip_attr(srv, asset_id: str, *keys: str) -> None:
+    """Remove attribute keys from a row directly, to stage a catalog written by an older build."""
+    row = srv.library.get(asset_id)
+    attrs = json.loads(row["attributes"] or "{}")
+    for k in keys:
+        attrs.pop(k, None)
+    attrs["frame_rev"] = 1
+    with srv.library._lock:
+        srv.library._db.execute("UPDATE assets SET attributes = ? WHERE id = ?",
+                                (json.dumps(attrs), asset_id))
+        srv.library._db.commit()
+
+
+def test_a_refresh_BACKFILLS_a_rig_signature_the_import_path_never_wrote(srv, client, tmp_path):
+    """`rig_sig` is what makes a figure and a clip comparable without either naming the other, and it
+    used to be written only by the import path. A model catalogued by any other route — or before the
+    signature existed — kept `None` forever, and `_clip_rows_for` gates the compatible-clip query on it,
+    so those figures could be offered no clip at all.
+
+    Nine dev-library figures were in exactly that state, including the three phase 5 is meant to be
+    tested on. Their signatures computed fine from the bytes; nothing ever put one in a row."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    sig = json.loads(srv.library.get(fig)["attributes"])["rig_sig"]
+    assert sig, "the import path writes it"
+
+    # A row that predates the signature: the map is there, the fingerprint is not. Written straight to
+    # the column, because `upsert` MERGES and skips None — which is the very reason a missing signature
+    # could never be repaired by any normal write, and is half of the bug.
+    _strip_attr(srv, fig, "rig_sig", "rig_sig_rev")
+    assert not (json.loads(srv.library.get(fig)["attributes"]).get("rig_sig") or "")
+
+    r = client.post("/library/refresh-models", json={}).json()
+    assert r["ok"]
+    assert json.loads(srv.library.get(fig)["attributes"])["rig_sig"] == sig
+
+
+def test_a_signature_extraction_can_no_longer_justify_is_CLEARED(srv, client, tmp_path):
+    """The other half, and the reason it is `""` rather than absent: the catalog MERGES attributes, so
+    leaving the key off keeps whatever was there. A figure whose map is withdrawn but whose signature
+    stands would be offered every clip on a rig she does not have."""
+    # A MODEL with no skeleton — a prop. Extraction finds no map, so it can justify no signature.
+    fig = _import_id(client, "prop.glb", _glb_bytes({
+        "asset": {"version": "2.0"}, "scenes": [{"nodes": [0]}], "scene": 0,
+        "nodes": [{"name": "Crate", "mesh": 0}],
+        "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+        "accessors": [{"componentType": 5126, "count": 3, "type": "VEC3",
+                       "min": [0, 0, 0], "max": [1, 1, 1]}]}))
+    srv.library.upsert(fig, attributes={"rig_sig": "deadbeef01"})
+    assert json.loads(srv.library.get(fig)["attributes"])["rig_sig"] == "deadbeef01"
+    client.post("/library/refresh-models", json={"force": True})
+    assert (json.loads(srv.library.get(fig)["attributes"]).get("rig_sig") or "") == ""
+
+
+def test_refresh_re_derives_the_CLIPS_signature_too_not_only_the_figures(srv, client, tmp_path):
+    """A signature is a comparison between two rows, so backfilling one side is worse than neither.
+
+    Measured the first time it happened: `RIG_SIG_REV` 1 -> 2 respelled every FIGURE's signature when the
+    humanoid grew thirty finger bones, `refresh-models` walked the models and stopped there, and Alice
+    stopped matching her OWN clip — the server read a mismatch and offered to retarget her onto herself,
+    while every shipped-clip lookup keyed on the signature came back empty. A successful backfill that
+    broke the catalog's playback.
+    """
+    clip = _import_id(client, "wave.glb", _clip_glb())
+    sig = json.loads(srv.library.get(clip)["attributes"]).get("rig_sig")
+    assert sig, "the import path writes it on a clip too"
+
+    # A clip stamped by an OLDER definition of the signature: it has one, and it is the wrong one.
+    srv.library.upsert(clip, attributes={"rig_sig": "0bsolete01", "rig_sig_rev": 0})
+    client.post("/library/refresh-models", json={}).json()
+    after = json.loads(srv.library.get(clip)["attributes"])
+    assert after["rig_sig"] == sig, "the clip's signature was not re-derived"
+    assert after["rig_sig_rev"] == srv.RIG_SIG_REV
+
+
+def test_a_clip_already_stamped_CURRENT_is_not_re_derived(srv, client, tmp_path):
+    """The ordinary run walks every clip in the catalog — 539 of them here — so it has to be a lookup
+    and not a parse. Guarded by the revision, the same way the model side is."""
+    clip = _import_id(client, "wave.glb", _clip_glb())
+    before = json.loads(srv.library.get(clip)["attributes"])
+    assert before["rig_sig_rev"] == srv.RIG_SIG_REV
+    r = client.post("/library/refresh-models", json={}).json()
+    assert r["clips_respelled"] == 0, "nothing was stale, so nothing should have been rewritten"
+    assert r["clips_checked"] >= 1
+
+
 def test_the_derived_attributes_and_the_frame_revision_move_together(srv, client, tmp_path):
     """A tripwire, and it has already caught one live miss.
 
@@ -4604,10 +4746,13 @@ def test_the_derived_attributes_and_the_frame_revision_move_together(srv, client
     the library was already stamped current, refresh-models found nothing to do, and the fix reached
     nobody — while the code, the tests and the renders all said it worked. If you change either of these
     literals, change the other: a new derived field is exactly the case the stamp exists for."""
-    assert srv.FRAME_REV == 14
+    assert srv.FRAME_REV == 21
     assert srv._DERIVED_MODEL_ATTRS == (
         "bbox_min", "bbox_max", "rigged", "height_m", "joints", "clips", "morph_targets",
-        "humanoid", "humanoid_source", "humanoid_axes", "humanoid_follows", "spring_bones", "tris", "parts", "parts_rev", "parts_unclassified")
+        "morph_names", "expression_scheme", "facial_morphs", "expression_rev",
+        "humanoid", "humanoid_source", "humanoid_axes", "humanoid_follows", "spring_bones", "tris", "parts", "parts_rev", "parts_unclassified", "rig_sig", "rig_sig_rev",
+        "hand_joints", "hand_side", "hand_rev", "hand_wearable", "hand_problems",
+        "hand_materials", "hand_images")
 
 
 def test_a_bone_that_rides_its_limb_reaches_the_entity(srv, client, tmp_path):
@@ -4887,6 +5032,180 @@ def test_admin_listing_filters_by_kind_and_by_relation(srv, tmp_path):
     assert srv._related_ids("c1.glb", None) == {"fig.glb", "v.mp3"}, "every edge when no type is given"
 
 
+def test_an_mp3_is_served_as_AUDIO_not_as_octet_stream(srv, client, tmp_path):
+    """A media element is far stricter about Content-Type than an <img>, and the fallback is
+    `application/octet-stream`, which Chromium refuses to decode on an <audio>. 226 of the live
+    cache's files are `.mp3`, so the missing table entry silently muted every clip's voice — and it
+    would have looked like the playback component being broken.
+
+    Range matters as much as the type: seeking the voice to the shared-clock offset is what keeps it
+    with the body, and `currentTime` on a source with no range support does nothing."""
+    (tmp_path / "v.mp3").write_bytes(b"\xff\xfb" + b"\x00" * 4096)
+    r = client.get("/assets/v.mp3")
+    assert r.status_code == 200 and r.headers["content-type"] == "audio/mpeg"
+    assert r.headers.get("accept-ranges") == "bytes"
+    part = client.get("/assets/v.mp3", headers={"Range": "bytes=100-199"})
+    assert part.status_code == 206 and len(part.content) == 100, "seekable, or the sync is decorative"
+
+
+def test_show_reports_an_assets_ATTRIBUTES_and_LINKS(srv):
+    """`show` returned nine columns and neither. `rig_sig`, `duration_s`, `clip_kind` and `parts` —
+    the facts that decide which of six near-identical assets you want — were reachable only by
+    querying SQL by hand, and an asset's links were not reachable at all."""
+    lib = srv.library
+    lib.upsert("fig.glb", kind="model", label="jane", scope=srv.active_scope, source="cache://",
+               attributes={"rig_sig": "85e41f9b8e", "rigged": True, "tris": 110870,
+                           "parts": {"a": "body", "b": "hair"}, "clips": []})
+    lib.upsert("c1.glb", kind="animation", label="1_idle", scope=srv.active_scope, source="cache://")
+    lib.upsert("set:j", kind="set", label="jane-set", scope=srv.active_scope, source="cache://")
+    lib.add_relation("fig.glb", "c1.glb", "shipped_with")
+    lib.add_relation("fig.glb", "set:j", "part_of")
+
+    from conjure import namespace
+    fields = dict((k.strip(), v) for k, v in
+                  namespace.fields(namespace.resolve(
+                      f"/{srv.DEFAULT_USER}/agents/builder/assets/fig.glb")))
+    assert fields["rig_sig"] == "85e41f9b8e"
+    assert fields["rigged"] == "yes", "a bool reads as a word, not as True"
+    assert fields["parts"].startswith("{2 keys}"), "a nested value is summarised, never dumped"
+    assert fields["clips"] == "—", "an empty list is a dash, not a blank"
+    assert fields["links"] == "2 edges"
+    assert "1_idle" in fields["→ shipped_with"] and "animation" in fields["→ shipped_with"]
+    assert "jane-set" in fields["→ part_of"]
+
+
+def test_show_marks_which_WAY_each_link_points(srv):
+    """The arrow is the whole point: `← part_of` on a set means things belong to it, `→ part_of` on a
+    figure means it belongs to something."""
+    lib = srv.library
+    lib.upsert("fig.glb", kind="model", label="jane", scope=srv.active_scope, source="cache://")
+    lib.upsert("set:j", kind="set", label="jane-set", scope=srv.active_scope, source="cache://")
+    lib.add_relation("fig.glb", "set:j", "part_of")
+    from conjure import namespace
+    base = f"/{srv.DEFAULT_USER}/agents/builder/assets"
+    fig = dict((k.strip(), v) for k, v in namespace.fields(namespace.resolve(f"{base}/fig.glb")))
+    st = dict((k.strip(), v) for k, v in namespace.fields(namespace.resolve(f"{base}/set:j")))
+    assert "→ part_of" in fig and "← part_of" not in fig, "she belongs to it"
+    assert "← part_of" in st and "→ part_of" not in st, "it holds her"
+
+
+def test_a_relation_can_be_pinned_to_ONE_direction(srv):
+    """Both directions is the right default — a figure's clips and the clips one audio voices are the
+    same question from opposite ends — but it cannot answer "the set this belongs to" separately from
+    "the parts of this set", and `part_of` fans IN 107 where it fans out 15."""
+    lib = srv.library
+    lib.upsert("fig.glb", kind="model", label="jane", scope=srv.active_scope, source="cache://")
+    lib.upsert("c1.glb", kind="animation", label="1_idle", scope=srv.active_scope, source="cache://")
+    lib.upsert("set:j", kind="set", label="jane-set", scope=srv.active_scope, source="cache://")
+    lib.add_relation("fig.glb", "c1.glb", "shipped_with")     # jane -> her clip   (out, from jane)
+    lib.add_relation("fig.glb", "set:j", "part_of")           # jane -> her set    (out, from jane)
+
+    assert srv._related_ids("fig.glb", None) == {"c1.glb", "set:j"}, "both edges, either direction"
+    assert srv._related_ids("fig.glb", None, "out") == {"c1.glb", "set:j"}
+    assert srv._related_ids("fig.glb", None, "in") == set(), "nothing points AT her"
+    assert srv._related_ids("set:j", "part_of", "in") == {"fig.glb"}, "what belongs to the set"
+    assert srv._related_ids("set:j", "part_of", "out") == set(), "the set belongs to nothing"
+
+
+def test_rel_without_with_adds_a_COLUMN_instead_of_filtering(srv):
+    """`--rel` used to be meaningless without `--with`: you could filter a listing by a relation and
+    never see one, so checking a link meant `show`-ing assets one at a time."""
+    lib = srv.library
+    lib.upsert("c1.glb", kind="animation", label="1_idle", scope=srv.active_scope, source="cache://")
+    lib.upsert("c2.glb", kind="animation", label="2_idle", scope=srv.active_scope, source="cache://")
+    lib.upsert("v.mp3", kind="audio", label="1_idle", scope=srv.active_scope, source="cache://")
+    lib.add_relation("c1.glb", "v.mp3", "voiced_by")
+
+    from conjure import namespace
+    rows = [namespace.node("1_idle", "asset", "animation", "public", ref="c1.glb"),
+            namespace.node("2_idle", "asset", "animation", "public", ref="c2.glb")]
+    srv._relation_cells(rows, "voiced_by", None)
+    assert rows[0]["cells"][-1] == "→ 1_idle", "the link, not just a filter that hid the others"
+    assert rows[1]["cells"][-1] == "—", "no link is a dash, not a blank"
+
+
+def test_a_relation_cell_counts_rather_than_listing_a_long_fan_out(srv):
+    """A figure has 21 clips and a set has 107 parts. A cell that lists them destroys the alignment
+    the columns exist for."""
+    lib = srv.library
+    lib.upsert("fig.glb", kind="model", label="jane", scope=srv.active_scope, source="cache://")
+    for i in range(5):
+        lib.upsert(f"c{i}.glb", kind="animation", label=f"{i}_idle", scope=srv.active_scope,
+                   source="cache://")
+        lib.add_relation("fig.glb", f"c{i}.glb", "shipped_with")
+    from conjure import namespace
+    rows = [namespace.node("jane", "asset", "model", "public", ref="fig.glb")]
+    srv._relation_cells(rows, "shipped_with", "out")
+    cell = rows[0]["cells"][-1]
+    assert cell.endswith("+3") and cell.count("→") == 2, f"two names then a count, got {cell!r}"
+
+
+def test_a_listing_can_lift_its_own_cap(srv):
+    """200 rows is a page size, not a limit on what exists — and before `--all` there was no way past
+    it at all. 0 means every row; the marker only appears when something was actually cut."""
+    lib = srv.library
+    for i in range(260):
+        lib.upsert(f"a{i}.png", kind="image", label=f"a{i}", scope=srv.active_scope, source="cache://")
+    from conjure import namespace
+    P = f"/{srv.DEFAULT_USER}/agents/builder/assets"
+
+    def rows(**kw):
+        req = srv.AdminPath(path=P, **kw)
+        got = namespace.children(namespace.resolve(P), limit=srv._fetch_width(req))
+        cap = srv._row_cap(req)
+        return namespace.cap_rows(got, cap) if cap else got
+
+    assert len(rows()) == 201, "200 plus the marker that says there are more"
+    assert rows()[-1]["kind"] == "note"
+    assert len(rows(limit=0)) == 260, "--all is every row"
+    assert rows(limit=0)[-1]["kind"] == "asset", "and no marker, because nothing was cut"
+    assert len(rows(limit=50)) == 51
+
+
+def test_a_GLOB_searches_everything_even_when_the_listing_is_capped(srv):
+    """`dir *idle*` matched 32 of the 183 it should have, on the live catalog, and said nothing —
+    the truncation happened in the CANDIDATE set, so no "more than 200" marker could ever appear and
+    the answer looked complete. A glob is a search; a search that reads the first page is not one."""
+    lib = srv.library
+    for i in range(260):
+        lib.upsert(f"pad{i}.png", kind="image", label=f"pad{i}", scope=srv.active_scope,
+                   source="cache://")
+    for i in range(5):
+        lib.upsert(f"zzz{i}.glb", kind="animation", label=f"zzz{i}_idle", scope=srv.active_scope,
+                   source="cache://")
+    from conjure import namespace
+    P = f"/{srv.DEFAULT_USER}/agents/builder/assets"
+    # A narrow candidate window misses matches, whatever the row order happens to be — which is the
+    # bug, kept as the contrast. `admin_match` now always passes a wide one.
+    assert len(namespace.match(f"{P}/*_idle", limit=2)) < 5
+    assert len(namespace.match(f"{P}/*_idle", limit=10_000)) == 5
+    assert srv._fetch_width(srv.AdminPath(path=P)) == 200, "a plain listing still pages"
+
+
+def test_a_filter_runs_over_EVERY_asset_not_the_first_page(srv):
+    """The 200-row cap used to be applied inside the row builder, so a filter narrowed an arbitrary
+    first page: measured on the live catalog, `--kind animation` showed 98 of 364 and
+    `--with jane_export` found NONE of her 21 clips because they sat past the cut. A filter that
+    silently narrows its own input is worse than no filter."""
+    lib = srv.library
+    lib.upsert("fig.glb", kind="model", label="jane", scope=srv.active_scope, source="cache://")
+    for i in range(260):                                   # more than the 200-row listing cap
+        lib.upsert(f"pad{i}.png", kind="image", label=f"pad{i}", scope=srv.active_scope,
+                   source="cache://")
+    lib.upsert("late.glb", kind="animation", label="9_idle", scope=srv.active_scope, source="cache://")
+    lib.add_relation("fig.glb", "late.glb", "shipped_with")
+
+    from conjure import namespace
+    rows = namespace.children(namespace.resolve(f"/{srv.DEFAULT_USER}/agents/builder/assets"),
+                              limit=10_000)
+    assert len(rows) > 200, "the wide fetch really is wide"
+    got = srv._filter_rows(rows, srv.AdminPath(path="/", kind="animation"))
+    assert [r["ref"] for r in got] == ["late.glb"], "found past where the cap used to be"
+    got = srv._filter_rows(rows, srv.AdminPath(path="/", related="jane", relation="shipped_with"))
+    assert [r["ref"] for r in got] == ["late.glb"]
+    assert namespace.cap_rows(rows, 200)[-1]["label"].startswith("… (more than 200)")
+
+
 def test_relation_filter_refuses_an_ambiguous_or_absent_name(srv):
     """`--with` takes a label because a person types labels. Labels are neither unique nor guaranteed,
     so two matches is refused rather than picked between — the same rule the asset namespace uses."""
@@ -4905,13 +5224,36 @@ def test_a_with_name_that_is_ambiguous_SAYS_so_rather_than_listing_nothing(srv):
     lib.upsert("clip.glb", kind="animation", label="3_idle", scope=srv.active_scope, source="cache://")
     lib.upsert("voice.mp3", kind="audio", label="3_idle", scope=srv.active_scope, source="cache://")
 
-    note = srv._related_problem("3_idle")
-    assert note and "ambiguous" in note and "--kind" in note, note
-    assert srv._related_problem("no-such-thing").startswith("nothing here is called")
+    def problem(name, **kw):
+        return srv._related_problem(srv.AdminPath(path="/", related=name, **kw))
+
+    note = problem("3_idle")
+    assert note and "ambiguous" in note, note
+    assert "--kind filters the RESULTS" in note, "the old advice was to add --kind, which cannot help"
+    assert problem("no-such-thing").startswith("nothing here is called")
 
     lib.upsert("solo.glb", kind="model", label="unique-one", scope=srv.active_scope, source="cache://")
-    assert srv._related_problem("unique-one") is None, "a name that resolves is not a problem"
-    assert srv._related_problem("clip.glb") is None, "and neither is an id"
+    assert problem("unique-one") is None, "a name that resolves is not a problem"
+    assert problem("clip.glb") is None, "and neither is an id"
+
+    # ...and the RELATION disambiguates where it can: only the clip is voiced_by anything, so asking
+    # for that relation names which `3_idle` was meant. Every capture names its set after its figure,
+    # so this collision is the norm — `barbie` is both `set:barbie` and her model.
+    lib.add_relation("clip.glb", "voice.mp3", "voiced_by")
+    assert problem("3_idle", relation="voiced_by") is not None, \
+        "both ends touch a voiced_by edge, so the TYPE alone cannot separate them"
+    assert problem("3_idle", relation="voiced_by", direction="out") is None, "but the direction can"
+    assert srv._related_ids("3_idle", "voiced_by", "out") == {"voice.mp3"}
+
+    # The common case needs no direction: every capture names its set after its figure, so `barbie`
+    # is both `set:barbie` and her model — and only the model has `shipped_with` edges at all.
+    lib.upsert("set:b", kind="set", label="barbie", scope=srv.active_scope, source="cache://")
+    lib.upsert("b.glb", kind="model", label="barbie", scope=srv.active_scope, source="cache://")
+    lib.upsert("bc.glb", kind="animation", label="1_idle", scope=srv.active_scope, source="cache://")
+    lib.add_relation("b.glb", "bc.glb", "shipped_with")
+    assert problem("barbie") is not None, "ambiguous with no relation to go on"
+    assert problem("barbie", relation="shipped_with") is None, "only the model ships clips"
+    assert srv._related_ids("barbie", "shipped_with") == {"bc.glb"}
 
 
 def _place_dressed_figure(srv, client, tmp_path):
@@ -4937,6 +5279,383 @@ def _place_dressed_figure(srv, client, tmp_path):
         {"filename": "dressed.vrm", "data_b64": base64.b64encode(blob).decode(), "hints": {}}]}).json()
     aid = r["results"][0]["id"]
     return client.post("/place_cached_asset", json={"id": aid, "name": "dressed"}).json()["id"]
+
+
+# A humanoid skeleton in MIXAMO naming, as a real parent/child tree with plausible translations.
+# Both halves are load-bearing: the names are what `convention_humanoid` matches, and the geometry is
+# what `validate` checks — a flat node list with the same names maps 22 bones and then loses every limb,
+# because `prune_map` drops a distal bone whose parent is not actually its ancestor. This layout is the
+# same signature (`cf605bb3ac`) the library's real mixamo-rigged figure carries.
+_SKELETON = ("{hips}", (0, 1.0, 0), [
+    ("{spine}", (0, .15, 0), [("{chest}", (0, .15, 0), [("{upper_chest}", (0, .15, 0), [
+        ("{neck}", (0, .10, 0), [("{head}", (0, .10, 0), [])]),
+        ("{l_clav}", (.05, .05, 0), [("{l_arm}", (.13, 0, 0), [
+            ("{l_fore}", (.27, 0, 0), [("{l_hand}", (.25, 0, 0), [])])])]),
+        ("{r_clav}", (-.05, .05, 0), [("{r_arm}", (-.13, 0, 0), [
+            ("{r_fore}", (-.27, 0, 0), [("{r_hand}", (-.25, 0, 0), [])])])]),
+    ])])]),
+    ("{l_thigh}", (.10, -.05, 0), [("{l_shin}", (0, -.40, 0), [
+        ("{l_foot}", (0, -.47, 0), [("{l_toe}", (0, -.04, .15), [])])])]),
+    ("{r_thigh}", (-.10, -.05, 0), [("{r_shin}", (0, -.40, 0), [
+        ("{r_foot}", (0, -.47, 0), [("{r_toe}", (0, -.04, .15), [])])])]),
+])
+
+_MIXAMO = {"hips": "Hips", "spine": "Spine", "chest": "Spine1", "upper_chest": "Spine2",
+           "neck": "Neck", "head": "Head",
+           "l_clav": "LeftShoulder", "l_arm": "LeftArm", "l_fore": "LeftForeArm", "l_hand": "LeftHand",
+           "r_clav": "RightShoulder", "r_arm": "RightArm", "r_fore": "RightForeArm", "r_hand": "RightHand",
+           "l_thigh": "LeftUpLeg", "l_shin": "LeftLeg", "l_foot": "LeftFoot", "l_toe": "LeftToeBase",
+           "r_thigh": "RightUpLeg", "r_shin": "RightLeg", "r_foot": "RightFoot", "r_toe": "RightToeBase"}
+
+# The same skeleton in Rigify FK naming — a DIFFERENT rig signature over identical geometry, which is
+# what makes it the right fixture for "binding by name cannot cross rigs".
+_RIGIFY = {"hips": "hips", "spine": "spine", "chest": "chest", "upper_chest": "chest-1",
+           "neck": "neck", "head": "head",
+           "l_clav": "clavicle.L", "l_arm": "upper_arm.fk.L", "l_fore": "forearm.fk.L", "l_hand": "hand.fk.L",
+           "r_clav": "clavicle.R", "r_arm": "upper_arm.fk.R", "r_fore": "forearm.fk.R", "r_hand": "hand.fk.R",
+           "l_thigh": "thigh.fk.L", "l_shin": "shin.fk.L", "l_foot": "foot.fk.L", "l_toe": "toe.fk.L",
+           "r_thigh": "thigh.fk.R", "r_shin": "shin.fk.R", "r_foot": "foot.fk.R", "r_toe": "toe.fk.R"}
+
+
+def _skeleton_nodes(naming):
+    """`(nodes, names)` for the skeleton above, spelled in `naming`."""
+    nodes, names = [], []
+
+    def walk(spec):
+        slot, translation, kids = spec
+        i = len(nodes)
+        nodes.append({"name": naming[slot.strip("{}")], "translation": list(translation)})
+        names.append(nodes[i]["name"])
+        children = [walk(k) for k in kids]
+        if children:
+            nodes[i]["children"] = children
+        return i
+
+    walk(_SKELETON)
+    return nodes, names
+
+
+def _glb_bytes(doc: dict, blob: bytes = b"") -> bytes:
+    body = json.dumps(doc).encode()
+    body += b" " * (-len(body) % 4)
+    pad = blob + b"\x00" * (-len(blob) % 4)
+    out = (b"glTF" + struct.pack("<II", 2, 12 + 8 + len(body) + (8 + len(pad) if pad else 0))
+           + struct.pack("<II", len(body), 0x4E4F534A) + body)
+    if pad:
+        out += struct.pack("<II", len(pad), 0x004E4942) + pad
+    return out
+
+
+def _figure_glb(naming=None) -> bytes:
+    """A rigged figure on a CONVENTION-named skeleton, so its rig signature is recoverable from the
+    names alone — which is the only way a clip and a figure can be compared without either naming the
+    other."""
+    nodes, names = _skeleton_nodes(naming or _MIXAMO)
+    nodes.append({"name": "Body", "mesh": 0, "skin": 0})
+    doc = {"scenes": [{"nodes": [0, len(nodes) - 1]}], "scene": 0, "nodes": nodes,
+           "skins": [{"joints": list(range(len(names)))}],
+           "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+           "accessors": [{"min": [-0.6, -0.013, -0.17], "max": [0.6, 1.744, 0.23]}]}
+    return _glb_bytes(doc)
+
+
+def _clip_glb(name="1_idle", naming=None, extra_bones=()) -> bytes:
+    """A skeleton-only GLB: animation channels on bone names and no mesh at all, which is exactly how
+    these builds ship motion — 47.7 MB of clips against a 5 MB character."""
+    nodes, names = _skeleton_nodes(naming or _MIXAMO)
+    for bone in extra_bones:
+        nodes.append({"name": bone, "translation": [0, 0, 0]})
+        names.append(bone)
+    # Two keyframes of time and two identity quaternions, little-endian floats, in one buffer.
+    blob = struct.pack("<2f", 0.0, 1.0) + struct.pack("<8f", 0, 0, 0, 1, 0, 0, 0, 1)
+    doc = {"scenes": [{"nodes": [0]}], "scene": 0, "nodes": nodes,
+           "buffers": [{"byteLength": len(blob)}],
+           "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 8},
+                           {"buffer": 0, "byteOffset": 8, "byteLength": 32}],
+           "accessors": [{"bufferView": 0, "componentType": 5126, "count": 2, "type": "SCALAR",
+                          "min": [0.0], "max": [1.0]},
+                         {"bufferView": 1, "componentType": 5126, "count": 2, "type": "VEC4"}],
+           "animations": [{"name": name,
+                           "samplers": [{"input": 0, "output": 1, "interpolation": "LINEAR"}],
+                           "channels": [{"sampler": 0, "target": {"node": i, "path": "rotation"}}
+                                        for i in range(len(nodes))]}]}
+    return _glb_bytes(doc, blob)
+
+
+def _import_id(client, filename, blob) -> str:
+    """Import one file and hand back its asset id — the whole of what the clip tests need."""
+    return _import(client, filename, blob)["results"][0]["id"]
+
+
+def test_a_clip_plays_on_the_figure_it_was_authored_for(srv, client, tmp_path):
+    """A clip is a GLB of channels and no mesh. The entity records WHAT to play and the shared-clock
+    instant it started — never a frame number — so every client computes the same frame from its own
+    offset and a headset that joins late lands in the right place with nothing to resynchronise."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    clip = _import_id(client, "1_idle.glb", _clip_glb())
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+
+    before = time.time() * 1000.0
+    r = client.post("/figure/clip", json={"id": eid, "clip": clip}).json()
+    assert r["ok"], r
+    assert r["clip"] == clip and before <= r["started_at"] <= time.time() * 1000.0
+    comp = _ent(client, eid)["components"]["figure-clip"]
+    assert comp["clip"] == f"/assets/{clip}" and comp["playing"] is True
+    assert comp["startedAt"] == r["started_at"], "the START INSTANT, not a frame"
+
+
+def test_a_clip_plays_at_the_rate_ITS_CAPTURE_AUTHORED_unless_asked_otherwise(srv, client, tmp_path):
+    """The source plays every clip through `assignAnimation(name, resource, "Base", animSpeed, true)`,
+    and `animSpeed` is `idle.speed` / `action.speedAction` / `action.speedRough` read straight out of
+    the position config — 0.5, 0.6 and 1.2 are all authored in this corpus. So a rate is part of the
+    clip, and defaulting the request to 1.0 overrode it for every caller that did not think to ask.
+    That is what "the playback speed seemed wrong for susan/Alice" was.
+
+    `None` and `1.0` therefore have to be different requests: `positions.clip_speed` records only a
+    rate that differs from 1.0, so nothing recorded means the author said nothing, and a caller sending
+    1.0 means "play it at normal speed regardless of what the author wanted"."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    clip = _import_id(client, "pc_leanOnBed_idle.glb", _clip_glb())
+    srv.library.upsert(clip, attributes={"speed": 0.5})
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+
+    r = client.post("/figure/clip", json={"id": eid, "clip": clip}).json()
+    assert r["ok"] and r["speed"] == 0.5 and r["authored_speed"] == 0.5
+    assert _ent(client, eid)["components"]["figure-clip"]["speed"] == 0.5
+
+    # Asked for, it wins — including when what is asked for happens to be 1.0.
+    r = client.post("/figure/clip", json={"id": eid, "clip": clip, "speed": 1.0}).json()
+    assert r["speed"] == 1.0 and r["authored_speed"] == 0.5
+    assert _ent(client, eid)["components"]["figure-clip"]["speed"] == 1.0
+
+
+def test_a_clip_nobody_stated_a_rate_for_plays_at_one(srv, client, tmp_path):
+    """Most of the corpus: 16 of 20 captures ship no position config at all."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    clip = _import_id(client, "1_idle.glb", _clip_glb())
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+    r = client.post("/figure/clip", json={"id": eid, "clip": clip}).json()
+    assert r["ok"] and r["speed"] == 1.0 and r["authored_speed"] is None
+
+
+def test_a_clip_carries_the_voice_recorded_against_it(srv, client, tmp_path):
+    """20 of Jane's 21 clips are voiced, and the link is many-to-many — one file serves four clips — so
+    it is a relation, not a column. The voice is sent WITH the clip and off the same stamped instant:
+    two arrivals would be two start times, and a body out of sync with its own speech is the one thing
+    an audience notices immediately."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    clip = _import_id(client, "1_idle.glb", _clip_glb())
+    srv.library.upsert("voice.mp3", kind="audio", label="1_idle", scope=srv.active_scope,
+                       source="cache://")
+    srv.library.add_relation(clip, "voice.mp3", "voiced_by")
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+
+    r = client.post("/figure/clip", json={"id": eid, "clip": clip}).json()
+    assert r["ok"] and r["voiced"] == "voice.mp3"
+    comp = _ent(client, eid)["components"]["figure-clip"]
+    assert comp["audio"] == "/assets/voice.mp3"
+    assert comp["startedAt"] == r["started_at"], "one instant for the body and the voice both"
+
+    assert client.get(f"/figure/clips?id={eid}&all=true").json()["compatible"][0]["voiced"] is True
+
+
+def test_a_silent_clip_names_the_voiced_ones_instead_of_denying_audio(srv, client, tmp_path):
+    """On device the director answered *"I don't have a way to add audio — the animations themselves
+    are silent"* while Barbie's voice was already playing. The capability existed and nothing in the
+    tool surface said so. A silent clip is "not this one", never "no audio"."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    loud = _import_id(client, "1_idle.glb", _clip_glb("1_idle"))
+    quiet = _import_id(client, "2_idle.glb", _clip_glb("2_idle"))
+    srv.library.upsert("v.mp3", kind="audio", label="1_idle", scope=srv.active_scope,
+                       source="cache://")
+    srv.library.add_relation(loud, "v.mp3", "voiced_by")
+    for c in (loud, quiet):
+        srv.library.add_relation(fig, c, "shipped_with")
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+
+    r = client.post("/figure/clip", json={"id": eid, "clip": quiet}).json()
+    assert r["voiced"] is None and r["voiced_alternatives"] == 1, "one of hers does have a voice"
+    r = client.post("/figure/clip", json={"id": eid, "clip": loud}).json()
+    assert r["voiced"] == "v.mp3" and "voiced_alternatives" not in r
+
+
+def test_listing_clips_can_keep_only_the_ones_that_TALK(srv, client, tmp_path):
+    """"animate her with sound" is not a missing feature, it is a filter: the voice is part of the
+    clip. 20 of Barbie's 21 carry one."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    loud = _import_id(client, "1_idle.glb", _clip_glb("1_idle"))
+    quiet = _import_id(client, "2_idle.glb", _clip_glb("2_idle"))
+    srv.library.upsert("v.mp3", kind="audio", label="1_idle", scope=srv.active_scope,
+                       source="cache://")
+    srv.library.add_relation(loud, "v.mp3", "voiced_by")
+    for c in (loud, quiet):
+        srv.library.add_relation(fig, c, "shipped_with")
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+
+    assert len(client.get(f"/figure/clips?id={eid}").json()["shipped"]) == 2
+    only = client.get(f"/figure/clips?id={eid}&voiced=true").json()["shipped"]
+    assert [c["id"] for c in only] == [loud]
+
+
+def test_a_clip_with_no_voice_says_so_rather_than_sending_an_empty_url(srv, client, tmp_path):
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    clip = _import_id(client, "1_idle.glb", _clip_glb())
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+    r = client.post("/figure/clip", json={"id": eid, "clip": clip}).json()
+    assert r["voiced"] is None
+    assert _ent(client, eid)["components"]["figure-clip"]["audio"] == ""
+
+
+def test_stopping_a_clip_leaves_nothing_for_the_client_to_keep_playing(srv, client, tmp_path):
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    clip = _import_id(client, "1_idle.glb", _clip_glb())
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+    client.post("/figure/clip", json={"id": eid, "clip": clip})
+    r = client.post("/figure/clip", json={"id": eid, "stop": True}).json()
+    assert r["ok"] and r["playing"] is None
+    assert _ent(client, eid)["components"]["figure-clip"] == {"clip": "", "playing": False}
+
+
+def test_a_clip_from_a_DIFFERENT_rig_is_RETARGETED_rather_than_refused(srv, client, tmp_path):
+    """Binding is by node name, so a clip whose rig is spelled differently resolves NOTHING. That used
+    to be a refusal, and it left ten figures in the catalog with no clip they could be offered at all.
+
+    Now both skeletons are mapped through the canonical humanoid and every channel that can cross is
+    rewritten — on the server, into an ordinary clip spelled in the FIGURE's node names, so the client's
+    one bind-by-name path resolves it with no new code. The entity gets a different asset from the one
+    that was asked for, and says so."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    alien = _import_id(client, "weird.glb", _clip_glb(naming=_RIGIFY))
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+
+    r = client.post("/figure/clip", json={"id": eid, "clip": alien}).json()
+    assert r["ok"] and r.get("retargeted") is True, r
+    assert r["clip"] != alien, "a rewritten clip is a different asset"
+    assert _ent(client, eid)["components"]["figure-clip"]["clip"] == f"/assets/{r['clip']}"
+
+    # It carries the FIGURE's signature now, so it is findable for anything else on that rig, and it
+    # remembers where it came from.
+    made = json.loads(srv.library.get(r["clip"])["attributes"])
+    assert made["rig_sig"] == json.loads(srv.library.get(fig)["attributes"])["rig_sig"]
+    assert made["retargeted_from"] == alien
+
+    # Asking again is a LOOKUP, not a second rewrite — content-addressing dedupes the bytes, not the
+    # work, and the rewrite is ~9 s on a 40-second clip. The caveats come back with it, because they
+    # are a property of the pair rather than of this call.
+    again = client.post("/figure/clip", json={"id": eid, "clip": alien}).json()
+    assert again["clip"] == r["clip"] and again["notes"] == r["notes"]
+
+    # A cached clip made by an OLDER build must not be handed back forever. A content address
+    # fingerprints the bytes, not the method that made them, so the cache is stamped with the revision
+    # of the code that filled it — without which a fix reaches nobody and the figure keeps moving the
+    # way it did before, which is exactly how this was found.
+    import conjure.retarget as _rt
+    srv.library.upsert(r["clip"], attributes={"retarget_rev": _rt.RETARGET_REV - 1})
+    after = client.post("/figure/clip", json={"id": eid, "clip": alien}).json()
+    assert after["ok"] and after["retargeted"] is True
+    assert json.loads(srv.library.get(after["clip"])["attributes"])["retarget_rev"] == _rt.RETARGET_REV
+
+
+def test_a_retargeted_clip_KEEPS_THE_VOICE_recorded_against_it(srv, client, tmp_path):
+    """A rewritten clip is the same performance on another body, and the voice was recorded against the
+    performance rather than against the skeleton. Dropping it makes every cross-rig clip silent, which
+    is half of what these are — found on device, where the first cross-rig play came back `voiced: null`
+    on a clip that is voiced."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    alien = _import_id(client, "weird.glb", _clip_glb(naming=_RIGIFY))
+    srv.library.upsert("voice.mp3", kind="audio", label="her voice", scope=srv.active_scope,
+                       source="cache://")
+    srv.library.add_relation(alien, "voice.mp3", "voiced_by")
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+
+    r = client.post("/figure/clip", json={"id": eid, "clip": alien}).json()
+    assert r["ok"] and r["retargeted"] is True
+    assert r["voiced"] == "voice.mp3", "the rewrite must not silence her"
+    assert _ent(client, eid)["components"]["figure-clip"]["audio"] == "/assets/voice.mp3"
+
+
+def test_forcing_a_cross_rig_clip_still_binds_it_by_NAME(srv, client, tmp_path):
+    """`force` has always meant "show me the wreck", and retargeting does not take that away — it is
+    how you find out what a rig mismatch actually looks like."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    alien = _import_id(client, "weird.glb", _clip_glb(naming=_RIGIFY))
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+    r = client.post("/figure/clip", json={"id": eid, "clip": alien, "force": True}).json()
+    assert r["ok"] and "forced" in r["warning"]
+    assert r["clip"] == alien and not r.get("retargeted"), "forced means the ORIGINAL, unrewritten"
+
+
+def test_a_figure_with_no_bone_map_is_told_WHY_it_cannot_receive_a_clip(srv, client, tmp_path):
+    """Tamaki is the real case: rigged, and no humanoid map at all. A clip bound through a map we could
+    not recover is a figure folded into a knot, so the refusal stays — but it now says what is missing
+    rather than that the feature does not exist."""
+    nameless = _figure_glb(naming={k: f"b{i}" for i, k in enumerate(_MIXAMO)})
+    fig = _import_id(client, "nameless.glb", nameless)
+    alien = _import_id(client, "weird.glb", _clip_glb(naming=_RIGIFY))
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "thing"}).json()["id"]
+    r = client.post("/figure/clip", json={"id": eid, "clip": alien}).json()
+    assert not r["ok"]
+    assert "not a rigged figure" in r["error"] or "humanoid map" in r["error"], r
+
+
+def test_the_clips_a_figure_SHIPPED_with_are_listed_apart_from_the_ones_that_merely_fit(srv, client,
+                                                                                        tmp_path):
+    """Compatibility is not sufficiency (decisions.md §27): 93 of 206 clip names call out a fixture, so
+    a clip that binds perfectly can still be wrong for a figure standing in a field. The authored set is
+    the default view and reaching past it has to be deliberate."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    mine = _import_id(client, "1_idle.glb", _clip_glb("1_idle"))
+    hers = _import_id(client, "2_action.glb", _clip_glb("2_action"))
+    srv.library.add_relation(fig, mine, "shipped_with")
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+
+    r = client.get(f"/figure/clips?id={eid}").json()
+    assert r["ok"] and [c["label"] for c in r["shipped"]] == ["1_idle"]
+    assert r["compatible_count"] == 1, "the other one fits, and is not what she was given"
+    assert r["rig_sig"]
+
+    r = client.get(f"/figure/clips?id={eid}&all=true").json()
+    assert [c["id"] for c in r["compatible"]] == [hers], "reaching past the authored set, on request"
+
+
+def test_a_clip_asked_for_by_a_label_two_assets_share_is_refused_not_guessed(srv, client, tmp_path):
+    """`3_idle` is ambiguous in a captured set by design, and 400 of 524 clips appear in exactly one
+    capture — so a duplicated label means the same clip name on a different figure. Naming the
+    candidates is the answer; picking one is not."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    _import_id(client, "3_idle.glb", _clip_glb("3_idle"))
+    second = _clip_glb("3_idle", extra_bones=["Tail"])                  # different bytes, same label
+    _import_id(client, "3_idle.glb", second)
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+
+    r = client.post("/figure/clip", json={"id": eid, "clip": "3_idle"}).json()
+    assert not r["ok"] and "ask by id" in r["error"] and len(r["candidates"]) == 2
+
+
+def test_an_ambiguous_label_resolves_to_the_clip_that_shipped_with_THIS_figure(srv, client, tmp_path):
+    """`10_action` is eleven different clips across the library. Asked of a particular figure it is not
+    ambiguous at all — it means hers — and refusing made the label path useless for the only caller that
+    has one, since an asset id is not something a person says out loud."""
+    fig = _import_id(client, "girl.glb", _figure_glb())
+    hers = _import_id(client, "10_action.glb", _clip_glb("10_action"))
+    _import_id(client, "10_action.glb", _clip_glb("10_action", extra_bones=["Tail"]))   # somebody else's
+    srv.library.add_relation(fig, hers, "shipped_with")
+    eid = client.post("/place_cached_asset", json={"id": fig, "name": "girl"}).json()["id"]
+
+    r = client.post("/figure/clip", json={"id": eid, "clip": "10_action"}).json()
+    assert r["ok"] and r["clip"] == hers, "hers, not a coin toss between two"
+
+
+def test_only_a_RIGGED_entity_can_be_animated(srv, client, tmp_path):
+    clip = _import_id(client, "1_idle.glb", _clip_glb())
+    eid = client.post("/place_cached_asset", json={
+        "id": _import_id(client, "prop.glb", _glb_bytes(
+            {"scenes": [{"nodes": [0]}], "scene": 0, "nodes": [{"name": "Cube", "mesh": 0}],
+             "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+             "accessors": [{"min": [0, 0, 0], "max": [1, 1, 1]}]})),
+        "name": "prop"}).json()["id"]
+    r = client.post("/figure/clip", json={"id": eid, "clip": clip}).json()
+    assert not r["ok"] and "not a rigged figure" in r["error"]
 
 
 def test_a_figure_carries_its_PARTS_and_can_be_undressed(srv, client, tmp_path):
@@ -4995,3 +5714,19 @@ def test_a_figure_with_no_parts_says_WHY_rather_than_doing_nothing(srv, client, 
     assert "no classified parts" in r["error"]
     assert "separate model" in r["error"], "it must point at the other mechanism"
 
+
+def test_hiding_reports_WHICH_CATEGORIES_not_just_mesh_names(srv, client, tmp_path):
+    """Three times running the director said "clothing's all off" after a call that also took the hair,
+    because the reply listed only mesh names and nobody reads those back. The caller has to be able to
+    say what it actually did."""
+    eid = _place_dressed_figure(srv, client, tmp_path)
+    r = client.post("/figure/parts", json={"id": eid, "only_body": True}).json()
+    assert r["hidden_by_category"] == {
+        "clothing": ["clothes_maiddress"],
+        "hair": ["model_britney_hair"],
+        "shoes": ["Canvas_shoes"],
+    }, "only_body takes the hair too, and the reply has to say so"
+
+    r = client.post("/figure/parts", json={"id": eid, "show": ["hair"]}).json()
+    assert "hair" not in r["hidden_by_category"]
+    assert sorted(r["hidden_by_category"]) == ["clothing", "shoes"]

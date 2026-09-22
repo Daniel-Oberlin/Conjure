@@ -12,6 +12,7 @@ import math
 import struct
 
 from conjure.figures import (CONVENTIONS, CORE_BONES, FRAME_VECTORS, POSE_AXES, REQUIRED_BONES,
+                             figure_description,
                              TRUNK_BONES, best_humanoid, convention_humanoid, follow_bones,
                              joint_limits,
                              prune_map,
@@ -140,6 +141,36 @@ def test_validate_reads_the_side_rule_off_THE_FIGURES_FACING():
     problems = validate(doc, swapped)
     assert any("sides look swapped" in p for p in problems), problems
     assert any("faces -z" in p for p in problems), "and it should say which frame it judged in"
+
+
+def test_validate_follows_the_facing_round_a_QUARTER_turn_not_only_a_half():
+    """A figure can be yawed any amount, and Stewardess is: her thing is composed from a scene entity
+    turned 90 degrees, so she faces -x and her sides separate along z.
+
+    The sign-along-z version of this rule could only tell +z from -z. It read her facing as -z, then
+    compared her hands along x — where they sit at the SAME coordinate to three decimals, because x is
+    her front-to-back axis. All four side checks failed, `best_humanoid` discarded a correct
+    name-based map, inference could not replace it, and she was the one figure of twenty with no rig
+    signature at all: no `shipped_with` clips, no compatible clips, nothing that would animate her.
+
+    So facing is a vector in the ground plane and the sides are judged along the perpendicular to it."""
+    doc, idx = _skeleton()
+    m = infer_humanoid(doc)
+    assert not validate(doc, m), "the fixture faces +z and is consistent"
+
+    # Yaw 90 degrees about y: (x, z) -> (z, -x). The figure now faces +x and its left is -z.
+    for node in doc["nodes"]:
+        t = node.get("translation")
+        if t:
+            node["translation"] = [t[2], t[1], -t[0]]
+    assert not [p for p in validate(doc, m) if "sides look swapped" in p], \
+        "a figure turned a quarter of the way round is not a figure with its sides swapped"
+
+    swapped = dict(m)
+    swapped["leftHand"], swapped["rightHand"] = m["rightHand"], m["leftHand"]
+    problems = validate(doc, swapped)
+    assert any("sides look swapped" in p for p in problems), problems
+    assert any("faces +x" in p for p in problems), "and it should name the axis it judged in"
 
 
 def test_validate_falls_back_to_plus_x_when_no_toes_are_mapped():
@@ -1054,3 +1085,30 @@ def test_compose_frame_with_a_parent_that_has_not_moved_is_a_no_op():
     same = compose_frame(axes["leftUpperArm"], hips, hips)
     for key in ("up", "forward", "out", "rest"):
         assert same[key] == pytest.approx(axes["leftUpperArm"][key], abs=1e-9)
+
+
+def test_inspect_reports_what_comes_OFF_not_only_what_bends():
+    """Asked what a figure was wearing, the director called `inspect_figure`, got a list of bones, and
+    told the user she was "a unified mesh with no detachable parts" — about a figure carrying seven
+    classified ones. The tool's silence was quoted back as fact. A tool that describes a figure has to
+    describe the whole figure."""
+    text = figure_description(label="Teacher_v1", height_m=1.82, tris=50000,
+                              bones={"hips": 1, "head": 1}, has_map=True,
+                              removable={"clothing": ["shirt", "skirt"], "shoes": ["shoes"]},
+                              hidden=["shirt"])
+    assert "Removable: clothing (2), shoes (1)" in text
+    assert "by CATEGORY, or name one mesh" in text
+    assert "Currently hidden (1): shirt" in text
+
+
+def test_a_figure_with_nothing_removable_says_WHY_and_points_elsewhere():
+    """`removable={}` is a different answer from `removable=None`: one figure has been classified and
+    wears nothing removable, the other was never classified. Both need to mention the OTHER mechanism —
+    clothing that arrived as a separate model is its own entity."""
+    text = figure_description(label="Plain", bones={"hips": 1}, has_map=True, removable={})
+    assert "Nothing on this figure is removable" in text
+    assert "SEPARATE model is its own entity" in text
+
+    # No parts information at all — say nothing rather than claim there is nothing.
+    quiet = figure_description(label="Plain", bones={"hips": 1}, has_map=True)
+    assert "removable" not in quiet.lower()
