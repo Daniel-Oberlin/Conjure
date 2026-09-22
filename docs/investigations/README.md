@@ -14,6 +14,17 @@ A doc earns a place here when it has produced **negative knowledge** worth keepi
 eliminated by measurement, a fix tried and rejected, a platform limit confirmed. A bug that was simply
 found and fixed does not need an investigation; the fix and its test are the record.
 
+### One legitimate guest: a device-run checklist
+
+A doc that plans a run — *what to do on the headset, what to look at, what a failure would mean* — has
+none of the required sections below, because nothing has happened yet. It still belongs here rather than
+in [`plans/`](../plans/), which means something narrower: a cross-area sequence that dissolves into the
+specs. A run checklist is single-area and its output is measurements, not spec content.
+
+So it lives here as a **consumable**. When the run is done it either grows into a real investigation —
+symptom, experiments, what was ruled out — or it is deleted and its findings go to the backlog, as
+`figures-device-run-2026-09.md` was. A checklist that is still here months after its run is neither.
+
 ## Required sections
 
 Every investigation carries these, whatever else it has:
@@ -36,6 +47,7 @@ thing. Say what would change your mind.
 | [`pops-and-jitters.md`](./pops-and-jitters.md) | visible motion that shouldn't be there — seams, cracks, content shimmer, and the walking micro-stutter | five fixes shipped; the residual stutter diagnosed as a **WebXR/Quest platform limit** (dropped-frame positional reprojection during translation), our code exonerated by measurement |
 | [`wall-art-behind-wall.md`](./wall-art-behind-wall.md) | a wall-art image intermittently lands *behind* its wall | Fix A landed; **Fix B tried and rejected** — do not retry without new evidence |
 | [`stt-accuracy.md`](./stt-accuracy.md) | speech-to-text gets words wrong — is it the recognizer or the microphone? | model fix shipped (`base` → `small.en`, measured); **four options rejected**, two by measurement; mic-vs-model still open pending a real-audio corpus |
+| [`rooms-device-run-2026-09.md`](./rooms-device-run-2026-09.md) | rooms as a first-class unit — the whole feature, unexercised on hardware | **plan, not run.** Written before the run: does segmentation find this space's three rooms, does a name survive losing its room's floor, and how far apart are the rooms really — the measurement step 3 was deferred for |
 | [`raised-floor.md`](./raised-floor.md) | a room's floor renders inches above the real one, on and off for days | cause established — the Quest anchors that room's stored entity high; three hypotheses **killed by measurement**, and a re-scan does not clear it. **Four correction attempts, all reverted** — the work sits unmerged on `feat/fix-floating-rooms` with a resume guide |
 | [`surface-churn.md`](./surface-churn.md) | surfaces drop out and come back without their colour | first cause found and **fixed** (entering AR on a partial space → a frame ~17 cm out → originals pruned with their materials; the load gate). **Reopened 2026-09-09**: a second path reaches the same symptom — `/space/capture` accepts a destructive capture from a client that has not selected a space yet, so the gate never sees it. Cost a whole space's styling |
 

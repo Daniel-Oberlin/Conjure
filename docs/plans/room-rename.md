@@ -1,6 +1,28 @@
-# The "room" rename — inventory
+# Plan — the "room" rename
 
-**Status:** inventory taken 2026-09-07, **nothing renamed yet.** Branch `feat/rooms`.
+**Status:** identifiers DONE · model-facing prose DONE · docs prose DONE · **code-comment and test prose
+open** (~460 occurrences) · `EMPTY-ROOM` undecided
+**Opened:** 2026-09-07 · **Landed on `main`:** 2026-09-09 (`70a28d6`)
+
+**This file is temporary.** A plan spans areas that the specs and backlogs deliberately keep apart — this
+one ran across code, MCP tools, agent prompts, tests and docs at once — so it exists to hold that one
+sequence while it is executed, and is deleted when the last phase settles.
+
+It is **not** an investigation, despite where it started life: it has no symptom, no experiment table and
+no remaining theories. What it does have is a *tried-and-rejected* list worth reading before anyone
+proposes a sweep again, and that is the part with somewhere durable to go.
+
+**Dissolves to:**
+
+| Part | Goes to | When |
+|---|---|---|
+| *"docs cite code by value"* — the ten stale citations and what to grep next time | [`docs/README.md`](../README.md), as docs discipline | now-ish; it is not rename-specific |
+| The sweep-corrupted-15-phrases record and its two lessons | same | same |
+| `EMPTY-ROOM` (`scripts/c4_frame_cost.py`) | [`backlogs/figures.md`](../backlogs/figures.md) | when decided |
+| The remaining ~460 comment/test occurrences | done, or a one-line backlog entry | when the prose pass finishes |
+| Everything else — the inventory tables, the tier scopes, the progress log | **deleted** | it is spent the moment the prose residue lands |
+
+If it outlives those, it has become a backlog by another name and should be dissolved on the spot.
 
 `room` is used throughout the code, tools and prompts to mean *the whole space*, which
 [`specs/spaces.md` §1](../specs/spaces.md) explicitly disclaims: *"Nothing in the record models a 'room' as
@@ -288,4 +310,28 @@ itself, not just for the identifier.**
 The campaign is complete for identifiers, model-facing prose, and docs. The residue is ~460 in code comments
 and tests, where the same reading applies and much is already correct (the synthetic single-room fixtures
 alone are most of the test count). It blocks nothing.
+
+### The prose sweep corrupted 15 phrases, and I shipped it
+
+Recorded because it is the exact failure this document argues against, committed anyway.
+
+At merge time the "unambiguous phrase" set — built and reviewed against **code** — was re-run over
+**docs** without the per-file read. Fifteen phrases where `room` was correct were overwritten:
+
+| Rule | Ate |
+|---|---|
+| `room record` → `space record` | *"Segmentation + **room record** + names"* — the rooms plan's own step 1 |
+| `room boundary` → `space boundary` | *"per-**room** boundary"* ×3, and *"the `err` sign flip at a **room** boundary"* ×2 — the sharpest single reading in the geometry log, whose entire point is which ROOM is displaced |
+| `room entity` → `space entity` | *"the Quest's own **room** entity for the bedroom"* ×5 — the cause statement of the raised-floor fault |
+| `room's surfaces` → `space's surfaces` | *"manipulate a **room's** surfaces"* — a row in the rooms plan's own director table |
+| `two-room capture` → `two-space capture` | ×3, describing the golden fixture |
+
+All restored. Two lessons, both cheap and both learned late:
+
+- **A phrase set is only unambiguous relative to the corpus it was classified against.** These rules were
+  genuinely safe in `conjure/` and `client/`; in the geometry docs, which are *about* rooms, several of
+  them were exactly backwards.
+- **`raised-floor.md` "needing no changes" was a conclusion about the file as it then stood** — it had
+  already been silently altered by the merge sweep before I read it. Reading a file does not audit what a
+  previous commit did to it; `git show <sweep> -- <path>` does, and that is what caught this.
 

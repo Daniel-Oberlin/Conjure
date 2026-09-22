@@ -707,6 +707,10 @@
 
   function applyEnv(env) {
     env = env || {};
+    // Mirror the space's room record. The client cannot ASSIGN room identity — the server does — but it
+    // needs the mapping to report a residual against `room_2` rather than against the floor surface that
+    // happens to define it, so field data lines up with what query_space prints.
+    if (env.rooms) spaceRooms = env.rooms;
     var sky = document.getElementById("sky");
     var groundedSky = document.getElementById("grounded-sky");
     // User adjustments to the derived frames, echoed back from the server (or on a fresh snapshot). ALL of
@@ -1480,6 +1484,8 @@
     var el = document.getElementById("avatar-" + user);
     if (el && el.parentNode) el.parentNode.removeChild(el);
   }
+  var spaceRooms = {};                 // env.rooms mirror: room id → {n, name?, floor} (see applyEnv)
+
   function presenceTick() {
     if (!socket || socket.readyState !== 1) return;
     var sc = document.querySelector("a-scene");
@@ -1507,6 +1513,16 @@
       cam.matrixWorld.decompose(hp, hq, hsc);            // head in F_track
       var anchor = window.PlaneAnchor.authorAnchor(THREE, { position: hp, quaternion: hq, mode: "free" }, rc._localPlanes);
       if (anchor.walls.length >= 2) msg.anchor = anchor;
+    }
+    // Which ROOM am I standing in? Report the FLOOR I am over, not a room id — the client has no way to
+    // know which persistent room that is (the server assigns them, conjure/rooms.py), and the room record
+    // stores its defining floor, so the reverse lookup is free on that side. Uses the same local floors
+    // and the same F_track head pose the marker probe does; the F_ref pose above is for gaze.
+    if (rc && rc._censusFloors && rc._censusFloors.length && window.SpaceSnap) {
+      var hp2 = new THREE.Vector3();
+      cam.matrixWorld.decompose(hp2, new THREE.Quaternion(), new THREE.Vector3());
+      var fl = window.SpaceSnap.floorUnder(THREE, rc._censusFloors, hp2.x, hp2.z);
+      if (fl && fl.id) msg.floor = fl.id;
     }
     socket.send(JSON.stringify(msg));
   }
@@ -2159,6 +2175,47 @@
       // thin wrappers adapt it to the component's state (this._ref, this._regStat). See that file.
       _euler: function (q) { return window.SpaceSnap.eulerYXZ(AFRAME.THREE, q); },
       _yawOf: function (n) { return window.SpaceSnap.yawOf(n); },
+      // Per-room registration residuals → the geometry event log (§10). MEASURES ONLY: nothing here moves
+      // a surface. The first increment of piecewise-rigid registration is finding out how large the
+      // effect is in the field, because §1's ~9 cm is an aggregate over one space on one day.
+      //
+      // Change-gated like every other event in that log, so a settled space emits nothing: a room is
+      // reported when it first has a fit, when its residual moves by more than a centimetre, or when the
+      // verdict flips. Without that this would post ~0.5 Hz forever and the log would stop being
+      // affordable to leave running for weeks.
+      _logRoomResiduals: function (seg) {
+        if (!seg || !seg.rooms || !this._regRes || !this._ref || !this._ref.length) return;
+        // Key the residual by the PERSISTENT room id where we know it, falling back to the defining floor
+        // before the first resolution has come back. A log keyed by a floor surface id is readable only
+        // against another log; keyed by room_2 it is readable against query_space.
+        var byFloor = {};
+        Object.keys(spaceRooms).forEach(function (rid) {
+          var fl = spaceRooms[rid] && spaceRooms[rid].floor;
+          if (fl) byFloor[fl] = rid;
+        });
+        var roomOf = {};
+        seg.rooms.forEach(function (rm) {
+          var rid = byFloor[rm.floor] || rm.floor;
+          rm.ids.forEach(function (id) { roomOf[id] = rid; });
+        });
+        var rows;
+        try {
+          rows = window.SpaceSnap.roomResiduals(AFRAME.THREE, this._regRes, this._ref, roomOf);
+        } catch (err) { return; }
+        var gate = WM.roomResidualGate(this._roomRes || {}, rows);
+        this._roomRes = gate.next;
+        gate.emit.forEach(function (r) {
+          geoLog("room.residual", {
+            room: r.room, n: r.n, walls: r.nz,
+            before: +r.before.toFixed(4), after: +r.after.toFixed(4),
+            dx: +r.dx.toFixed(4), dz: +r.dz.toFixed(4),
+            // Reported beside the fit, never folded into it: §10.2's detector rests on registration not
+            // touching height, so an applied per-room y would cancel what it measures.
+            dy: r.dy == null ? null : +r.dy.toFixed(4),
+            would_apply: r.ok, applied: false,
+          });
+        });
+      },
       _register: function (cur) {
         var r = window.SpaceSnap.register(AFRAME.THREE, cur, this._ref, window.CONJURE_REG);
         this._regStat = r.stat;
@@ -2214,15 +2271,21 @@
       },
       _hint: function (on) {
         var el = document.getElementById("reloc-hint");
+        // WHICH of the three causes, in its own words — `WM.relocHint`. "Step out and back in" re-localizes
+        // the headset, which is the remedy for a lost lock and useless for a room still materializing or a
+        // space we have not identified yet; given as advice there, it restarts the session and the wait.
+        var why = WM.relocHint(this._regStat);
         if (on && !el) {
           var cam = document.querySelector("a-camera") || document.querySelector("[camera]");
           if (!cam) return;
           el = document.createElement("a-entity");
           el.id = "reloc-hint";
           el.setAttribute("position", "0 0 -1.5");           // locked ~1.5 m in front of the headset
-          el.setAttribute("text", { value: "Re-localizing…\nstep out of your play area and back in",
+          el.setAttribute("text", { value: why.text,
             align: "center", color: INFO_COLOR, width: 1.6, baseline: "center" });
           cam.appendChild(el);
+        } else if (on && el) {
+          el.setAttribute("text", "value", why.text);        // the cause can change while it is showing
         }
         if (el) el.setAttribute("visible", on);
       },
@@ -2789,6 +2852,29 @@
           // else undecided — fall through and keep rendering the booted world until the capture fills in
         }
 
+        // SELECTION GATE — do not register against a space we may not be standing in.
+        //
+        // Entering AR before the location fix lands leaves us holding the space from the LAST session, and
+        // registering the live room against it is comparing this building with another one. Measured
+        // 2026-09-22: a three-room home scored 9 of 57 surfaces against a space 700 km away, which reads as
+        // a lost lock and raised the "step out of your play area and back in" hint — advice that cannot
+        // help, since tracking was never the problem. Following it restarts the session, so a six-second
+        // wait for the fix became three attempts. The vote above still runs (it is what resolves this), and
+        // the world is blanked to passthrough here anyway, so holding hides nothing that was showing.
+        var selGate = WM.selectGate(awaitingSpace, this._selecting || 0);
+        if (selGate === "hold") {
+          if (!this._selecting) geoLog("space.selecting", { planes: cur.length });
+          this._selecting = (this._selecting || 0) + 1;
+          this._regStat = "selecting";
+          this.lastPost = time - RETRY_MS; return;          // no _markLost: we are not lost, we are looking
+        }
+        if (this._selecting) {
+          geoLog("space.selected", { held: this._selecting, forced: selGate === "forced" || undefined });
+          debugLog("sel", "selection resolved after " + this._selecting + " held capture(s)"
+            + (selGate === "forced" ? " (FORCED — selection never resolved)" : ""), true);
+          this._selecting = 0;
+        }
+
         // VOID/outdoor world: not tied to a captured space, so there's no reference to register against.
         // Derive a deterministic frame from the live walls (canonicalFrame) — the same physical room
         // canonicalizes to the same frame every visit, so the skybox holds a consistent-but-arbitrary
@@ -3078,6 +3164,26 @@
         // the room is churning — the case the log exists for.
         var self2 = this, curById = {};
         surfaces.forEach(function (s) { curById[s.id] = s; self2._absent[s.id] = 0; self2._known[s.id] = s; });
+
+        // Rooms (docs/backlogs/spaces-geometry.md, *rooms as a first-class unit*). Segment the LIVE
+        // capture, not `_known`: `_known` is seeded from the persisted doc on entry, whose entries carry
+        // `position`/`rotation` rather than the `_lp`/`_lq` the geometry needs. Surfaces in `_known` but
+        // absent from this capture simply keep the labels they have — the server only relabels ids this
+        // segmentation actually names.
+        //
+        // Groups, never per-surface labels: which PERSISTENT room a group is belongs to the server
+        // (conjure/rooms.py), and a client cannot know it — its own ids are all it has.
+        //
+        // Computed BEFORE the POST gate below, which returns early on a settled space. The residual
+        // reading wants a settled space most of all — that is when a stable inter-room offset is real
+        // rather than a capture still arriving.
+        var seg = null;
+        try {
+          seg = window.SpaceSnap.segmentRooms(AFRAME.THREE, surfaces);
+        } catch (err) {
+          console.warn("[conjure] room segmentation failed", err);       // never block the capture POST
+        }
+        this._logRoomResiduals(seg);
         var reasons = [];
         Object.keys(self2._known).forEach(function (id) {                 // debounced removals (3 misses)
           if (curById[id]) return;
@@ -3112,7 +3218,8 @@
         fetch("/space/capture", {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Conjure-User": currentUser() || "" },
-          body: JSON.stringify({ client_id: this.clientId, surfaces: payload, boundary: boundary, replace: true }),
+          body: JSON.stringify({ client_id: this.clientId, surfaces: payload, boundary: boundary, replace: true,
+                                 rooms: seg ? seg.rooms : null, links: seg ? seg.links : null }),
         }).catch(function (e) { console.warn("[conjure] room post failed", e); });
         if (JIT) {                                        // owner: POST gate (structural diff + fetch dispatch)
           this._jMark("postO");

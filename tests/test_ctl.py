@@ -23,6 +23,7 @@ def test_every_subcommand_binds_a_handler():
             "grounded-skybox": ["grounded-skybox", "a meadow"], "texture": ["texture", "floor", "wood"],
             "style": ["style", "wall"], "edit": ["edit", "e1", "brighter"], "outpaint": ["outpaint", "e1"],
             "skybox-from": ["skybox-from", "e1"], "grab-mode": ["grab-mode", "skybox"],
+            "name-room": ["name-room", "room 2", "kitchen"],
             "clips": ["clips", "jane"], "clip": ["clip", "jane", "1_idle"],
             "pose": ["pose", "jane", "kneel"], "dress": ["dress", "jane"],
             "wear": ["wear", "hand_l"],

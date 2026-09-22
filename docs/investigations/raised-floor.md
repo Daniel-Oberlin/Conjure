@@ -61,7 +61,7 @@ Everything below rests on them.
 | 1 | Ship an always-on, change-gated height census + median-deviation alarm; enter the space normally | `level.anomaly` fired **unprompted at session entry**, naming `real_floor_32` (dev +83 mm) and `real_ceiling_13` (+77 mm) | The fault is real, persistent, and localised to one room. Detected with nobody looking for it — the design bet paid on day one |
 | 2 | Compare the two known-equal pairs in the live capture | `floor_32 − floor_8` = **+104 mm** (truth 0); `ceiling_13 − ceiling_25` = **+103 mm** (truth 0) | The bedroom is displaced as a **rigid unit**. Floor and ceiling agreeing within **1 mm** is the decisive number in the whole campaign |
 | 3 | Marker probe: controller resting on the shared wooden floor, four presses across three rooms | grip_y = 0.047 (bedroom) / 0.032 (living) / 0.046 (bedroom) / 0.038 (kitchen) — **15 mm spread, 1 mm hysteresis** on the return | The **tracking frame is sound**. One continuous floor reads as one height everywhere. Kills the warped-frame hypothesis outright |
-| 4 | Read the sign of `err` either side of the space boundary | bedroom **+0.042 / +0.045**; living **−0.044**; kitchen **−0.029** | The **bedroom** is the displaced room, not the others. Living and kitchen sit just *below* the controller — that is the grip bias — while only the bedroom sits above it |
+| 4 | Read the sign of `err` either side of the room boundary | bedroom **+0.042 / +0.045**; living **−0.044**; kitchen **−0.029** | The **bedroom** is the displaced room, not the others. Living and kitchen sit just *below* the controller — that is the grip bias — while only the bedroom sits above it |
 | 5 | Check registration health throughout | `cov=59/59 inl=59/59`, residuals 3–5 mm mean, 7–14 mm max, both sessions | Not a lock failure, not a bad frame solve. Registration was flawless the entire time |
 | 6 | Track the offset across four censuses over 25 minutes | 117 → 103 → 103 → 104 mm | Stable, not drifting. Absolute heights bob ±25 mm (the whole space breathing) while the *offset* holds |
 | 7 | Look for corroboration in the wall geometry | `wall_81` carries a persistent **106–120 mm gap** above `floor_8` | The partition wall is over the living-room floor but its bottom sits at the *bedroom's* level — it rides with the displaced group. `sealWalls` had been silently stretching it down ~107 mm every capture, which is why no slit was ever visible |
@@ -71,14 +71,14 @@ Everything below rests on them.
 
 Experiments 3 and 5 remove the frame and the solver. Experiment 2 removes independent per-plane error —
 a floor and a ceiling four metres apart do not drift into agreement within 1 mm by coincidence. What is
-left is the Quest's own space entity for the bedroom being anchored high, with its planes faithfully
+left is the Quest's own room entity for the bedroom being anchored high, with its planes faithfully
 following it.
 
 Nothing in our pipeline touches a floor — `sealWalls` reads floors and writes only walls
 (`space-snap.js:554`), `joinCorners` writes walls, `snapInsets` writes insets, and a floor renders at its raw
 `detectedPlanes` pose. So the obvious remedy was a Room Setup re-scan on the device.
 
-**That was tried, and it did not clear the fault.** Whatever anchors that space entity survives a re-scan.
+**That was tried, and it did not clear the fault.** Whatever anchors that room entity survives a re-scan.
 With no source-side cure and a visible consequence — objects on that floor float — the remaining option is
 to correct it at render, which is what §10.4 does. Note what that costs: it is the first and only place the
 client deliberately draws something other than its raw capture, so the criterion is built to refuse rather
@@ -143,9 +143,9 @@ is calibrated on nothing.** That mistake was made, and is recorded below as guar
 
 | | Likelihood | How to test |
 |---|---|---|
-| ~~A Room Setup re-scan clears it~~ | **REFUTED 2026-08-31** | Re-scanned; the room came back displaced. Whatever anchors that space entity survives a re-scan, which rules out a stale scan and makes this a standing fault to live with rather than a one-off to clear |
+| ~~A Room Setup re-scan clears it~~ | **REFUTED 2026-08-31** | Re-scanned; the room came back displaced. Whatever anchors that room entity survives a re-scan, which rules out a stale scan and makes this a standing fault to live with rather than a one-off to clear |
 | ~~Content on the bedroom floor floats ~10 cm~~ | **CONFIRMED 2026-08-31** | Objects on the bedroom floor rise with the displaced floor, exactly as predicted — the diagnosis confirmed from the second side, and the user-visible harm that justified building a correction |
-| The reported "goes back and forth every few days" is the space entity re-anchoring | plausible, untested | Requires the fault to recur after a re-scan. The log now dates every occurrence automatically |
+| The reported "goes back and forth every few days" is the room entity re-anchoring | plausible, untested | Requires the fault to recur after a re-scan. The log now dates every occurrence automatically |
 | The `track.reset` burst is involved | low | Twelve resets in 15 minutes, including **three inside one second**. Walking between rooms across a boundary drawn round one of them explains the count but not the same-second triples. Worth explaining on its own terms before it is dismissed |
 
 ---

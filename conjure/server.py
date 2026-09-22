@@ -49,6 +49,7 @@ from . import poses
 from .figures import FRAME_REV, POSE_AXES, RIG_SIG_REV, clean_pose, resolve_pose
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
+from .rooms import display_name as rooms_display_name, resolve_rooms
 from .plane_anchor import author_anchor, solve_anchor
 from .schema import Patch
 from . import config, namespace
@@ -427,6 +428,9 @@ clients: "dict[WebSocket, str]" = {}     # connected render clients → their us
 _blocked: "dict[WebSocket, str]" = {}    # sockets bumped out of a now-PRIVATE live session (§6c/6d): kept
                                          # (ws → user) so they can be re-admitted when it goes public, but
                                          # OUT of `clients` so they get no world broadcasts meanwhile
+standing: "dict[str, str]" = {}          # user → the FLOOR surface id they are over, from presence.
+                                        # Only an AR client reports one: a CLI, voice or desktop user is
+                                        # not standing anywhere, and should be told so rather than guessed at.
 gaze: "dict[str, dict]" = {}             # user → {"origin","forward","right","up"} in the reference frame,
                                          # from presence — where each headset is looking. May also carry
                                          # "anchor" (plane-relative head anchor) for the §7b seed-solve.
@@ -955,6 +959,9 @@ def _save_active() -> None:
          "surfaces": [], "boundary": None}
     fresh = _space_from_world_doc(owner, active_space, store.doc)      # geometry + boundary, default-materialed
     space["surfaces"], space["boundary"] = fresh["surfaces"], fresh["boundary"]
+    rooms_rec = (store.doc.get("environment") or {}).get("rooms")
+    if rooms_rec:                                  # never CLEAR the record from a doc that has none:
+        space["rooms"] = rooms_rec                 # a room name is unrecoverable, an empty entry is free
     # What was open HERE, newest first — the space's own MRU (specs/spaces.md §6.1). `last_scope`/
     # `last_world` stay as the head of it: several readers still want just "the last one" (the admin
     # listing, public-space discovery), and a space saved before this field existed has only those.
@@ -2645,6 +2652,71 @@ class SpaceVisibilityRequest(BaseModel):
     name: Optional[str] = None        # default: your CURRENT space (only if you own the active one)
 
 
+class RoomNameRequest(BaseModel):
+    scope: str = ""
+    room: str                                  # id ('room_2'), ordinal ('room 2'), or the current name
+    name: str = ""                             # "" clears it, back to the derived 'room #N'
+
+
+# Words a room may not be called, because the surface-target vocabulary already means something by them
+# (docs/specs/worlds-surfaces.md §4). `_real_surface_match` also tries rooms LAST, so a collision would
+# degrade rather than break — but a name that silently never resolves is worse than a refusal.
+_RESERVED_ROOM_NAMES = {"all", "surface", "surfaces", "wall", "walls", "floor", "floors", "ceiling",
+                        "ceilings", "door", "doors", "window", "windows", "wall art", "table", "tables",
+                        "shelf", "shelves", "couch", "room", "rooms", "space"}
+
+
+@app.get("/room/whereami")
+async def room_whereami(user: str = "") -> dict:
+    """Which room is each present user standing in? Reported by the AR client as the FLOOR it is over
+    (presence, ~10 Hz) and mapped here, since only this side knows which persistent room a floor defines.
+
+    Deliberately a separate endpoint rather than a key on `/world`: that returns the stored document
+    verbatim, and occupancy is live per-session state that must never reach the persisted doc — the same
+    reason `captureAuthority` is nulled on activation rather than saved.
+
+    A user with no entry is not standing anywhere we know of, which is the honest answer for a CLI, voice
+    or desktop connection rather than a guess."""
+    rooms = (store.doc.get("environment") or {}).get("rooms") or {}
+    by_floor = {rec.get("floor"): rid for rid, rec in rooms.items() if rec.get("floor")}
+    out = {u: by_floor[f] for u, f in standing.items() if f in by_floor}
+    return {"ok": True, "rooms": rooms, "standing": out,
+            "you": out.get(user) if user else None}
+
+
+@app.post("/room/name")
+async def name_room(req: RoomNameRequest) -> dict:
+    """Name a room in the ACTIVE space — 'room #2' becomes 'kitchen'.
+
+    Space-owner-gated, not world-owner-gated, and scope-bound like `/space/visibility`: the name is
+    written into the space document, so a guest building their own world in your space must not be able
+    to rename your kitchen.
+
+    The name is stored **once**, on the room record. Surfaces carry only the room id, and the default
+    display name is derived rather than stored, so this cannot leave a stale copy anywhere."""
+    caller = (req.scope or "").split("/", 1)[0]
+    if _no_space():
+        return {"ok": False, "error": "no space is active"}
+    if caller and active_space_owner and caller != active_space_owner:
+        return {"ok": False, "error": f"{active_space_owner} owns this space — only they can name its rooms"}
+    rid = _room_id_for(req.room)
+    if not rid:
+        return {"ok": False, "error": f"no room {req.room!r} — try query_space to see them"}
+    rooms = (store.doc.get("environment") or {}).get("rooms") or {}
+    want = (req.name or "").strip()
+    if want.lower() in _RESERVED_ROOM_NAMES:
+        return {"ok": False, "error": f"{want!r} already means something when targeting surfaces — pick another name"}
+    for other, rec in rooms.items():
+        if other != rid and (rec.get("name") or "").strip().lower() == want.lower() and want:
+            return {"ok": False, "error": f"another room is already called {want!r}"}
+    was = rooms_display_name(rooms, rid)
+    patch = store.apply_patch([{"op": "env", "set": {f"rooms.{rid}.name": want or None}}], origin="space")
+    await _broadcast({"type": "patch", "patch": patch})
+    now = rooms_display_name((store.doc.get("environment") or {}).get("rooms") or {}, rid)
+    _slog("space", f"room {rid}: {was!r} → {now!r}")
+    return {"ok": True, "room": rid, "was": was, "name": now}
+
+
 @app.post("/space/visibility")
 async def space_visibility(req: SpaceVisibilityRequest) -> dict:
     """Make one of YOUR spaces public or private (D8/step 6). A PUBLIC space lets any admitted (co-located)
@@ -3134,6 +3206,12 @@ class CaptureUpdate(BaseModel):
     surfaces: list[CapturedSurface] = []
     boundary: Optional[dict] = None           # {floorPolygon: [[x,z]…], height: float}
     replace: bool = True                      # replace the whole real-surface set vs merge
+    # The client's ROOM segmentation of this capture (SpaceSnap.segmentRooms). Groups, not per-surface
+    # labels: the server owns which persistent room each group IS (conjure/rooms.py), and a client that
+    # sent labels would be asserting an identity it cannot know. Absent ⇒ this capture says nothing about
+    # rooms and the stored labels stand.
+    rooms: Optional[list[dict]] = None        # [{floor, ceiling, ids: [...]}]
+    links: Optional[list[dict]] = None        # [{door, a: <floor id>, b: <floor id>|null}]
 
 
 def _surface_entity(s: CapturedSurface) -> dict:
@@ -3216,6 +3294,8 @@ def _compose(world_doc: dict, space: dict) -> dict:
     doc["entities"] = placed + reals
     if space.get("boundary") is not None:
         env["boundary"] = space["boundary"]        # geometry on loan from the space, live-only
+    if space.get("rooms"):
+        env["rooms"] = space["rooms"]              # the room record — on loan too (§ rooms as a unit)
     # A world INHERITING a non-empty space's geometry (created new / switched-to / reset) genuinely has a
     # room, even with no live headset ingest this session — so mark it active for the director's query_space
     # (which gates on spacePresentation.active). Only default it: an explicit False (a director immersion mode like
@@ -3243,6 +3323,9 @@ def _decompose(composed: dict, space: dict) -> dict:
     doc["entities"] = placed
     env = doc.setdefault("environment", {})
     env.pop("boundary", None)                      # the space owns the boundary; never persisted per-world
+    env.pop("rooms", None)                         # …and the room record, for the same reason: a room
+                                                   # name is a fact about the PLACE, not a presentation
+                                                   # choice, so it cannot differ between two worlds
     pres = env.setdefault("spacePresentation", {})
     if overrides:
         pres["surfaceStyles"] = overrides
@@ -3563,9 +3646,52 @@ async def ingest_capture(req: CaptureUpdate) -> dict:
     if geo_ops:
         store.apply_patch(geo_ops, origin="space")             # seed updated in place; NOT broadcast
 
+    # --- rooms ------------------------------------------------------------------------------------
+    # The client segments; `resolve_rooms` decides which of the space's EXISTING rooms each group is
+    # (docs/backlogs/spaces-geometry.md, *rooms as a first-class unit*). `meta.room` doubles as the label
+    # the director reads AND the previous membership the next resolution matches against, so it is stored
+    # per surface rather than only in the room record.
+    #
+    # These go in the SEED and are not broadcast, like the geometry: the client did the segmentation, so
+    # it already knows its own grouping. What it does not know is the persistent identity, and that rides
+    # `environment.rooms` below with the rest of the env.
+    rooms_rec = dict(env.get("rooms") or {})
+    if req.rooms is not None:
+        reals = {e["id"]: e for e in store.doc["entities"] if (e.get("meta") or {}).get("real")}
+        prev = {eid: (e.get("meta") or {}).get("room") for eid, e in reals.items()}
+        prev = {k: v for k, v in prev.items() if v}
+        groups = [{"floor": g.get("floor"), "ceiling": g.get("ceiling"), "ids": list(g.get("ids") or [])}
+                  for g in req.rooms]
+        assigned, rooms_rec = resolve_rooms(groups, rooms_rec, prev)
+        label: dict[str, str] = {}
+        for rid, g in zip(assigned, groups):
+            for sid in g["ids"]:
+                label[sid] = rid
+        # A link names the far side by FLOOR id, because that is what the client's own segmentation keys
+        # on; the room id it maps to is only decided here.
+        leads: dict[str, Optional[str]] = {}
+        for ln in (req.links or []):
+            did, far = ln.get("door"), ln.get("b")
+            if did:
+                leads[did] = label.get(far) if far else None
+        room_ops: list[dict] = []
+        for eid, e in reals.items():
+            m = e.get("meta") or {}
+            rid = label.get(eid)
+            if rid and m.get("room") != rid:
+                room_ops.append({"op": "update", "id": eid, "set": {"meta.room": rid}})
+            if eid in leads and m.get("leads_to") != leads[eid]:
+                room_ops.append({"op": "update", "id": eid, "set": {"meta.leads_to": leads[eid]}})
+        if room_ops:
+            store.apply_patch(room_ops, origin="space")
+            _slog("space", f"rooms: {len(groups)} group(s) → {', '.join(sorted(set(assigned)))} "
+                          f"({len(room_ops)} label op(s))")
+
     # Only these reach clients: room-activation/boundary env + on-surface image re-anchors (content, which
     # clients DO render). Geometry is theirs to render locally.
     env_set: dict = {}
+    if rooms_rec != (env.get("rooms") or {}):
+        env_set["rooms"] = rooms_rec
     if not pres.get("active"):
         env_set["spacePresentation.active"] = True
     if env.get("captureAuthority") != req.client_id:
@@ -3600,6 +3726,7 @@ async def realign_space() -> dict:
 
 
 class TextureSurfaceRequest(BaseModel):
+    room: Optional[str] = None       # narrow to one room — composes with `target` ("the kitchen walls")
     target: str                        # surface id, semantic label ('floor'/'ceiling'/'wall'), or 'all'
     image_id: str
     repeat: Optional[float] = None     # tile NxN across the surface (e.g. grass); None = stretch one copy
@@ -3612,7 +3739,7 @@ async def texture_surface(req: TextureSurfaceRequest) -> dict:
     rec, _, err = _get_image(req.image_id)
     if err:
         return {"ok": False, "error": err}
-    targets = _surface_targets(req.target)
+    targets = _surface_targets(req.target, req.room)
     if not targets:
         return {"ok": False, "error": f"no real surface matches {req.target!r} (try query_space)"}
     mat = {"components.material.src": rec.url, "components.material.shader": "flat",
@@ -3629,9 +3756,38 @@ async def texture_surface(req: TextureSurfaceRequest) -> dict:
 _SEM_NUM = re.compile(r"^([a-z][a-z ]*?)\s*#?\s*(\d+)$")
 
 
+_ROOM_NUM = re.compile(r"^room\s*#?\s*(\d+)$")
+
+
+def _room_id_for(target: str) -> Optional[str]:
+    """A room reference → its persistent id. Accepts the id (`room_2`), the ordinal the user reads off a
+    label (`room 2`, `room #2`), or the name they gave it (`kitchen`). Returns None if it names no room."""
+    rooms = (store.doc.get("environment") or {}).get("rooms") or {}
+    t = str(target or "").strip().lower()
+    if not t:
+        return None
+    if t in rooms:
+        return t
+    mm = _ROOM_NUM.match(t)
+    if mm:
+        n = int(mm.group(1))
+        for rid, rec in rooms.items():
+            if rec.get("n") == n:
+                return rid
+    for rid, rec in rooms.items():
+        if (rec.get("name") or "").strip().lower() == t:
+            return rid
+    return None
+
+
 def _real_surface_match(e: dict, target: str) -> bool:
     """Does real surface `e` match a director target — a surface id, semantic label ('wall'), friendly
-    number ('4'), the combined 'wall 4' form, or 'all'? The friendly number equals the id's number."""
+    number ('4'), the combined 'wall 4' form, a ROOM (its id, `room 2`, or the name the user gave it),
+    or 'all'? The friendly number equals the id's number.
+
+    The room test runs LAST so a semantic can never be shadowed: if someone names a room "wall", `wall`
+    keeps meaning every wall in the space. `name_room` refuses the reserved words as well, so this is a
+    second line rather than the only one."""
     m = e.get("meta", {})
     if not m.get("real"):
         return False
@@ -3640,12 +3796,28 @@ def _real_surface_match(e: dict, target: str) -> bool:
     if t in ("all", e["id"].lower(), sem) or t == fid:
         return True
     mm = _SEM_NUM.match(t)                       # 'wall 4' / 'wall #4'
-    return bool(mm and mm.group(1).strip() in (sem, "surface") and mm.group(2) == fid)
+    if mm and mm.group(1).strip() in (sem, "surface") and mm.group(2) == fid:
+        return True
+    rid = _room_id_for(t)
+    return bool(rid and m.get("room") == rid)
 
 
-def _surface_targets(target: str) -> list[dict]:
-    """Real surfaces matching `target` (see _real_surface_match)."""
-    return [e for e in store.doc["entities"] if _real_surface_match(e, target)]
+def _surface_targets(target: str, room: Optional[str] = None) -> list[dict]:
+    """Real surfaces matching `target` (see _real_surface_match), optionally narrowed to one room.
+
+    The two compose rather than overlap: `target` says WHAT ("wall", "all", a friendly number) and `room`
+    says WHERE. That is what expresses "the kitchen walls", which neither can say alone — a room used as
+    a bare target takes the whole room, and a semantic takes it across the whole space.
+
+    An unresolvable `room` yields nothing rather than everything. Silently widening a scoped edit to the
+    entire space is the one failure here that repaints surfaces the user never mentioned."""
+    out = [e for e in store.doc["entities"] if _real_surface_match(e, target)]
+    if room:
+        rid = _room_id_for(room)
+        if not rid:
+            return []
+        out = [e for e in out if (e.get("meta") or {}).get("room") == rid]
+    return out
 
 
 def _resolve_op_ids(target: str) -> list[str]:
@@ -3656,7 +3828,31 @@ def _resolve_op_ids(target: str) -> list[str]:
     return exact or [e["id"] for e in store.doc["entities"] if _real_surface_match(e, target)]
 
 
+class ShowSurfaceRequest(BaseModel):
+    room: Optional[str] = None
+    target: str
+    visible: bool = True
+
+
+@app.post("/show_surface")
+async def show_surface(req: ShowSurfaceRequest) -> dict:
+    """Show or hide real surfaces as virtual geometry.
+
+    Exists so visibility resolves targets HERE, through `_surface_targets`, like every other surface tool.
+    The MCP layer used to do its own matching, which quietly meant a weaker vocabulary for this one tool:
+    no `wall 4` form and, once rooms landed, no rooms either. One chokepoint or it is not a chokepoint."""
+    targets = _surface_targets(req.target, req.room)
+    if not targets:
+        return {"ok": False, "error": f"no real surface matches {req.target!r} (try query_space)"}
+    patch = store.apply_patch([{"op": "update", "id": e["id"],
+                                "set": {"components.material.visible": req.visible}} for e in targets],
+                              origin="director")
+    await _broadcast({"type": "patch", "patch": patch})
+    return {"ok": True, "count": len(targets)}
+
+
 class StyleSurfaceRequest(BaseModel):
+    room: Optional[str] = None       # narrow to one room — composes with `target` ("the kitchen walls")
     target: str                        # surface id, semantic label, or 'all'
     color: Optional[str] = None        # CSS name or #hex
     opacity: Optional[float] = None    # 0..1; < 1 makes it see-through
@@ -3666,7 +3862,7 @@ class StyleSurfaceRequest(BaseModel):
 async def style_surface(req: StyleSurfaceRequest) -> dict:
     """Color and/or set the transparency of real surface(s) — e.g. semi-transparent blue walls, a
     glass ceiling. (For an image, use /texture_surface.)"""
-    targets = _surface_targets(req.target)
+    targets = _surface_targets(req.target, req.room)
     if not targets:
         return {"ok": False, "error": f"no real surface matches {req.target!r} (try query_space)"}
     setm: dict = {"components.material.visible": True}
@@ -5917,6 +6113,10 @@ async def ws(websocket: WebSocket) -> None:
                     if msg.get("anchor"):                        # §7b: keep the plane-relative head anchor so
                         g["anchor"] = msg["anchor"]              # view_relative can solve it against the seed
                     gaze[user] = g                               # remember where this user is looking
+                if msg.get("floor"):                         # which ROOM this user is standing in, by
+                    standing[user] = msg["floor"]                # the floor they are over (they cannot know
+                elif "floor" in msg:                             # the room id; the room record does)
+                    standing.pop(user, None)
                 await _broadcast_others(websocket, {"type": "presence", "user": user, "pose": pose})
     except WebSocketDisconnect:
         pass

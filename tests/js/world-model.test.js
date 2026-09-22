@@ -706,3 +706,66 @@ test("void world: holding the frame means a thin capture cannot move content at 
   }));
   assert.ok(worst > 2.0, `re-deriving from thin captures should move content metres, worst was ${worst.toFixed(2)} m`);
 });
+
+test("roomResidualGate: a settled space emits nothing", () => {
+  // The geometry log is affordable to leave running for weeks precisely because it is change-gated
+  // (spaces-geometry §10). A per-capture residual would post at ~0.5 Hz forever and end that.
+  const rows = [{ room: "room_1", before: 0.031, ok: true }];
+  const first = WM.roomResidualGate({}, rows);
+  assert.equal(first.emit.length, 1, "the first fit is news");
+  const again = WM.roomResidualGate(first.next, rows);
+  assert.equal(again.emit.length, 0, "the same reading is not");
+  const drift = WM.roomResidualGate(first.next, [{ room: "room_1", before: 0.0315, ok: true }]);
+  assert.equal(drift.emit.length, 0, "nor is half a millimetre of it");
+});
+
+test("roomResidualGate reports a room past the tolerance, and a flipped verdict at any size", () => {
+  const state = WM.roomResidualGate({}, [{ room: "room_1", before: 0.031, ok: true }]).next;
+  assert.equal(WM.roomResidualGate(state, [{ room: "room_1", before: 0.055, ok: true }]).emit.length, 1,
+               "moved past a centimetre");
+  // The verdict is part of the gate on purpose: crossing from "would apply" to "would not" is the
+  // interesting moment even when the number barely moved — that is the boundary a correction would
+  // be switching on and off.
+  assert.equal(WM.roomResidualGate(state, [{ room: "room_1", before: 0.0311, ok: false }]).emit.length, 1,
+               "or changed its mind while barely moving");
+});
+
+test("roomResidualGate keeps rooms independent and does not mutate its input", () => {
+  const state = WM.roomResidualGate({}, [{ room: "room_1", before: 0.03, ok: true }]).next;
+  const out = WM.roomResidualGate(state, [{ room: "room_1", before: 0.03, ok: true },
+                                          { room: "room_2", before: 0.09, ok: true }]);
+  assert.deepEqual(out.emit.map((r) => r.room), ["room_2"], "only the room with news");
+  assert.equal(Object.keys(state).length, 1, "callers keep their copy");
+});
+
+// --- selectGate / relocHint: do not register against a space you may not be standing in -------------
+//
+// Measured on device 2026-09-22. Entering AR before the location fix landed left the client holding the
+// space from the previous session — a room 700 km away — and registration scored `cov=9/57` against it.
+// That reads as a lost lock, so the passthrough hint appeared saying "step out of your play area and back
+// in". Tracking was fine; the client simply did not know where it was yet. Following the advice restarts
+// the session, so a six-second wait for the fix took three attempts.
+
+test("selectGate: holds while selection is unresolved, and never for ever", () => {
+  assert.strictEqual(WM.selectGate(false, 0), "go", "selection resolved — register normally");
+  assert.strictEqual(WM.selectGate(true, 0), "hold", "no fix yet: the reference may be another building");
+  assert.strictEqual(WM.selectGate(true, 7), "hold");
+  assert.strictEqual(WM.selectGate(true, 8), "forced", "patience: never hold for ever silently");
+  assert.strictEqual(WM.selectGate(true, 2, 2), "forced", "and the patience is caller-settable");
+});
+
+test("relocHint: the advice matches the CAUSE, and only a lost lock gets the step-out remedy", () => {
+  const lost = WM.relocHint("cov=9/57 inl=9/66 dlt=448");
+  assert.match(lost.text, /step out of your play area/);
+  assert.strictEqual(lost.advise, true);
+
+  for (const stat of ["loading 1/66", "void-loading 3/12", "selecting"]) {
+    const h = WM.relocHint(stat);
+    assert.strictEqual(h.advise, false, `${stat} is not fixed by stepping out`);
+    assert.doesNotMatch(h.text, /step out/, `${stat} must not ask for a re-localize`);
+    assert.ok(h.text.length > 8, `${stat} still has to say something`);
+  }
+  assert.match(WM.relocHint("loading 1/66").text, /room/i, "a materializing room says so");
+  assert.match(WM.relocHint("selecting").text, /space/i, "an unidentified space says so");
+  assert.strictEqual(WM.relocHint(undefined).advise, true, "unknown cause keeps the old behaviour");
+});

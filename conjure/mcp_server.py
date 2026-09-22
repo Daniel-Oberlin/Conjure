@@ -269,12 +269,56 @@ async def _space_summary() -> str:
     b = env.get("boundary")
     if b:
         lines.append(f"boundary: height {b.get('height')}m, floor polygon {b.get('floorPolygon')}")
-    for e in reals:
+    # Group by ROOM when the space has been segmented. The grouping is the point: a flat list of 59
+    # surfaces tells the director nothing about which of them are in the same physical place, which is
+    # exactly what it needs to act on "make the kitchen blue".
+    rooms = env.get("rooms") or {}
+
+    def _room_label(rid: str) -> str:
+        rec = rooms.get(rid) or {}
+        nm = (rec.get("name") or "").strip()
+        return nm or f"room #{rec.get('n', '?')}"
+
+    def _surface_line(e: dict) -> str:
         m = e.get("meta", {})
         mat = e.get("components", {}).get("material", {})
         vis = mat.get("visible", pres.get("defaultSurfaceVisible", False))
-        lines.append(f"  - {m.get('semantic', 'surface')} #{m.get('friendly_id', '?')} ({e['id']}) at "
-                     f"{e.get('transform', {}).get('position')} (visible={vis}, color={mat.get('color')})")
+        leads = m.get("leads_to")
+        via = ""
+        if m.get("semantic") in ("door", "window"):
+            via = f" → {_room_label(leads)}" if leads else " → outside"
+        return (f"  - {m.get('semantic', 'surface')} #{m.get('friendly_id', '?')} ({e['id']}) at "
+                f"{e.get('transform', {}).get('position')} (visible={vis}, color={mat.get('color')}){via}")
+
+    # Who is standing where — live occupancy, so it comes from its own endpoint rather than the stored
+    # document. Failure here must not cost the director its space summary.
+    here = None
+    try:
+        w = await _get("/room/whereami")
+        standing = (w or {}).get("standing") or {}
+        here = next(iter(standing.values()), None) if len(standing) == 1 else None
+    except Exception:
+        pass
+
+    grouped: dict[str, list[dict]] = {}
+    loose: list[dict] = []
+    for e in reals:
+        rid = (e.get("meta") or {}).get("room")
+        (grouped.setdefault(rid, []) if rid in rooms else loose).append(e)
+    if grouped:
+        order = sorted(grouped, key=lambda r: (rooms.get(r) or {}).get("n", 0))
+        if here and here in rooms:
+            lines.append(f"the user is standing in {_room_label(here)}")
+        lines.append(f"rooms: {', '.join(_room_label(r) for r in order)}"
+                     + (" — name one with name_room" if not any((rooms.get(r) or {}).get("name") for r in order) else ""))
+        for rid in order:
+            lines.append(f"{_room_label(rid)} ({len(grouped[rid])} surfaces):")
+            lines.extend(_surface_line(e) for e in grouped[rid])
+        if loose:
+            lines.append(f"not in any room ({len(loose)}):")
+            lines.extend(_surface_line(e) for e in loose)
+    else:
+        lines.extend(_surface_line(e) for e in reals)
     return "\n".join(lines)
 
 
@@ -347,6 +391,22 @@ async def set_immersion(mode: str) -> str:
 
 
 @mcp.tool()
+async def name_room(room: str, name: str = "") -> str:
+    """Give a room a name the user chose — 'room #2' becomes 'kitchen'.
+
+    room: the room's current name, or its number ('room 2'). name: the new name; pass "" to clear it
+    back to 'room #N'.
+
+    Once named, the room works anywhere a surface target does: style_surface('kitchen', color='blue')
+    styles every surface in it. Only the owner of the space can name its rooms.
+    """
+    out = await _post("/room/name", _body(room=room, name=name))
+    if not out.get("ok"):
+        return f"Couldn't name {room!r}: {_reason(out)}."
+    return f"{out['was']} is now called {out['name']}."
+
+
+@mcp.tool()
 async def realign_space() -> str:
     """Re-align the virtual surfaces to the real world. Use when the user says things look misaligned,
     drifted, or shifted — e.g. after recentering with the Meta button, putting the headset down, or
@@ -403,25 +463,23 @@ async def _is_real_surface(id: str) -> bool:
 
 
 @mcp.tool()
-async def show_surface(target: str, visible: bool = True) -> str:
+async def show_surface(target: str, visible: bool = True, room: Optional[str] = None) -> str:
     """Show or hide real surface(s) as virtual geometry. target: a surface id ('real_wall_1'),
-    a semantic label ('wall', 'ceiling', 'floor', …), or 'all'. Use to build mixed real+virtual
-    views (e.g. show only the ceiling)."""
-    doc = await _get("/world")
-    reals = [e for e in doc["entities"] if e.get("meta", {}).get("real")]
-    t = target.lower()
-    targets = [e for e in reals
-               if t == "all" or e["id"] == target or e.get("meta", {}).get("semantic") == t
-               or str(e.get("meta", {}).get("friendly_id")) == target]
-    if not targets:
-        return f"No real surface matches {target!r} (try query_space)."
-    await _post_patch([{"op": "update", "id": e["id"], "set": {"components.material.visible": visible}}
-                       for e in targets])
-    return f"{'Showed' if visible else 'Hid'} {len(targets)} surface(s) matching {target!r}."
+    a semantic label ('wall', 'ceiling', 'floor', …), a room, or 'all'. Use to build mixed real+virtual
+    views (e.g. show only the ceiling).
+
+    room: narrow it to one room — show_surface('wall', room='kitchen') is the kitchen's walls only.
+    """
+    out = await _post("/show_surface", _body(target=target, visible=visible, room=room))
+    if not out.get("ok"):
+        return f"Couldn't show/hide {target!r}: {_reason(out)}."
+    where = f" in {room}" if room else ""
+    return f"{'Showed' if visible else 'Hid'} {out['count']} surface(s) matching {target!r}{where}."
 
 
 @mcp.tool()
-async def texture_surface(target: str, image_id: str, repeat: Optional[float] = None) -> str:
+async def texture_surface(target: str, image_id: str, repeat: Optional[float] = None,
+                          room: Optional[str] = None) -> str:
     """Map a procured image onto real surface(s) — e.g. a starfield on the ceiling, grass on the
     floor, a mural on a wall. First call generate_image, then pass its image_id here.
 
@@ -429,22 +487,24 @@ async def texture_surface(target: str, image_id: str, repeat: Optional[float] = 
     repeat: tile the image NxN across the surface (e.g. 4) — for this, generate a SEAMLESS/tileable
         image (grass, brick). Omit to stretch a single copy (good for a starfield, sky, or mural).
     """
-    out = await _post("/texture_surface", _body(target=target, image_id=image_id, repeat=repeat))
+    out = await _post("/texture_surface", _body(target=target, image_id=image_id, repeat=repeat, room=room))
     if not out.get("ok"):
         return f"Couldn't texture {target!r}: {_reason(out)}."
     return f"Mapped the image onto {out['count']} surface(s) ({target})." + _notice(out)
 
 
 @mcp.tool()
-async def style_surface(target: str, color: Optional[str] = None, opacity: Optional[float] = None) -> str:
+async def style_surface(target: str, color: Optional[str] = None, opacity: Optional[float] = None,
+                        room: Optional[str] = None) -> str:
     """Color and/or set the transparency of real surface(s) — e.g. 'make the walls semi-transparent
     blue', 'make the ceiling glass', 'paint the floor red'.
 
-    target: a surface id ('real_wall_3'), a semantic label ('wall'/'floor'/'ceiling'), or 'all'.
+    target: a surface id ('real_wall_3'), a semantic label ('wall'/'floor'/'ceiling'), a room, or 'all'.
+    room: narrow to one room — style_surface('wall', color='blue', room='kitchen') paints only its walls.
     color: CSS name or #hex. opacity: 0 (invisible) … 1 (solid); < 1 makes it see-through.
     (To map an image onto a surface, use texture_surface instead.)
     """
-    out = await _post("/style_surface", _body(target=target, color=color, opacity=opacity))
+    out = await _post("/style_surface", _body(target=target, color=color, opacity=opacity, room=room))
     if not out.get("ok"):
         return f"Couldn't style {target!r}: {_reason(out)}."
     return f"Styled {out['count']} surface(s) ({target})."

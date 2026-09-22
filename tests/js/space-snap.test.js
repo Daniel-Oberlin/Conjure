@@ -737,8 +737,9 @@ test("golden room (real capture): pipeline holds on real geometry", () => {
 // ---- sealWalls (§9.1): snap a wall's top→ceiling and bottom→floor so the shell has no open slit ----
 // A horizontal surface (floor/ceiling) as sealWalls reads it: semantic + ref-frame centre _lp + orientation
 // _lq (identity ⇒ normal up, axis-aligned footprint) + extent. sealWalls uses _lq/extent for its covers() test.
-function horiz(sem, x, y, z, ext) {
-  return { semantic: sem, _lp: new THREE.Vector3(x, y, z), _lq: new THREE.Quaternion(), extent: ext || [4, 4] };
+function horiz(sem, x, y, z, ext, id) {
+  return { id: id, semantic: sem, _lp: new THREE.Vector3(x, y, z), _lq: new THREE.Quaternion(),
+           extent: ext || [4, 4] };
 }
 
 test("sealWalls snaps a wall's top to the ceiling and bottom to the floor when within tolerance", () => {
@@ -1222,4 +1223,227 @@ test("the corner origin is EXACTLY invariant to how much of each wall was scanne
   const cB = originOf(rescanned.map((c) => ({ x: c.pos.x, z: c.pos.z })));
   assert.ok(Math.hypot(cA.x - cB.x, cA.z - cB.z) > 0.1,
     "the wall-centre origin does move — that is the trade --void-origin selects");
+});
+
+// ---------------------------------------------------------------------------------------------------
+// segmentRooms / roomLinks — partitioning a captured space into rooms.
+// ---------------------------------------------------------------------------------------------------
+
+// Two rooms sharing a partition, which a Quest captures as TWO anti-parallel walls, one facing each room.
+// Room A floor spans x −2..2, room B floor spans x 2.3..6.3.
+function twoRooms() {
+  return [
+    horiz("floor",   0,   0,   0, [4, 4], "real_floor_A"),
+    horiz("ceiling", 0,   2.4, 0, [4, 4], "real_ceil_A"),
+    horiz("floor",   4.3, 0,   0, [4, 4], "real_floor_B"),
+    horiz("ceiling", 4.3, 2.4, 0, [4, 4], "real_ceil_B"),
+    vert("real_wall_A",   "wall",    [2.0, 1.2, 0],  90, [4, 2.4]),   // A's face of the partition, normal +X
+    vert("real_wall_B",   "wall",    [2.3, 1.2, 0], 270, [4, 2.4]),   // B's face, normal −X
+    vert("real_wall_out", "wall",    [-2.0, 1.2, 0], 270, [4, 2.4]),  // A's far wall, normal −X (outward)
+  ];
+}
+
+test("segmentRooms: floors are the partition, and a room is a floor plus its covering ceiling", () => {
+  const r = RS.segmentRooms(THREE, twoRooms());
+  assert.equal(r.rooms.length, 2, "one room per floor plane");
+  const byFloor = Object.fromEntries(r.rooms.map((x) => [x.floor, x]));
+  assert.equal(byFloor["real_floor_A"].ceiling, "real_ceil_A", "ceiling found by footprint, not proximity");
+  assert.equal(byFloor["real_floor_B"].ceiling, "real_ceil_B");
+});
+
+test("segmentRooms: facing separates the two faces of a partition", () => {
+  // The load-bearing rule. Both partition walls sit inside BOTH floors' covered footprints, so proximity
+  // alone would hand each room its neighbour's wall — the failure that reverted three times in
+  // investigations/raised-floor.md. The interior is the −normal side, and that is what decides it.
+  const r = RS.segmentRooms(THREE, twoRooms());
+  const A = r.rooms.find((x) => x.floor === "real_floor_A");
+  const B = r.rooms.find((x) => x.floor === "real_floor_B");
+  assert.ok(A.ids.includes("real_wall_A"), "A keeps its own face");
+  assert.ok(!A.ids.includes("real_wall_B"), "and does NOT take B's face");
+  assert.ok(B.ids.includes("real_wall_B"), "B keeps its own face");
+  assert.ok(!B.ids.includes("real_wall_A"), "and does NOT take A's face");
+  assert.ok(A.ids.includes("real_wall_out"), "an outer wall joins the room it faces away from");
+});
+
+test("segmentRooms: an inset rides its recorded host wall, even facing inward", () => {
+  // A wall-art normal can arrive INWARD (§2.2), so a facing test would reject exactly the insets that
+  // must be carried. Membership follows the recorded hostWall instead.
+  const surfaces = twoRooms();
+  const art = vert("real_wall_art_9", "wall art", [1.9, 1.4, 0], 270, [0.6, 0.4]);  // normal INWARD for A
+  art.hostWall = "real_wall_A";
+  surfaces.push(art);
+  const r = RS.segmentRooms(THREE, surfaces);
+  const A = r.rooms.find((x) => x.floor === "real_floor_A");
+  assert.ok(A.ids.includes("real_wall_art_9"), "the inset lands in its host wall's room, not its normal's");
+  assert.equal(r.unassigned.length, 0);
+});
+
+test("segmentRooms: a wall too edge-on to place is left unassigned, not guessed", () => {
+  // Conservative on purpose: for registration a wall in NO room costs the fit one constraint, while a
+  // wall in the WRONG room corrupts it.
+  const surfaces = twoRooms();
+  surfaces.push(vert("real_wall_edge", "wall", [0, 1.2, 0], 90, [1, 2.4]));   // normal ⟂ to the floor centre
+  const r = RS.segmentRooms(THREE, surfaces);
+  assert.ok(r.unassigned.includes("real_wall_edge"), "refused rather than assigned");
+  r.rooms.forEach((rm) => assert.ok(!rm.ids.includes("real_wall_edge")));
+});
+
+test("roomLinks: a doorway joins two rooms, an outer door leads outside", () => {
+  const surfaces = twoRooms();
+  const dA = vert("real_door_A", "door", [2.0, 1.0, 0], 90, [0.9, 2]);
+  dA.hostWall = "real_wall_A";
+  const dOut = vert("real_door_out", "door", [-2.0, 1.0, 0], 270, [0.9, 2]);
+  dOut.hostWall = "real_wall_out";
+  surfaces.push(dA, dOut);
+  const r = RS.segmentRooms(THREE, surfaces);
+  const link = r.links.find((l) => l.door === "real_door_A");
+  assert.equal(link.a, "real_floor_A");
+  assert.equal(link.b, "real_floor_B", "the doorway is seen through to the next room");
+  const out = r.links.find((l) => l.door === "real_door_out");
+  assert.equal(out.b, null, "no captured floor beyond ⇒ exterior");
+});
+
+test("golden space (real capture): two rooms, every surface placed, one doorway between them", () => {
+  // The synthetic tests encode what we expect of the partition; this asks the hardware. The fixture is a
+  // real 45-surface Quest capture of two rooms joined by a door, and its own header says so.
+  const fixture = require("./fixtures/golden-space.json");
+  const surfaces = fixture.surfaces.map(function (s, i) {
+    const lq = new THREE.Quaternion(s.quat[0], s.quat[1], s.quat[2], s.quat[3]);
+    return { id: "real_" + s.semantic.replace(/\s+/g, "_") + "_" + i, semantic: s.semantic,
+             extent: s.extent, _lp: new THREE.Vector3(s.pos[0], s.pos[1], s.pos[2]), _lq: lq,
+             rotation: RS.eulerYXZ(THREE, lq), debug: {} };
+  });
+  RS.joinCorners(THREE, surfaces);
+  RS.sealWalls(THREE, surfaces);
+  RS.snapInsets(THREE, surfaces);                       // the real client pipeline, so hostWall is recorded
+  const r = RS.segmentRooms(THREE, surfaces);
+
+  assert.equal(r.rooms.length, 2, "the device's two floor planes are the two rooms");
+  assert.equal(r.unassigned.length, 0, "every captured surface is placed");
+  assert.equal(r.rooms.reduce((n, x) => n + x.ids.length, 0), surfaces.length, "and placed exactly once");
+  r.rooms.forEach(function (rm) {
+    assert.ok(rm.ceiling, "each room found its ceiling: " + rm.floor);
+    const walls = rm.ids.filter((id) => surfaces.find((s) => s.id === id).semantic === "wall");
+    assert.ok(walls.length >= 6, "and a plausible set of walls: " + rm.floor + " has " + walls.length);
+  });
+
+  // The partition's doorway is captured as two insets, one per face; each resolves the pair on its own.
+  const joins = r.links.filter((l) => l.b !== null);
+  assert.equal(joins.length, 2, "both faces of the one doorway resolve");
+  joins.forEach(function (l) {
+    assert.notEqual(l.a, l.b, "a link joins two DIFFERENT rooms");
+    assert.ok(l.b.startsWith("real_floor_"), "and names a room by its floor");
+  });
+  assert.notEqual(joins[0].a, joins[1].a, "the two faces are seen from opposite rooms");
+});
+
+// ---------------------------------------------------------------------------------------------------
+// roomResiduals — how far each room sits from where one rigid transform says it should be.
+// ---------------------------------------------------------------------------------------------------
+
+// A reference constellation for one room: four walls facing out on the compass, plus a floor.
+function refRoom(prefix, cx, cz) {
+  const wall = (id, yawDeg, x, z) => ({
+    id, sem: "wall", ext: [4, 2.4], pos: new THREE.Vector3(x, 1.2, z),
+    nyaw: yawDeg * D2R, orient: "vertical",
+  });
+  return [
+    wall(prefix + "_n", 0, cx, cz + 2), wall(prefix + "_s", 180, cx, cz - 2),
+    wall(prefix + "_e", 90, cx + 2, cz), wall(prefix + "_w", 270, cx - 2, cz),
+    { id: prefix + "_f", sem: "floor", ext: [4, 4], pos: new THREE.Vector3(cx, 0, cz),
+      nyaw: 0, orient: "horizontal" },
+  ];
+}
+
+// Pair each reference plane with a "current" point carried through the global transform, displaced by
+// `err` and optionally slid ALONG the wall by `slide` (which is scan noise, not signal).
+function pairs(ref, err, slide) {
+  return ref.map((r) => {
+    let x = r.pos.x + err[0], y = r.pos.y + err[1], z = r.pos.z + err[2];
+    if (slide && r.orient === "vertical") {
+      const tx = Math.cos(r.nyaw), tz = -Math.sin(r.nyaw);          // along-wall tangent
+      x += tx * slide; z += tz * slide;
+    }
+    return { id: r.id, res: Math.hypot(err[0], err[1], err[2]), dist: 0, tx: x, ty: y, tz: z };
+  });
+}
+
+test("roomResiduals recovers a room's rigid displacement and says it would improve", () => {
+  const ref = refRoom("A", 0, 0);
+  const roomOf = Object.fromEntries(ref.map((r) => [r.id, "room_1"]));
+  const [r] = RS.roomResiduals(THREE, pairs(ref, [0.09, 0, -0.04]), ref, roomOf);
+  assert.equal(r.room, "room_1");
+  assert.ok(Math.abs(r.dx - -0.09) < 1e-6, "dx undoes the displacement, got " + r.dx);
+  assert.ok(Math.abs(r.dz - 0.04) < 1e-6, "dz likewise, got " + r.dz);
+  assert.ok(r.after < r.before, "and it is an improvement");
+  assert.equal(r.ok, true);
+});
+
+test("roomResiduals fits PERPENDICULAR offsets, so along-wall scan noise cannot move it", () => {
+  // The load-bearing claim. A wall's captured centre slides metres along the wall between captures — it
+  // is a scan artifact, which is why matchWall refuses to key on it (§4.2). Averaging centre-to-centre
+  // offsets would average exactly that noise; projecting onto each plane's own normal discards it.
+  const ref = refRoom("A", 0, 0);
+  const roomOf = Object.fromEntries(ref.map((r) => [r.id, "room_1"]));
+  const clean = RS.roomResiduals(THREE, pairs(ref, [0.09, 0, -0.04]), ref, roomOf)[0];
+  const slid = RS.roomResiduals(THREE, pairs(ref, [0.09, 0, -0.04], 1.5), ref, roomOf)[0];
+  assert.ok(Math.abs(slid.dx - clean.dx) < 1e-6, "1.5 m of along-wall slide changed dx by nothing");
+  assert.ok(Math.abs(slid.dz - clean.dz) < 1e-6, "nor dz");
+});
+
+test("roomResiduals reports dy separately, and not at all without a horizontal surface", () => {
+  // x/z and y are separately constrained: a vertical plane says nothing about height. Solving them
+  // together would let a room with no floor invent a y out of wall noise.
+  const ref = refRoom("A", 0, 0);
+  const roomOf = Object.fromEntries(ref.map((r) => [r.id, "room_1"]));
+  const withFloor = RS.roomResiduals(THREE, pairs(ref, [0, 0.1, 0]), ref, roomOf)[0];
+  assert.ok(Math.abs(withFloor.dy - -0.1) < 1e-6, "the floor carries the height, got " + withFloor.dy);
+
+  const noFloor = ref.filter((r) => r.orient === "vertical");
+  const only = RS.roomResiduals(THREE, pairs(noFloor, [0, 0.1, 0]), noFloor,
+                                Object.fromEntries(noFloor.map((r) => [r.id, "room_1"])))[0];
+  assert.equal(only.dy, null, "absent, not fabricated");
+});
+
+test("roomResiduals separates rooms and refuses a room it cannot fit", () => {
+  const a = refRoom("A", 0, 0), b = refRoom("B", 20, 0);
+  const roomOf = { ...Object.fromEntries(a.map((r) => [r.id, "room_1"])),
+                   ...Object.fromEntries(b.map((r) => [r.id, "room_2"])) };
+  const out = RS.roomResiduals(THREE, [...pairs(a, [0, 0, 0]), ...pairs(b, [0.09, 0, 0])],
+                               [...a, ...b], roomOf);
+  const byRoom = Object.fromEntries(out.map((r) => [r.room, r]));
+  assert.ok(Math.abs(byRoom["room_1"].dx) < 1e-6, "the undisplaced room needs no correction");
+  assert.ok(Math.abs(byRoom["room_2"].dx - -0.09) < 1e-6, "the displaced one does");
+
+  // Too few pairs to trust, and a delta past the bound: both reported, neither endorsed.
+  const thin = RS.roomResiduals(THREE, pairs(a, [0.02, 0, 0]).slice(0, 2), a, roomOf)[0];
+  assert.equal(thin.ok, false, "two pairs is not a fit");
+  const wild = RS.roomResiduals(THREE, pairs(a, [3, 0, 0]), a, roomOf)[0];
+  assert.equal(wild.ok, false, "3 m is a mis-registration, not a room that moved");
+  assert.ok(Math.abs(wild.dx - -3) < 1e-6, "still measured, just not endorsed");
+});
+
+test("roomResiduals: a room wrong ONLY in height is fitted and endorsed", () => {
+  // The raised-floor case (investigations/raised-floor.md): one room's planes ride 90–276 mm high while
+  // its ground position is right. dy is part of the fit for exactly this — leave it out and the room
+  // keeps its whole residual, `after < before` fails, and the log reports would_apply:false for the one
+  // fault the measurement exists to catch.
+  const ref = refRoom("A", 0, 0);
+  const roomOf = Object.fromEntries(ref.map((r) => [r.id, "room_1"]));
+  const [r] = RS.roomResiduals(THREE, pairs(ref, [0, 0.104, 0]), ref, roomOf);
+  assert.ok(Math.abs(r.dy - -0.104) < 1e-6, "the displacement is recovered");
+  assert.ok(r.after < r.before * 0.01, "and closed — after " + r.after + " vs before " + r.before);
+  assert.equal(r.ok, true, "so it would be applied");
+});
+
+test("roomResiduals bounds x/z and y separately, because they fail differently", () => {
+  // A large x/z delta says the global lock is bad. A large y does not: the floating-room displacement is
+  // genuinely unbounded — observed 3x larger between one morning and one afternoon — and the unmerged
+  // correction's own 0.15 m ceiling would have refused the very fault it was written for.
+  const ref = refRoom("A", 0, 0);
+  const roomOf = Object.fromEntries(ref.map((r) => [r.id, "room_1"]));
+  const tallFault = RS.roomResiduals(THREE, pairs(ref, [0, 0.28, 0]), ref, roomOf)[0];
+  assert.equal(tallFault.ok, true, "0.28 m of HEIGHT is a real fault, not a mis-fit");
+  const wideFault = RS.roomResiduals(THREE, pairs(ref, [0.28, 0, 0]), ref, roomOf)[0];
+  assert.equal(wideFault.ok, false, "0.28 m of GROUND offset is a bad lock");
 });

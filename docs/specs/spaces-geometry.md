@@ -164,9 +164,66 @@ cannot consistently cover ≥4 reference surfaces, which is exactly what `select
 selection ([`specs/spaces.md §6`](./spaces.md)). The caveat worth stating: *different space* and *bad
 tracking* both surface as the same no-lock.
 
+### 4.0b The selection gate — do not register against a space you may not be standing in
+
+That caveat bit, 2026-09-22. The location fix is acquired eagerly on page load, but entering AR before it
+lands leaves the client holding the space from its **last session** — and registering the live room against
+that is comparing this building with another one. Measured: a three-room home scored `cov=9/57` against a
+space 700 km away, which is a no-lock, so passthrough came up with the step-out hint. Tracking was perfect;
+the client simply did not know where it was yet. Six seconds later the fix arrived, `space-1` matched, and
+it locked — but the hint had already sent the user out of the guardian and back, which restarts the session
+and the wait. Three attempts for a six-second fix.
+
+So `WM.selectGate` **holds** every capture while selection is unresolved (`awaitingSpace`): no registration,
+no lost-marking. Nothing is hidden that was not already hidden, because that window is blanked to
+passthrough anyway, and the candidate vote runs ahead of this gate — it is what resolves the hold. After
+`8` held captures it returns `forced`, the same deadlock escape `loadGate` has, and says so.
+
 **Known limit — symmetry.** A symmetric room with equal opposite walls is genuinely ambiguous from one
 vantage; the vote can lock 180° off. Distinguishing features (differently-sized walls, doors, wall-art)
 resolve it. This is the same class as the boundary-flip below.
+
+### 4.4 Per-room residuals — measured, applied nowhere
+
+§1's finding is that one rigid transform cannot fit a multi-room space: the map is locally non-rigid by up
+to ~9 cm. Registration still solves exactly one, so every room but the one the fit favours carries a
+residual offset, and `matchWall`'s 150 mm perpendicular budget absorbs it silently.
+
+`SpaceSnap.roomResiduals` measures that per room, given the correspondences `register` already produced.
+**Nothing is applied.** The first increment is finding out how large the effect is in the field, because
+~9 cm is an aggregate from one space on one day.
+
+**Perpendicular offsets, never centroid deltas.** A wall's captured centre slides metres along the wall
+between captures — a scan artifact, which is exactly why `matchWall` refuses to key on it (§4.2) — so
+averaging centre-to-centre offsets averages that noise. Each matched reference plane contributes only the
+component along its own normal, and the room's x/z translation is the small least-squares fit over those.
+
+**x/z and y are solved apart, because they are constrained apart.** A vertical plane says nothing about
+height; a horizontal says nothing about ground position. Solving them together would let a room with no
+captured floor invent a height out of wall noise, so a room without a horizontal surface reports **no
+`dy`** rather than a fabricated one.
+
+**`dy` is part of the per-room fit, and never reaches the detector.** Those are two different statements
+and conflating them is easy. The refinement *does* use y — that is what recovers the identity of a room
+displaced only in height, which is the raised-floor fault (90–276 mm); leave y out and such a room keeps
+its whole residual, fails the `after < before` guard, and gets logged as *would not apply* for precisely
+the fault the measurement exists to catch. What must never happen is the other direction: `levelDeviation`
+compares raw seed height against raw live height, and its baseline is valid **only** because that
+comparison passes through no transform (§10.2). Feed it a corrected height and it cancels the quantity it
+measures. Kept apart, the two are independent estimates of one displacement — a cross-check.
+
+**x/z and y are bounded separately, because they fail differently.** A large ground offset is evidence of
+a bad global lock; a large height offset is not. The floating-room displacement is genuinely unbounded —
+observed three times larger between one morning and one afternoon — and the unmerged correction's own
+0.15 m ceiling would have refused the very fault it was written for.
+
+The guards a future *apply* would use (≥4 pairs, ≥2 walls, a non-degenerate solve, ≤0.25 m, and the fit
+must reduce the room's residual) are evaluated now and logged as `would_apply`, so the field data says
+whether the refinement would have been accepted rather than only what it computed.
+
+Emission is change-gated by `WM.roomResidualGate` — first fit, a move past 1 cm, or a flipped verdict —
+so a settled space still emits nothing, which is what makes §10's log affordable to leave running for
+weeks.
 
 ### 4.1 The boundary flip
 
@@ -189,8 +246,14 @@ rotated until a lock returns.
 
 Because the space is wrong from that first held capture, the fallback that explains it has to track the
 failure rather than lag it. After a short grace the client reveals passthrough — hiding `#world-root`,
-the sky and the scaffold — and shows a headset-locked hint to step out of the play area and back in,
-which forces the Quest to re-localize. It restores on recovery.
+the sky and the scaffold — and shows a headset-locked hint. It restores on recovery.
+
+**The hint names its cause** (`WM.relocHint`, from `_regStat`), because one message served three and only
+one of them was true. "Step out of your play area and back in" re-localizes the headset, which fixes a lost
+lock and does nothing for a room still materializing or a space not yet identified — and following it
+restarts the session, which is how a six-second wait became three attempts (§4.0b). A lost lock keeps that
+wording; the load gate says the room is being restored; the selection gate says it is working out which
+space you are in. Neither of those asks for anything.
 
 Two rules make that trigger reliable (`WM.relocStep`):
 
@@ -216,7 +279,7 @@ derivation is a fresh opportunity to pick a different largest wall or a differen
 world has no passthrough geometry to contradict the result.
 
 **What the re-derivation actually cost** (measured on `fixtures/golden-space.json`, a real 45-surface
-two-space capture, for content 2.2 m from the frame origin):
+two-room capture, for content 2.2 m from the frame origin):
 
 | Capture holds | Δθ | Content moves |
 |---|---|---|
@@ -713,6 +776,7 @@ it now confirms a measurement rather than an argument.
 | `churn.restyle_lost` | an id that used to render with a material now renders bare |
 | `level.census` / `.anomaly` | a floor/ceiling height moved >2 cm; a height moved relative to the rest of the space |
 | `track.reset` / `.lock` | reference-space recenter (boundary trip); lock lost or regained |
+| `room.residual` | a room's fit against the global transform first appears, moves >1 cm, or flips its verdict (§4.4) |
 | `void.establish` | a void world's canonical frame was established — wall count, held captures, `forced` (§4.1.2) |
 | `seed.add` / `.update` / `.prune` | the server's own view — a prune is where a surface's material is destroyed |
 | `mark` | the controller-button ground-truth probe (§10.3) |
@@ -763,7 +827,7 @@ bias that is immaterial against a 10–15 cm signal and constant across sessions
 delta is exact regardless. Measured in the field (2026-08-31): **bias ~3–4 cm, repeatability ~1 cm, 1 mm
 hysteresis** returning to a spot after walking two rooms away.
 
-The sharpest reading it gives is the **sign of `err` either side of a space boundary**, on a floor known to be
+The sharpest reading it gives is the **sign of `err` either side of a room boundary**, on a floor known to be
 continuous: the room whose `err` is positive is the one whose planes are displaced. No internal probe can
 say that, because internally the space is self-consistent either way. Two presses, one per room, settle it. Input arrives through `ConjurePointers`, already read and cached per `XRFrame`
 by `controller-beams`, so the per-frame cost is a rising-edge check.

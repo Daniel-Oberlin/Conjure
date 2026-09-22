@@ -204,7 +204,57 @@ def cmd_style(s: Settings, a) -> None:
         body["color"] = a.color
     if a.opacity is not None:
         body["opacity"] = a.opacity
-    _say(_post(s, "/style_surface", body), a.verbose, f"styled {a.target}")
+    if getattr(a, "room", None):
+        body["room"] = a.room
+    where = f" in {a.room}" if getattr(a, "room", None) else ""
+    _say(_post(s, "/style_surface", body), a.verbose, f"styled {a.target}{where}")
+
+
+def cmd_rooms(s: Settings, a) -> None:
+    """The space's rooms, what is in each, and where its doors lead — the deterministic counterpart to
+    the director's `query_space`, so a device run needs no LLM in the loop."""
+    doc = _get(s, "/world")
+    env = doc.get("environment") or {}
+    rooms = env.get("rooms") or {}
+    reals = [e for e in doc["entities"] if (e.get("meta") or {}).get("real")]
+    if not rooms:
+        print(f"no rooms recorded ({len(reals)} real surfaces) — has a capture with a segmentation landed?")
+        return
+    try:
+        where = _get(s, "/room/whereami").get("standing") or {}
+    except Exception:
+        where = {}
+    standing = {v: k for k, v in where.items()}
+    for rid in sorted(rooms, key=lambda r: rooms[r].get("n", 0)):
+        rec = rooms[rid]
+        name = (rec.get("name") or "").strip() or f"room #{rec.get('n', '?')}"
+        mine = [e for e in reals if (e.get("meta") or {}).get("room") == rid]
+        tally: dict[str, int] = {}
+        for e in mine:
+            sem = (e.get("meta") or {}).get("semantic", "surface")
+            tally[sem] = tally.get(sem, 0) + 1
+        who = f"  ← {standing[rid]} is here" if rid in standing else ""
+        print(f"{name} [{rid}] floor={rec.get('floor')} — {len(mine)} surfaces "
+              f"({', '.join(f'{n} {k}' for k, n in sorted(tally.items()))}){who}")
+        for e in mine:
+            m = e.get("meta") or {}
+            if m.get("semantic") not in ("door", "window"):
+                continue
+            lt = m.get("leads_to")
+            dest = (rooms.get(lt, {}).get("name") or f"room #{rooms.get(lt, {}).get('n', '?')}") if lt else "outside"
+            print(f"    {m.get('semantic')} {e['id']} → {dest}")
+    loose = [e for e in reals if not (e.get("meta") or {}).get("room")]
+    if loose:
+        print(f"unassigned: {len(loose)} — " + ", ".join(
+            f"{(e.get('meta') or {}).get('semantic')} {e['id']}" for e in loose))
+
+
+def cmd_name_room(s: Settings, a) -> None:
+    out = _post(s, "/room/name", {"room": a.room, "name": a.name})
+    if not out.get("ok"):
+        print(f"failed: {out.get('error')}")
+        return
+    _say(out, a.verbose, f"{out['was']} → {out['name']}")
 
 
 def cmd_edit(s: Settings, a) -> None:
@@ -728,8 +778,13 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--generator", help="force an image generator")
 
     a = sub.add_parser("style", help="color / set transparency of a real surface"); a.set_defaults(fn=cmd_style)
-    a.add_argument("target", help="floor | ceiling | wall | all | <surface id>")
+    a.add_argument("target", help="floor | ceiling | wall | all | <surface id> | <room>")
     a.add_argument("--color", help="CSS name or #hex"); a.add_argument("--opacity", type=float, help="0..1")
+    a.add_argument("--room", help="narrow to one room (its name, or 'room 2')")
+
+    sub.add_parser("rooms", help="list the space's rooms, contents and doors").set_defaults(fn=cmd_rooms)
+    a = sub.add_parser("name-room", help="name a room ('room 2' -> 'kitchen')"); a.set_defaults(fn=cmd_name_room)
+    a.add_argument("room"); a.add_argument("name", nargs="?", default="", help="omit to clear the name")
 
     a = sub.add_parser("edit", help="edit an in-world image"); a.set_defaults(fn=cmd_edit)
     a.add_argument("id"); a.add_argument("prompt")

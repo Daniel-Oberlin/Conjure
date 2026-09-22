@@ -168,6 +168,55 @@
   function relocInit() { return { lostSince: null, okStreak: 0, hadLock: false, showing: false }; }
 
   /**
+   * Is this capture allowed to REGISTER yet, while space selection is unresolved?
+   *
+   * Entering AR before the location fix lands leaves the client holding the space from its LAST session.
+   * Registering against that is registering your room against a different building: measured 2026-09-22,
+   * a three-room home matched 9 of the 57 surfaces of a space 700 km away, which reads as a lost lock and
+   * raises the "step out of your play area and back in" hint — advice that cannot help, because tracking
+   * was never the problem. Six seconds later the fix arrived, the right space matched, and it locked.
+   *
+   * So: hold while we do not know WHERE we are. The world is already blanked to passthrough in that
+   * window (`awaitingSpace`), so nothing is hidden that was not hidden anyway, and the candidate vote
+   * runs on its own path — this gates only what comes after it.
+   *
+   * PATIENCE is the escape hatch, as everywhere else here: if selection never resolves, fall through to
+   * the old behaviour rather than holding for ever with nothing said.
+   *
+   * @param {boolean} awaiting  selection unresolved — no fix yet, or the verdict is not in
+   * @param {number} held       consecutive captures already held by this gate
+   * @param {number} [patience] captures to hold before giving up on selection
+   * @returns {"go"|"hold"|"forced"}
+   */
+  function selectGate(awaiting, held, patience) {
+    if (!awaiting) return "go";
+    return held >= (patience != null ? patience : 8) ? "forced" : "hold";
+  }
+
+  /**
+   * What the passthrough hint should SAY, from the registration status that caused it.
+   *
+   * One hint served three different causes and gave all of them the same advice. "Step out and back in"
+   * forces the headset to re-localize, which is the remedy for a genuinely lost lock and useless for the
+   * other two: a room still materializing needs a moment, and a room that does not match the space we
+   * hold needs a different space, not a different pose. Following the wrong advice restarts the AR
+   * session, which is what made a six-second wait into three attempts.
+   *
+   * @param {string} stat  `_regStat` — "loading 1/66", "void-loading 3/12", "selecting", "cov=9/57 …"
+   * @returns {{text: string, advise: boolean}}
+   */
+  function relocHint(stat) {
+    var s = String(stat || "");
+    if (/^(void-)?loading/.test(s)) {
+      return { text: "Restoring your room…", advise: false };
+    }
+    if (/^selecting/.test(s)) {
+      return { text: "Finding which space you are in…", advise: false };
+    }
+    return { text: "Re-localizing…\nstep out of your play area and back in", advise: true };
+  }
+
+  /**
    * @param {RelocState} st
    * @param {"lost"|"ok"} ev
    * @param {number} time   ms, monotonic (A-Frame tick time)
@@ -340,6 +389,41 @@
   function hasFrameBasis(fp) {
     var lp = fp && fp.local, rp = fp && fp.ref;
     return !!(lp && lp.length >= 2 && rp && rp.length >= 2);
+  }
+
+  
+  /**
+   * Which per-room residuals are worth writing to the geometry log this capture?
+   *
+   * The log's affordability rests on being change-gated — a settled space emits nothing, which is what
+   * makes it safe to leave running for weeks (§10). A per-capture residual would post at ~0.5 Hz forever
+   * and break that, so a room is reported only when it first has a fit, when its residual moves past
+   * `tol`, or when the accept/refuse verdict flips.
+   *
+   * The verdict is part of the gate deliberately: a room crossing from "would apply" to "would not" is
+   * the interesting moment even when the number barely moved, because that is the boundary a future
+   * correction would be switching on.
+   *
+   * Returns the rows to emit and the state to carry forward. Pure, so the decision is testable while the
+   * emitter around it is not.
+   *
+   * @param {Record<string, {before: number, ok: boolean}>} last
+   * @param {{room: string, before: number, ok: boolean}[]} rows
+   * @param {{tolM?: number}} [opts]
+   * @returns {{emit: any[], next: Record<string, {before: number, ok: boolean}>}}
+   */
+  function roomResidualGate(last, rows, opts) {
+    var TOL = (opts && opts.tolM != null) ? opts.tolM : 0.01;
+    /** @type {Record<string, {before: number, ok: boolean}>} */ var next = {};
+    Object.keys(last || {}).forEach(function (k) { next[k] = last[k]; });
+    /** @type {any[]} */ var emit = [];
+    (rows || []).forEach(function (r) {
+      var was = next[r.room];
+      if (was && Math.abs(was.before - r.before) < TOL && was.ok === r.ok) return;
+      next[r.room] = { before: r.before, ok: r.ok };
+      emit.push(r);
+    });
+    return { emit: emit, next: next };
   }
 
   /**
@@ -556,11 +640,12 @@
     return { dYaw: (a0 - a) * 180 / Math.PI, scale: r / r0 };
   }
 
-  return { hasFrameBasis: hasFrameBasis, levelDeviation: levelDeviation, loadGate: loadGate,
+  return { hasFrameBasis: hasFrameBasis, levelDeviation: levelDeviation, roomResidualGate: roomResidualGate, loadGate: loadGate,
            rotXZ: rotXZ, yawAboutPivot: yawAboutPivot, polarDrag: polarDrag,
            nest: nest, holesAttr: holesAttr, v3: v3, avatarAim: avatarAim, spawnRight: spawnRight,
            shouldSpawnGuest: shouldSpawnGuest, isCaptureAuthority: isCaptureAuthority,
-           relocInit: relocInit, relocStep: relocStep,
+           relocInit: relocInit, relocStep: relocStep, relocHint: relocHint,
+           selectGate: selectGate,
            surfaceSig: surfaceSig, surfaceMoved: surfaceMoved,
            surfacePoseMoved: surfacePoseMoved, surfaceShapeChanged: surfaceShapeChanged,
            advanceSig: advanceSig, slewAlpha: slewAlpha, slewSettled: slewSettled,

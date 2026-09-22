@@ -32,12 +32,52 @@ else's space. That is the point of the fully-qualified space reference (§4).
 
 A space usually contains **more than one room**. `detectedPlanes` reports the whole dwelling, so a
 single space routinely holds several rooms joined by doors — the reference capture in
-`tests/js/fixtures/golden-space.json` is 45 surfaces across two rooms. Nothing in the record models a
-"room" as a unit; a space is a flat set of surfaces plus one boundary polygon. Code that reasons about
-"the room" as a single convex volume is making an assumption the record does not support (see
-[`backlogs/spaces.md`](../backlogs/spaces.md)).
+`tests/js/fixtures/golden-space.json` is 45 surfaces across two rooms.
 
-### 1.1 Glossary
+**Rooms are modelled** (§1.1). Every real surface carries `meta.room`, and the space records each room
+under `rooms`. The partition is the device's own: the Quest reports one floor plane per room, and the
+raised-floor fault displaces exactly those groups rigidly, so the grouping that moves is the grouping it
+already drew. A space is still a flat *set* of surfaces — rooms are a labelling over them, not a
+containment hierarchy — and `boundary` is still one polygon for the whole space regardless of how many
+rooms it holds (see [`backlogs/spaces.md`](../backlogs/spaces.md)).
+
+### 1.1 Rooms
+
+A **room** is a group of surfaces within a space, keyed by the floor plane that defines it.
+
+| Where | What |
+|---|---|
+| `meta.room` on each real surface | which room it belongs to — **derived**, recomputed from geometry each capture |
+| `space.rooms[<id>]` | `{n, name?, floor}` — **user data**, and the only place a name is stored |
+| `meta.leads_to` on a door or window | the room on the far side, or absent for outside |
+
+**Membership** is decided client-side (`SpaceSnap.segmentRooms`): a room is a floor plus its *covering*
+ceiling; a wall joins when that floor covers it in plan **and** the floor's centre lies on the wall's
+−normal side. That second half is what separates adjacent rooms — a partition is captured as two
+near-coincident, anti-parallel planes, one per room, and the interior is the −normal side. Insets ride
+their recorded `host_wall` rather than their own normal, because wall-art can arrive facing inward. A wall
+too edge-on to place is left **unassigned** rather than guessed.
+
+**Identity** is decided server-side (`conjure/rooms.py`) in three tiers: surface-set overlap against the
+previous membership, then the recorded defining floor, then mint. Overlap outranks the floor because a
+room is ~20 surfaces and survives its own floor being re-minted, where keying on the floor alone would
+lose the name with it. Ordinals are monotonic and never reused.
+
+**The name is stored once**, on the room record; surfaces carry only the id. The default display name is
+**derived, never stored** — `room #2` until someone sets one — so a rename leaves no stale copy. Naming
+is a space write, so it is **space-owner-gated**: a guest building in your space cannot rename your
+kitchen. Reserved words (the semantic labels, `all`, `room`, `space`) are refused, and names are unique
+case-insensitively.
+
+The record lives on the **space**, not the world, for the same reason `boundary` does: a room name is a
+fact about the physical place, so the same kitchen cannot be "kitchen" in one world and "room #2" in
+another. It rides the boundary's path exactly — composed in on load, stripped by `_decompose`.
+
+**Which room the user is in** comes from the presence tick: the AR client reports the *floor* it is
+standing over (it cannot know the room id) and the server maps it. A CLI, voice or desktop connection is
+standing nowhere, and is reported as such rather than guessed at.
+
+### 1.2 Glossary
 
 | Term | Meaning |
 |---|---|
@@ -66,6 +106,8 @@ single space routinely holds several rooms joined by doors — the reference cap
   "geolocation": { "lat": …, "lon": … },   // coarse; may be null
   "surfaces": [ /* real-surface entities, geometry + DEFAULT material */ ],
   "boundary": { "floorPolygon": [[x,z], …], "height": 2.6 },
+  "rooms": { "room_1": { "n": 1, "name": "kitchen", "floor": "real_floor_10" },
+             "room_2": { "n": 2, "floor": "real_floor_8" } },   // §1.1
   "recent": [ ["daniel/agents/builder", "wld_ab12…"], … ],  // what was open HERE, newest first
   "last_scope": "daniel/agents/builder/…",  // the head of `recent`, kept for readers that want just one
   "last_world": "bladerunner1"

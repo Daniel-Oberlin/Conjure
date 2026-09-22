@@ -197,13 +197,18 @@
       /** @type {Set<RefSurface>} */
       var claimed = new Set();   // distinct reference surfaces covered (extras/fragmentation don't inflate)
       var rawInl = 0;
-      /** @type {{id: string|undefined, res: number, dist: number}[]} */
+      /** @type {{id: string|undefined, res: number, dist: number, tx: number, ty: number, tz: number}[]} */
       var res = [];              // per-covered-plane residual + the reference's distance from origin (diag)
       cur.forEach(function (c) {
         var tp = c.pos.clone().applyMatrix4(Tmat), bd = INLIER_M;
         var hit = /** @type {RefSurface|null} */ (null);
         ref.forEach(function (r) { if (r.sem === c.sem && sameFacing(c, r)) { var d = tp.distanceTo(r.pos); if (d < bd) { bd = d; hit = r; } } });
-        if (hit) { claimed.add(hit); rawInl++; res.push({ id: hit.id, res: bd, dist: Math.hypot(hit.pos.x, hit.pos.z) }); }
+        // `tx/ty/tz` is the CURRENT plane carried through the global transform — the paired point, kept as
+        // plain numbers so it survives the worker's structured clone. Without it a per-room refinement
+        // would have to redo the pairing, and a second copy of the matching rule is how the two drift.
+        if (hit) { claimed.add(hit); rawInl++;
+                   res.push({ id: hit.id, res: bd, dist: Math.hypot(hit.pos.x, hit.pos.z),
+                              tx: tp.x, ty: tp.y, tz: tp.z }); }
       });
       var cov = claimed.size;
       if (!best || cov > best.cov) best = { Tmat: Tmat, cov: cov, inl: rawInl, res: res };
@@ -1086,6 +1091,252 @@
     return best;
   }
 
+
+  /**
+   * Partition a captured space into ROOMS.
+   *
+   * Floors are the partition, which is an observation rather than an assumption: the Quest reports one
+   * floor plane per room, and the raised-floor fault displaces exactly those groups **rigidly** — so the
+   * partition that moves is the partition the device already drew
+   * (docs/investigations/raised-floor.md).
+   *
+   * Membership is the rule `floatingRoom` established and validated against the real space:
+   *
+   *   - a room is a **floor plus its covering ceiling** (footprint test, not proximity);
+   *   - a **wall** joins when the floor covers it in plan AND the floor's centre lies on the wall's
+   *     **−normal** side. That second half is what separates adjacent rooms: a partition is captured as
+   *     two near-coincident, anti-parallel planes, one per room, and the interior is the −normal side.
+   *     Proximity alone admitted a near-arbitrary neighbour wall — the failure that reverted three times;
+   *   - **insets ride their recorded `hostWall`**, never their own normal, because a wall-art normal may
+   *     arrive INWARD (§2.2) and a facing test would reject exactly the insets it must carry;
+   *   - anything else (furniture) falls to the floor beneath its centre.
+   *
+   * A wall too close to edge-on to place (`faceM`) is left **unassigned** rather than guessed. For
+   * registration that is the conservative direction: a wall in no room costs the fit one constraint,
+   * a wall in the WRONG room corrupts it.
+   *
+   * Over-segmentation is safe — two sub-rooms that genuinely co-move refine to equal deltas — so nothing
+   * here tries to merge.
+   *
+   * @param {THREE_NS} THREE
+   * @param {SnapSurface[]} surfaces
+   * @param {{faceM?: number, probeM?: number}} [opts]
+   * @returns {{rooms: {floor: string, ceiling: string|null, ids: string[]}[],
+   *            unassigned: string[], links: {door: string, a: string, b: string|null}[]}}
+   */
+  function segmentRooms(THREE, surfaces, opts) {
+    opts = opts || {};
+    var FACE = opts.faceM != null ? opts.faceM : 0.05;
+    var placed = /** @type {SnapSurface[]} */ (surfaces || []).filter(function (s) {
+      return s && s._lp && s._lq;
+    });
+    var floors = placed.filter(function (s) { return s.semantic === "floor" && s.extent; });
+    var ceils  = placed.filter(function (s) { return s.semantic === "ceiling" && s.extent; });
+
+    /** @type {{floor: string, ceiling: string|null, ids: string[]}[]} */ var rooms = [];
+    /** @type {Record<string, number>} */ var roomOf = {};        // surface id → room index
+    /** @type {Record<string, number>} */ var roomOfFloor = {};   // floor id   → room index
+
+    floors.forEach(function (f) {
+      var c = /** @type {SnapSurface|null} */ (null);
+      ceils.forEach(function (cc) { if (!c && covers(THREE, cc, f._lp.x, f._lp.z)) c = cc; });
+      var idx = rooms.length;
+      rooms.push({ floor: f.id, ceiling: c ? c.id : null, ids: [f.id] });
+      roomOf[f.id] = idx; roomOfFloor[f.id] = idx;
+      if (c && roomOf[c.id] == null) { rooms[idx].ids.push(c.id); roomOf[c.id] = idx; }
+    });
+
+    /** @type {Record<string, number>} */ var wallRoom = {};
+    placed.forEach(function (w) {
+      if (w.semantic !== "wall" || roomOf[w.id] != null) return;
+      var n = new THREE.Vector3(0, 1, 0).applyQuaternion(w._lq);
+      var best = -1, bestFacing = 0;
+      floors.forEach(function (f) {
+        if (!covers(THREE, f, w._lp.x, w._lp.z)) return;
+        var facing = (f._lp.x - w._lp.x) * n.x + (f._lp.z - w._lp.z) * n.z;
+        if (Math.abs(facing) < FACE) return;      // edge-on: cannot place it, so do not
+        if (facing > 0) return;                   // the neighbour's face of a partition
+        if (best < 0 || facing > bestFacing) { best = roomOfFloor[f.id]; bestFacing = facing; }
+      });
+      if (best < 0) return;
+      rooms[best].ids.push(w.id); roomOf[w.id] = best; wallRoom[w.id] = best;
+    });
+
+    placed.forEach(function (s) {                 // insets ride their recorded host wall
+      if (roomOf[s.id] != null || !s.hostWall) return;
+      var r = wallRoom[s.hostWall];
+      if (r == null) return;
+      rooms[r].ids.push(s.id); roomOf[s.id] = r;
+    });
+
+    placed.forEach(function (s) {                 // furniture and anything left: the floor beneath it
+      if (roomOf[s.id] != null) return;
+      // Walls and insets have already had their turn under a stricter rule, and a fallback here would
+      // silently undo it — re-admitting by proximity exactly the wall the facing test refused, and
+      // handing an inset a room its host wall is not in.
+      if (s.semantic === "wall" || s.hostWall) return;
+      var f = floorUnder(THREE, floors, s._lp.x, s._lp.z);
+      if (!f) return;
+      var r = roomOfFloor[f.id];
+      rooms[r].ids.push(s.id); roomOf[s.id] = r;
+    });
+
+    var unassigned = placed.filter(function (s) { return roomOf[s.id] == null; })
+                           .map(function (s) { return s.id; });
+    /** @type {Record<string, string>} */ var floorOfSurface = {};
+    rooms.forEach(function (r) { r.ids.forEach(function (id) { floorOfSurface[id] = r.floor; }); });
+    return { rooms: rooms, unassigned: unassigned,
+             links: roomLinks(THREE, placed, floors, floorOfSurface, opts) };
+  }
+
+  /**
+   * Which rooms does each door (or window) join?
+   *
+   * The near side is **not probed** — it is the host wall's room, already decided by `segmentRooms`'
+   * facing rule. Only the far side needs asking, and it is asked by stepping along the wall's +normal
+   * until exactly one floor covers the point.
+   *
+   * Both halves of that are load-bearing, and both were wrong in the first cut:
+   *
+   *   - **Step until unambiguous, rather than probing at one fixed distance.** Two real floor rectangles
+   *     OVERLAP near their shared partition (measured on the golden space: ~0.6 m of overlap once
+   *     `COVER_MARGIN` is included, and they still overlap without it). A single probe inside that band
+   *     is covered by both floors, and `floorUnder`'s lowest-wins tiebreak then returns the near room —
+   *     so the doorway reads as exterior. Stepping out asks the question where it has an answer.
+   *   - **Zero margin.** `COVER_MARGIN` exists so `sealWalls` is tolerant about which ceiling covers a
+   *     wall. Here it is the opposite of what is wanted: it widens the ambiguous band by 0.3 m a side.
+   *
+   * A doorway in a partition is captured as TWO insets, one per face, and each resolves the same pair
+   * independently — so nothing has to pair them up. `b: null` means no captured floor on the far side:
+   * an exterior door, or a room nobody scanned.
+   *
+   * @param {THREE_NS} THREE
+   * @param {SnapSurface[]} placed
+   * @param {SnapSurface[]} floors
+   * @param {Record<string, string>} floorOfSurface   surface id → its room's floor id
+   * @param {{probeM?: number, probeMaxM?: number, probeStepM?: number}} [opts]
+   * @returns {{door: string, a: string, b: string|null}[]}
+   */
+  function roomLinks(THREE, placed, floors, floorOfSurface, opts) {
+    opts = opts || {};
+    var D0 = opts.probeM != null ? opts.probeM : 0.4;
+    var DMAX = opts.probeMaxM != null ? opts.probeMaxM : 1.8;
+    var STEP = opts.probeStepM != null ? opts.probeStepM : 0.2;
+    /** @type {Record<string, SnapSurface>} */ var byId = {};
+    placed.forEach(function (s) { byId[s.id] = s; });
+    /** @type {{door: string, a: string, b: string|null}[]} */ var out = [];
+    placed.forEach(function (d) {
+      if (d.semantic !== "door" && d.semantic !== "window") return;
+      var host = d.hostWall && byId[d.hostWall];
+      if (!host) return;
+      var a = floorOfSurface[host.id];
+      if (!a) return;                                    // host wall in no room: nothing to name it from
+      var n = new THREE.Vector3(0, 1, 0).applyQuaternion(host._lq);
+      var L = Math.hypot(n.x, n.z);
+      if (!(L > 1e-6)) return;                           // a horizontal "wall" gives no side to step to
+      var nx = n.x / L, nz = n.z / L, b = null;
+      for (var D = D0; D <= DMAX + 1e-9 && !b; D += STEP) {
+        var x = d._lp.x + nx * D, z = d._lp.z + nz * D;
+        var hit = floors.filter(function (fl) { return covers(THREE, fl, x, z, 0); });
+        if (hit.length === 1 && hit[0].id !== a) b = hit[0].id;   // unambiguous, and not where we started
+      }
+      out.push({ door: d.id, a: a, b: b });
+    });
+    return out;
+  }
+
+  /**
+   * Per-ROOM residuals after a global registration — how far each room is from where one rigid transform
+   * says it should be, and what small translation would close that gap.
+   *
+   * §1's measurement is the reason this exists: the Quest's map of a multi-room space is locally
+   * non-rigid by up to ~9 cm, so `register`'s single transform cannot fit every room at once. It is
+   * measured here and **applied nowhere** — the point of the first increment is to find out how large
+   * the effect really is in the field before anything moves.
+   *
+   * The fit is **perpendicular offsets, never centroid deltas.** A wall's captured centre slides metres
+   * along the wall between captures (§4.2 — it is a scan artifact, which is why `matchWall` refuses to
+   * key on it), so averaging centre-to-centre offsets would be averaging that noise. Each matched
+   * reference plane instead contributes only the component along its own normal, which is the part it
+   * actually measures.
+   *
+   * **x/z and y are solved separately, because they are separately constrained**: a vertical plane says
+   * nothing about height and a horizontal says nothing about ground position. Solving them together
+   * would let a room with no floor invent a y from wall noise. A room with no horizontal surface simply
+   * reports no `dy` — an absent number rather than a fabricated one.
+   *
+   * `dy` is reported and never folded into a transform. §10.2's floating-room detector rests on
+   * registration not touching height — that is what makes a stored height a valid baseline for a live
+   * one — so an applied per-room y would cancel exactly the quantity it measures.
+   *
+   * @param {THREE_NS} THREE
+   * @param {{id: string|undefined, res: number, tx: number, ty: number, tz: number}[]} residuals
+   * @param {RefSurface[]} ref
+   * @param {Record<string, string>} roomOf        reference surface id → room id
+   * @param {{minPairs?: number, maxM?: number, maxYM?: number}} [opts]
+   * @returns {{room: string, n: number, nz: number, before: number, after: number,
+   *            dx: number, dz: number, dy: number|null, ok: boolean}[]}
+   */
+  function roomResiduals(THREE, residuals, ref, roomOf, opts) {
+    opts = opts || {};
+    var MINP = opts.minPairs != null ? opts.minPairs : 4;
+    var MAXM = opts.maxM != null ? opts.maxM : 0.25;      // x/z: past this it is a bad lock, not a room
+    var MAXY = opts.maxYM != null ? opts.maxYM : 0.6;    // y: the fault is unbounded, so this is a sanity
+                                                         // rail rather than a threshold (see below)
+    /** @type {Record<string, RefSurface>} */ var byId = {};
+    (ref || []).forEach(function (r) { if (r.id) byId[r.id] = r; });
+    /** @type {Record<string, any[]>} */ var groups = {};
+    (residuals || []).forEach(function (p) {
+      var r = p.id && byId[p.id], rid = p.id && roomOf[p.id];
+      if (!r || !rid || p.tx == null) return;
+      (groups[rid] = groups[rid] || []).push({ p: p, r: r });
+    });
+    /** @type {{room: string, n: number, nz: number, before: number, after: number,
+     *          dx: number, dz: number, dy: number|null, ok: boolean}[]} */
+    var out = [];
+    Object.keys(groups).sort().forEach(function (rid) {
+      var g = groups[rid];
+      // verticals → x/z (a 2x2 normal-equation solve); horizontals → y (a 1-DOF mean)
+      var a00 = 0, a01 = 0, a11 = 0, b0 = 0, b1 = 0, nv = 0, sy = 0, nh = 0, sqr = 0;
+      g.forEach(function (m) {
+        var r = m.r, p = m.p;
+        sqr += p.res * p.res;
+        if (r.orient === "horizontal") { sy += (r.pos.y - p.ty); nh++; return; }
+        var nx = Math.sin(r.nyaw), nz = Math.cos(r.nyaw);
+        var d = nx * (r.pos.x - p.tx) + nz * (r.pos.z - p.tz);   // perpendicular offset only
+        a00 += nx * nx; a01 += nx * nz; a11 += nz * nz; b0 += nx * d; b1 += nz * d; nv++;
+      });
+      var det = a00 * a11 - a01 * a01, dx = 0, dz = 0;
+      if (Math.abs(det) > 1e-9) { dx = (b0 * a11 - b1 * a01) / det; dz = (a00 * b1 - a01 * b0) / det; }
+      var dy = nh ? sy / nh : null;
+      var before = Math.sqrt(sqr / g.length);
+      var after2 = 0;
+      g.forEach(function (m) {
+        var r = m.r, p = m.p;
+        // dy is PART of the fit. A room displaced only in height — the raised-floor fault, 90–276 mm —
+        // would otherwise keep its whole residual here and be refused by the `after < before` guard,
+        // which is precisely the case this exists to catch. What must never happen is the opposite
+        // direction: feeding a corrected height into `levelDeviation`, whose baseline is valid only
+        // because the comparison is raw seed against raw live (§10.2).
+        var ex = r.pos.x - (p.tx + dx), ey = r.pos.y - (p.ty + (dy || 0)), ez = r.pos.z - (p.tz + dz);
+        after2 += ex * ex + ey * ey + ez * ez;
+      });
+      var after = Math.sqrt(after2 / g.length);
+      // Bounded SEPARATELY, because they fail differently. A large x/z delta is evidence of a bad global
+      // lock; a large y is not — the floating-room displacement is genuinely unbounded (observed 3x
+      // larger between one morning and one afternoon), and the unmerged correction's own 0.15 m ceiling
+      // would have refused the very fault it was written for.
+      var mag = Math.hypot(dx, dz);
+      out.push({ room: rid, n: g.length, nz: nv, before: before, after: after,
+                 dx: dx, dz: dz, dy: dy,
+                 // The guards a future APPLY would use, evaluated now so the log says whether the
+                 // refinement would have been accepted — not merely what it computed.
+                 ok: g.length >= MINP && nv >= 2 && Math.abs(det) > 1e-9 && mag <= MAXM
+                     && (dy == null || Math.abs(dy) <= MAXY) && after < before });
+    });
+    return out;
+  }
+
   // How well does the RECTANGLE we derive from a captured plane fit the polygon the device actually
   // reported? Pass A reduces `plane.polygon` to an axis-aligned bounding box in the plane's own X-Z frame
   // and keeps only its two spans as `extent` (conjure-client Pass A) — the polygon itself is then discarded
@@ -1127,7 +1378,7 @@
   }
 
   return { eulerYXZ: eulerYXZ, yawOf: yawOf, register: register,
-           heightCensus: heightCensus, explainNoMatch: explainNoMatch, floorUnder: floorUnder,
+           heightCensus: heightCensus, explainNoMatch: explainNoMatch, floorUnder: floorUnder, segmentRooms: segmentRooms, roomLinks: roomLinks, roomResiduals: roomResiduals,
            polyFit: polyFit, planeCorners: planeCorners,
            canonicalFrame: canonicalFrame, surfaceToRef: surfaceToRef, selectSpace: selectSpace,
            matchRef: matchRef, matchWall: matchWall, matchInset: matchInset, dupInsetIds: dupInsetIds,

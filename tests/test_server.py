@@ -4816,6 +4816,189 @@ def test_figure_is_owner_gated(srv, client, tmp_path):
     assert r.status_code == 403
 
 
+# --- rooms as a first-class unit -------------------------------------------------------------------
+# The client segments a capture into rooms (SpaceSnap.segmentRooms); the server decides which of the
+# space's PERSISTENT rooms each group is (conjure/rooms.py) and records it. These cover the wiring —
+# `tests/test_rooms.py` covers the resolution rule itself.
+
+def _two_room_capture(rooms=True):
+    surfaces = [
+        {"id": "real_floor_1", "semantic": "floor", "position": [0, 0, 0], "extent": [4, 4]},
+        {"id": "real_wall_2", "semantic": "wall", "position": [2, 1.2, 0], "extent": [4, 2.4]},
+        {"id": "real_floor_3", "semantic": "floor", "position": [4.3, 0, 0], "extent": [4, 4]},
+        {"id": "real_wall_4", "semantic": "wall", "position": [2.3, 1.2, 0], "extent": [4, 2.4]},
+        {"id": "real_door_5", "semantic": "door", "position": [2, 1, 0], "extent": [0.9, 2],
+         "hostWall": "real_wall_2"},
+    ]
+    body = {"client_id": "h1", "surfaces": surfaces}
+    if rooms:
+        body["rooms"] = [
+            {"floor": "real_floor_1", "ceiling": None, "ids": ["real_floor_1", "real_wall_2", "real_door_5"]},
+            {"floor": "real_floor_3", "ceiling": None, "ids": ["real_floor_3", "real_wall_4"]},
+        ]
+        body["links"] = [{"door": "real_door_5", "a": "real_floor_1", "b": "real_floor_3"}]
+    return body
+
+
+def test_a_capture_with_rooms_labels_every_surface_and_records_the_rooms(srv, client):
+    assert client.post("/space/capture", json=_two_room_capture()).json()["ok"] is True
+    ents = {e["id"]: e for e in _entities(client)}
+    assert ents["real_floor_1"]["meta"]["room"] == "room_1"
+    assert ents["real_wall_2"]["meta"]["room"] == "room_1"
+    assert ents["real_floor_3"]["meta"]["room"] == "room_2"
+    rooms = client.get("/world").json()["environment"]["rooms"]
+    assert rooms["room_1"]["n"] == 1 and rooms["room_1"]["floor"] == "real_floor_1"
+    assert "name" not in rooms["room_1"], "the default display name is derived, never stored"
+
+
+def test_a_door_records_the_room_it_leads_to(srv, client):
+    client.post("/space/capture", json=_two_room_capture())
+    ents = {e["id"]: e for e in _entities(client)}
+    assert ents["real_door_5"]["meta"]["leads_to"] == "room_2", \
+        "the link names the far side by FLOOR id; the room id is resolved server-side"
+
+
+def test_a_capture_without_rooms_leaves_existing_labels_alone(srv, client):
+    """A client that sends no segmentation is saying nothing about rooms, not saying there are none.
+    Older clients exist, and a capture from one must not strip the labels — or the names they anchor."""
+    client.post("/space/capture", json=_two_room_capture())
+    client.post("/space/capture", json=_two_room_capture(rooms=False))
+    ents = {e["id"]: e for e in _entities(client)}
+    assert ents["real_floor_1"]["meta"]["room"] == "room_1"
+    assert client.get("/world").json()["environment"]["rooms"]["room_1"]["n"] == 1
+
+
+def test_a_room_name_survives_a_recapture_and_is_not_per_world(srv, client):
+    """The name is a fact about the PLACE, so it lives on the space and every world sees the same one.
+    That is the same reasoning that keeps `boundary` out of spacePresentation."""
+    client.post("/space/capture", json=_two_room_capture())
+    client.post("/patch", json={"origin": "test", "ops": [
+        {"op": "env", "set": {"rooms.room_1.name": "kitchen"}}]})
+    client.post("/space/capture", json=_two_room_capture())          # a later capture must not clobber it
+    rooms = client.get("/world").json()["environment"]["rooms"]
+    assert rooms["room_1"]["name"] == "kitchen"
+    assert rooms["room_1"]["floor"] == "real_floor_1"
+
+
+def test_the_room_record_lives_on_the_space_not_the_world(srv, client):
+    """`rooms` rides the same path as `boundary`: composed in from the space, stripped on save. A room
+    name is a fact about the physical place, so the same kitchen cannot be "kitchen" in one world and
+    "room #2" in another — which is exactly why `boundary` is a sibling of `spacePresentation` rather
+    than a member of it."""
+    from conjure import server as S
+    rec = {"room_1": {"n": 1, "name": "kitchen", "floor": "real_floor_1"}}
+    live = {"entities": [], "environment": {"rooms": rec, "spacePresentation": {}}}
+    assert "rooms" not in S._decompose(live, {"surfaces": [], "boundary": None}).get("environment", {}), \
+        "never persisted per-world"
+    composed = S._compose({"entities": [], "environment": {}},
+                          {"surfaces": [], "boundary": None, "rooms": rec})
+    assert composed["environment"]["rooms"]["room_1"]["name"] == "kitchen", "loaned back on load"
+
+
+def test_a_room_is_a_surface_target_everywhere_at_once(srv, client):
+    """`_real_surface_match` is the single chokepoint both `_surface_targets` and `_resolve_op_ids` go
+    through, so making it understand rooms makes every surface tool understand them."""
+    client.post("/space/capture", json=_two_room_capture())
+    r = client.post("/style_surface", json={"target": "room 1", "color": "blue"}).json()
+    assert r["ok"] is True and r["count"] == 3, "the whole room, and only that room"
+    ents = {e["id"]: e for e in _entities(client)}
+    assert ents["real_floor_1"]["components"]["material"]["color"] == "blue"
+    assert ents["real_floor_3"]["components"]["material"]["color"] != "blue"
+
+
+def test_a_named_room_is_targetable_by_its_name(srv, client):
+    client.post("/space/capture", json=_two_room_capture())
+    assert client.post("/room/name", json={"room": "room 2", "name": "kitchen"}).json()["ok"] is True
+    r = client.post("/style_surface", json={"target": "kitchen", "color": "red"}).json()
+    assert r["count"] == 2
+    ents = {e["id"]: e for e in _entities(client)}
+    assert ents["real_floor_3"]["components"]["material"]["color"] == "red"
+
+
+def test_a_semantic_always_beats_a_room_name(srv, client):
+    """A room called "wall" must not stop `wall` meaning every wall. The room test runs last, and
+    name_room refuses the reserved words as well — belt and braces, because a target that silently
+    resolves to the wrong set is the worst outcome available here."""
+    client.post("/space/capture", json=_two_room_capture())
+    out = client.post("/room/name", json={"room": "room 1", "name": "wall"}).json()
+    assert out["ok"] is False and "means something" in out["error"]
+
+
+def test_naming_a_room_clears_back_to_the_derived_default(srv, client):
+    client.post("/space/capture", json=_two_room_capture())
+    client.post("/room/name", json={"room": "room 1", "name": "kitchen"})
+    out = client.post("/room/name", json={"room": "kitchen", "name": ""}).json()
+    assert out["ok"] is True and out["name"] == "room #1", "derived, so there is no stale copy to clear"
+    rooms = client.get("/world").json()["environment"]["rooms"]
+    assert not rooms["room_1"].get("name")
+
+
+def test_two_rooms_cannot_share_a_name(srv, client):
+    client.post("/space/capture", json=_two_room_capture())
+    client.post("/room/name", json={"room": "room 1", "name": "kitchen"})
+    out = client.post("/room/name", json={"room": "room 2", "name": "Kitchen"}).json()
+    assert out["ok"] is False, "case-insensitively, since the user says it rather than types it"
+
+
+def test_whereami_maps_the_floor_you_are_over_to_a_room(srv, client):
+    """The AR client reports the FLOOR it is standing over, never a room id — it has no way to know which
+    persistent room that is. Live occupancy, so it is its own endpoint rather than a key on /world, which
+    returns the stored document verbatim."""
+    from conjure import server as S
+    client.post("/space/capture", json=_two_room_capture())
+    S.standing["daniel"] = "real_floor_3"
+    try:
+        out = client.get("/room/whereami", params={"user": "daniel"}).json()
+        assert out["standing"]["daniel"] == "room_2"
+        assert out["you"] == "room_2"
+    finally:
+        S.standing.pop("daniel", None)
+
+
+def test_a_user_who_is_not_standing_anywhere_is_reported_as_such(srv, client):
+    """A CLI, voice or desktop connection is not in a room, and saying so is the honest answer — the
+    alternative is the director confidently naming a room the user is not in."""
+    client.post("/space/capture", json=_two_room_capture())
+    out = client.get("/room/whereami", params={"user": "nobody"}).json()
+    assert out["you"] is None and out["standing"] == {}
+
+
+def test_show_surface_resolves_the_full_target_vocabulary(srv, client):
+    """Visibility used to match targets in the MCP layer, with a weaker vocabulary than every other
+    surface tool. Through the endpoint it gets the same one: friendly ids, semantics, rooms."""
+    client.post("/space/capture", json=_two_room_capture())
+    ents = {e["id"]: e for e in _entities(client)}
+    fid = ents["real_wall_2"]["meta"]["friendly_id"]
+    r = client.post("/show_surface", json={"target": str(fid), "visible": False}).json()
+    assert r["ok"] is True and r["count"] == 1, "the friendly id picks one surface"
+    r = client.post("/show_surface", json={"target": "room 2", "visible": False}).json()
+    assert r["count"] == 2, "and a room picks that room"
+
+
+def test_the_room_filter_composes_with_the_target(srv, client):
+    """"The kitchen walls" is what neither can say alone: a room as a bare target takes the whole room,
+    a semantic takes it across the whole space."""
+    client.post("/space/capture", json=_two_room_capture())
+    client.post("/room/name", json={"room": "room 1", "name": "kitchen"})
+    both = client.post("/style_surface", json={"target": "wall", "color": "grey"}).json()
+    assert both["count"] == 2, "the semantic alone spans the space"
+    one = client.post("/style_surface", json={"target": "wall", "color": "blue", "room": "kitchen"}).json()
+    assert one["count"] == 1, "narrowed to the room"
+    ents = {e["id"]: e for e in _entities(client)}
+    assert ents["real_wall_2"]["components"]["material"]["color"] == "blue"
+    assert ents["real_wall_4"]["components"]["material"]["color"] == "grey"
+
+
+def test_an_unknown_room_filter_matches_NOTHING_rather_than_everything(srv, client):
+    """The one failure mode that repaints surfaces the user never mentioned. A scoped edit whose scope
+    does not resolve must not silently widen to the whole space."""
+    client.post("/space/capture", json=_two_room_capture())
+    out = client.post("/style_surface", json={"target": "all", "color": "red", "room": "attic"}).json()
+    assert out["ok"] is False, "refused, not applied space-wide"
+    ents = {e["id"]: e for e in _entities(client)}
+    assert ents["real_wall_2"]["components"]["material"].get("color") != "red"
+
+
 def test_admin_listing_filters_by_kind_and_by_relation(srv, tmp_path):
     """A capture puts a figure, sixty clips and thirty audio files in one namespace location. Being
     able to ask "her clips" and "what voices this" is how the linking gets checked at all — a flat
