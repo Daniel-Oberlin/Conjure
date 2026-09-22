@@ -107,6 +107,20 @@ or >10k tokens of definitions — **Conjure is over both**. It costs nothing to 
 path and does **nothing** for a local model — so it is **its own change, §5a**, measured separately.
 Pinned SDKs: `mcp` 1.27.2, `anthropic` 0.105.2.
 
+**Correction (2026-09-20): the prefill argument below assumed no KV reuse, and that was wrong.**
+Local runtimes cache the KV state of a prompt prefix and reuse it by **longest-common-prefix match** —
+llama.cpp per slot (`cache_prompt`), LM Studio's MLX engine at 256-token checkpoints, `mlx_lm.cache_prompt`
+to a file on disk. So hop 1 of a turn pays prefill and hops 2..n pay only for what was appended, which
+is the opposite of what §0 and §6 predicted. Three consequences, all recorded properly in §6a:
+
+* The local cache is **free to write, ours to keep, and persistable to disk** — none of which any cloud
+  provider offers. There is no routing lottery, because there is one backend and it is this machine.
+* It needs **less** work than the cloud, not more: LCP matching finds the divergence point itself, so
+  there are no breakpoints to place and the §5a-caching offset work is redundant locally.
+* What does NOT change is **decode** — still bandwidth-bound, still tens of tokens/sec. The local gap
+  is therefore decode-dominated, not prefill-dominated: smaller than predicted, and far more
+  predictable.
+
 **The hardware.** M2 Max, 32 GB, shared memory, bandwidth-bound. A 4-bit ~30B model is ~17 GB resident
 and leaves little beside Whisper, Kokoro, SigLIP, a browser and the world server. **MoE** — mixture-of-experts, a model that keeps all its
 parameters resident but routes each token through only a small fraction of them — is the right shape
@@ -533,9 +547,13 @@ Runtime and model choice are §8 forks, not settled here. The shape to look for 
 tool calling; model *names* in this document would be stale within the month.
 
 **Acceptance:** does it complete a scripted `outdoor` turn end to end; time-to-first-token cold vs.
-warm prefix cache; full-turn wall clock and hop count against Claude on the same script. The honest
-expected result is **slower than the cloud** — the phase is worth running anyway, because it converts
-a prediction into a number and because privacy and offline operation do not require it to be faster.
+warm prefix cache; full-turn wall clock and hop count against Claude on the same script.
+
+**KV reuse is part of the measurement, not a footnote.** The original expectation here — "slower than
+the cloud" — rested on paying a full prefill every hop, and local runtimes specifically do not. So the
+run must report hop 1 separately from hops 2..n, and a cold prompt separately from a warm one; an
+aggregate turn time hides exactly the effect being tested. Prefill and decode are now different
+questions and want different numbers.
 
 ---
 
