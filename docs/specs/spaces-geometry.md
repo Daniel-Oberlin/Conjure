@@ -164,6 +164,21 @@ cannot consistently cover ≥4 reference surfaces, which is exactly what `select
 selection ([`specs/spaces.md §6`](./spaces.md)). The caveat worth stating: *different space* and *bad
 tracking* both surface as the same no-lock.
 
+### 4.0b The selection gate — do not register against a space you may not be standing in
+
+That caveat bit, 2026-09-22. The location fix is acquired eagerly on page load, but entering AR before it
+lands leaves the client holding the space from its **last session** — and registering the live room against
+that is comparing this building with another one. Measured: a three-room home scored `cov=9/57` against a
+space 700 km away, which is a no-lock, so passthrough came up with the step-out hint. Tracking was perfect;
+the client simply did not know where it was yet. Six seconds later the fix arrived, `space-1` matched, and
+it locked — but the hint had already sent the user out of the guardian and back, which restarts the session
+and the wait. Three attempts for a six-second fix.
+
+So `WM.selectGate` **holds** every capture while selection is unresolved (`awaitingSpace`): no registration,
+no lost-marking. Nothing is hidden that was not already hidden, because that window is blanked to
+passthrough anyway, and the candidate vote runs ahead of this gate — it is what resolves the hold. After
+`8` held captures it returns `forced`, the same deadlock escape `loadGate` has, and says so.
+
 **Known limit — symmetry.** A symmetric room with equal opposite walls is genuinely ambiguous from one
 vantage; the vote can lock 180° off. Distinguishing features (differently-sized walls, doors, wall-art)
 resolve it. This is the same class as the boundary-flip below.
@@ -231,8 +246,14 @@ rotated until a lock returns.
 
 Because the space is wrong from that first held capture, the fallback that explains it has to track the
 failure rather than lag it. After a short grace the client reveals passthrough — hiding `#world-root`,
-the sky and the scaffold — and shows a headset-locked hint to step out of the play area and back in,
-which forces the Quest to re-localize. It restores on recovery.
+the sky and the scaffold — and shows a headset-locked hint. It restores on recovery.
+
+**The hint names its cause** (`WM.relocHint`, from `_regStat`), because one message served three and only
+one of them was true. "Step out of your play area and back in" re-localizes the headset, which fixes a lost
+lock and does nothing for a room still materializing or a space not yet identified — and following it
+restarts the session, which is how a six-second wait became three attempts (§4.0b). A lost lock keeps that
+wording; the load gate says the room is being restored; the selection gate says it is working out which
+space you are in. Neither of those asks for anything.
 
 Two rules make that trigger reliable (`WM.relocStep`):
 

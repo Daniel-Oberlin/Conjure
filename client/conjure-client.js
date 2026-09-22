@@ -2271,15 +2271,21 @@
       },
       _hint: function (on) {
         var el = document.getElementById("reloc-hint");
+        // WHICH of the three causes, in its own words — `WM.relocHint`. "Step out and back in" re-localizes
+        // the headset, which is the remedy for a lost lock and useless for a room still materializing or a
+        // space we have not identified yet; given as advice there, it restarts the session and the wait.
+        var why = WM.relocHint(this._regStat);
         if (on && !el) {
           var cam = document.querySelector("a-camera") || document.querySelector("[camera]");
           if (!cam) return;
           el = document.createElement("a-entity");
           el.id = "reloc-hint";
           el.setAttribute("position", "0 0 -1.5");           // locked ~1.5 m in front of the headset
-          el.setAttribute("text", { value: "Re-localizing…\nstep out of your play area and back in",
+          el.setAttribute("text", { value: why.text,
             align: "center", color: INFO_COLOR, width: 1.6, baseline: "center" });
           cam.appendChild(el);
+        } else if (on && el) {
+          el.setAttribute("text", "value", why.text);        // the cause can change while it is showing
         }
         if (el) el.setAttribute("visible", on);
       },
@@ -2844,6 +2850,29 @@
           var nWalls = cur.filter(function (c) { return c.orient === "vertical"; }).length;
           if (nWalls >= 6 && pendingSelect.tries >= 3) { commitSelect({ matched: false }); return; }
           // else undecided — fall through and keep rendering the booted world until the capture fills in
+        }
+
+        // SELECTION GATE — do not register against a space we may not be standing in.
+        //
+        // Entering AR before the location fix lands leaves us holding the space from the LAST session, and
+        // registering the live room against it is comparing this building with another one. Measured
+        // 2026-09-22: a three-room home scored 9 of 57 surfaces against a space 700 km away, which reads as
+        // a lost lock and raised the "step out of your play area and back in" hint — advice that cannot
+        // help, since tracking was never the problem. Following it restarts the session, so a six-second
+        // wait for the fix became three attempts. The vote above still runs (it is what resolves this), and
+        // the world is blanked to passthrough here anyway, so holding hides nothing that was showing.
+        var selGate = WM.selectGate(awaitingSpace, this._selecting || 0);
+        if (selGate === "hold") {
+          if (!this._selecting) geoLog("space.selecting", { planes: cur.length });
+          this._selecting = (this._selecting || 0) + 1;
+          this._regStat = "selecting";
+          this.lastPost = time - RETRY_MS; return;          // no _markLost: we are not lost, we are looking
+        }
+        if (this._selecting) {
+          geoLog("space.selected", { held: this._selecting, forced: selGate === "forced" || undefined });
+          debugLog("sel", "selection resolved after " + this._selecting + " held capture(s)"
+            + (selGate === "forced" ? " (FORCED — selection never resolved)" : ""), true);
+          this._selecting = 0;
         }
 
         // VOID/outdoor world: not tied to a captured space, so there's no reference to register against.
