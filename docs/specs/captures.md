@@ -178,6 +178,13 @@ nothing we produced could tell those apart.
 Only what a BINDING depends on. Scanning the whole registry finds 1,011, almost all in props materials
 nothing binds; reachable from an emitted mesh it is **42**.
 
+**A whole MATERIAL the registry never had is reported and not failed.** `fucked.in.basement` binds a
+doorframe and two chains to material ids in no `config.json` anywhere in the capture. The site draws
+such a mesh with its default material and a glTF primitive with none gets the viewer's default, so the
+file already matches what runs — the rebuild notes it, and `verify_thing` no longer counts it as a
+problem, which it used to for something no re-download could change. A material that IS in the registry
+and missing from the file is still the flat-white failure the verifier exists for, and still fails.
+
 ### Things — the unit a container is not
 
 `things(build)` reads what each SCENE places, rather than what each FILE holds. A container is one
@@ -338,6 +345,18 @@ the scene scales the thing, and Oktoberfest is 1.25, so all 175 of her bones rea
 was wrong. What has to agree is each bone's **own** transform relative to its parent, which is what
 `joints_agree` compares.
 
+**A thing can hold several rigs that reuse the same bone names**, and one skeleton keyed by name cannot
+tell them apart. underwater's `MOVING` group is three fish, each its own subtree with its own `core`,
+`spine01`, `spine02` and `tail01`: first-name-wins skinned every fish to the FIRST fish's bones and drew
+them piled onto it, and the verifier — comparing by name too — reported all three as bound against a
+different rest pose, which read as the retargeting problem and was not. Measured on those three: 5 bones
+off each against the first fish, **0 against their own**. So a skin's bones are resolved inside the
+smallest subtree above the piece that holds every name the skin asks for, and the skin is keyed by that
+rig so a second fish does not reuse the first one's. Where every name occurs once — every figure in the
+corpus — that is the node the name map already gave, and the output is byte-identical. The verifier
+checks each skin against the bones it actually points at, and "the skeletons stacked" now means what it
+was written for: a skeleton COPIED in beside the scene's, never two rigs the scene itself states.
+
 **Where every container disagrees with the scene in the same way, the scene is holding a POSE.** A scene
 entity's transform is usually the bind pose and is sometimes a saved pose, and only the containers can
 tell the two apart. Alice's `CC_Base_L_Eye` and `CC_Base_R_Eye` are 90° out in the scene and nowhere
@@ -350,6 +369,20 @@ the `hidden` list, and per mesh node the piece index, its `(container, mesh)` an
 it switched off. `hidden` is glTF node names, which is exactly what the runtime `figure-parts` component
 already consumes (`specs/figures.md` § 8a).
 
+**A hidden name is unique AS THE CLIENT WILL LOAD IT.** `figure-parts` hides by node name, after three's
+loader has sanitised names (whitespace to `_`, `[ ] . : /` removed) and renamed repeats `_1`, `_2` in
+load order. Scene entity names repeat freely: rave.wc's washroom has `Stall_Door` three times — a group,
+a switched-off door and a drawn one — and Bianca has two switched-off `underwear` meshes. So a hidden
+entry reached whichever copy loaded first: the washroom hid a door the scene draws and drew five pieces
+it switches off, and Bianca's second `underwear` never hid at all. A HIDDEN piece whose name another node
+shares is now written `name~2` (`~` survives the sanitiser), with the scene's name kept as `entity` in its
+provenance. Nothing else is renamed — a name nothing hides by is harmless however often it repeats, and
+renaming it would change the bytes of props files that are one catalog row precisely because their
+bytes match — and a bone never is. The client side matches names in the loader's spelling
+([`specs/figures.md`](./figures.md) §8a), and the verifier compares them that way, which is how it caught
+Bianca: a raw-name check passed her because both copies were in the list. Measured 2026-09-21: 16 hidden
+names shared by more than one node across the 78 captures, and 9 the client could never match.
+
 **`verify_thing` judges the file against the `Thing` and the source containers**, and silence is the pass:
 one node per piece and nothing else drawing, per-primitive vertex counts equal to the source mesh,
 materials matching the registry BY NAME, the world transform equal to the entity chain with its
@@ -358,6 +391,21 @@ optional pieces present and flagged, and every bone standing where the container
 Across all twenty captures it reports **two problems, both on bride**: `underwear.glb` never downloaded
 (a gap in the capture, and it says so), and `model_britney_bride.glb` is a different rig wearing the
 same 222 bone names — the half-body the director was picking as "another bride".
+
+**Over the full set of 58 captures (2026-09-21) it reports five**: bride's `underwear.glb` again missing
+from one capture, and four from the bone check — `model_britney_bride.glb` in both bride captures, and
+gothic.witch.hunt's `test2.glb` and `underwear.glb`. Those four are NOT pieces posed wrongly. Each is a
+body or garment whose bone NODES are stored in a different pose (123 of 222 rotations differ), while the
+binding the skinning actually uses — the inverse bind matrices — agrees with every other piece's to one
+constant: body and dress move together on all 222 bones, 0.0 cm apart, and the same for the witch. The
+check compares node transforms, which is the wrong thing where a file's nodes are not its bind pose
+([`backlogs/captures.md`](../backlogs/captures.md)). And the "half-body" above is a misnomer: it is her
+whole visible body, 41k vertices in metres, beside an unused 201k-vertex one in `bride_ready.glb`. 755
+things, every one loading in `glb_check.mjs`. Before that day's fixes it reported 21 across 8 captures;
+the other sixteen were the rename, hidden-name, several-rigs and dangling-material cases above, and none
+of them was the capture's fault. The original twenty were re-run on the same inputs: **257 of 258
+composed files byte-identical**, the 258th being Bianca's second `underwear` gaining the name that lets
+it hide, and the six acceptance sizes unchanged.
 
 **A glb viewer draws every node it is given**, and `hidden` lives in `extras`, so the asset looks wrong
 in one: Alice's hidden pale hair and bride's switched-off underwear are both plainly visible and read as
@@ -397,6 +445,30 @@ never the PNG beside it — 91 of Akari's 105 textures declare such a variant. B
 Pillow cannot open it, and decoding wants a transcoder this does not carry. So `variant_only` reports
 those separately from absent ones, with the URL of the uncompressed original, and counting them as
 missing (which an earlier pass did) overstated one capture's gap by eight files.
+
+**A file the download RENAMED is found where it landed.** The grabber cleans every path segment before
+Chrome saves it (`src/naming.js`, `cleanSegment`), and Chrome rewrites a little more on top, so five
+kinds of name arrive on disk different from the registry's: a run of whitespace collapses
+(`BAKEFLOOR  SpecularMap 2k.png`), `" * : < > ? |` become `_` (`door.001|door.001Action.glb`), leading
+and trailing dots go, a run of dots collapses (`…VR holes dot com..mp3`), and a space before the
+extension goes (`TOOLS .glb` saved as `TOOLS.glb`). Each left a file that was present, complete, and
+reported NOT IN THIS CAPTURE. `Build.locate` tries those names after the exact ones — so a capture that
+kept the true name is never second-guessed — and `_saved_as` is the mirror, kept as a copy rather than
+imported because a capture outlives both repositories. Measured 2026-09-21: 199 registry files across
+the original twenty captures and 592 across the full set of 58 were on disk and read as missing, **21
+and 68 of them containers** — `TOOLS .glb`, the props container, in nearly every capture, so every
+thing that draws from it had been composed without its props.
+
+**One output directory, and file names that are not unique.** Per-container output writes every build
+in a capture into one directory, and a container's file name is not unique across builds — nor always
+within one: `model_britney_witch_ready.glb` is two different containers, 3.7 MB and 10.2 MB, in the same
+build, and the launcher's `Dilda.glb` sits beside each scene's own. Each second write replaced the first
+and nothing said so — 3 of the original twenty captures and 18 of the 58. The first keeps the plain
+name; a later one is written as `<name>~<asset id>.glb` and reported, and the importer reads the id back
+out of the suffix. `compose_build` had the same promise in its comment and the guard inside out: it only
+looked for a new name when the file existed AND this run had not written it, so a second same-named
+thing overwrote the first and a re-run suffixed every file instead of replacing it. It now asks only
+whether this run wrote the name.
 
 **What the capture does not hold is reported as a list, with URLs.** Akari's release references 105
 textures and holds none of them; reported per use that was 200-odd identical lines burying the two
