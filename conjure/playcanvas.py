@@ -34,6 +34,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import urllib.parse
@@ -122,6 +123,44 @@ class Binding:
     source: str = "scene"
 
 
+# What a browser download WROTE for a filename, where that differs from what the registry asks for.
+# Mirrored from the grabber, which cleans every path segment before asking Chrome to save it
+# (`browser-extension-glb-download/src/naming.js`, `cleanSegment`), and from what Chrome's save did on
+# top of that. Kept as a copy rather than imported: a capture outlives both repositories.
+_GRABBER_ILLEGAL = re.compile(r'["*:<>?|]+')
+
+
+def _saved_as(name: str) -> list[str]:
+    """Every name `name` may have been written under, most likely first, excluding `name` itself.
+
+    Five renamings, all found by content that was on disk and read as missing:
+
+    * a run of whitespace collapses to one — `BAKEFLOOR  SpecularMap 2k.png`, a texture;
+    * `" * : < > ? |` become `_` — `door.001|door.001Action.glb`, an animation;
+    * leading and trailing dots and spaces go;
+    * a run of dots collapses (Chrome) — `…VR holes dot com..mp3`, eight voice lines a capture;
+    * a space before the extension goes (Chrome) — `TOOLS .glb` saved as `TOOLS.glb`, the props
+      CONTAINER, in nearly every capture. Measured 2026-09-21: 21 containers across the original
+      twenty captures and 68 across the full set of 58 were reported "not in this capture" while
+      sitting in the right directory — so every one of them had been composed without its props.
+    """
+    def clean(seg: str) -> str:
+        out = "".join(c for c in seg if ord(c) >= 0x20 and ord(c) != 0x7F)
+        out = re.sub(r"\s+", " ", _GRABBER_ILLEGAL.sub("_", out)).strip()
+        return out.strip(".").strip()
+
+    def chrome(seg: str) -> str:
+        seg = re.sub(r"\.{2,}", ".", seg)
+        stem, dot, ext = seg.rpartition(".")
+        return f"{stem.rstrip(' ')}{dot}{ext}" if dot else seg
+
+    out = []
+    for candidate in (chrome(clean(name)), clean(name), chrome(name)):
+        if candidate and candidate != name and candidate not in out:
+            out.append(candidate)
+    return out
+
+
 @dataclass
 class Build:
     """A published PlayCanvas build: its asset registry, and what its scenes bind to what."""
@@ -170,7 +209,13 @@ class Build:
         # only surviving form is `Hands_diffuse_2K.basis`, so the decoded file and
         # the recorded name agree about everything except the extension.
         stem = os.path.splitext(decoded)[0] + ".png"
-        for candidate in (decoded, url, stem):
+        # Then the names the DOWNLOAD may have written instead — see `_saved_as`. Only the file name
+        # is rewritten: the directories are asset ids and versions, which nothing mangles. Tried
+        # after the exact forms, so a capture that kept the true name is never second-guessed.
+        folder = os.path.dirname(decoded)
+        renamed = [os.path.join(folder, alt) for form in (decoded, stem)
+                   for alt in _saved_as(os.path.basename(form))]
+        for candidate in (decoded, url, stem, *renamed):
             full = os.path.join(self.root, candidate)
             # Size, not existence. A failed download can leave a zero-byte file
             # behind, and an empty texture is not "present" in any sense that
@@ -1697,6 +1742,17 @@ def rebuild_build(root: str, out_dir: str, *, max_texture: int = 1024, quality: 
             stem = os.path.splitext(os.path.basename(path))[0]
             os.makedirs(out_dir, exist_ok=True)
             dest = os.path.join(out_dir, f"{stem}.glb")
+            # One output directory serves every build in the capture, and a file NAME is not unique
+            # across them — nor always within one. Measured 2026-09-21: 3 of the original twenty
+            # captures and 18 of the full set hold two different containers under one name, among
+            # them a whole character (`model_britney_witch_ready.glb`, 3.7 MB and 10.2 MB in the SAME
+            # build) and the launcher's `Dilda.glb` beside the scene's. Each second write replaced the
+            # first and nothing said so. The first keeps the plain name, so a capture with no clash
+            # writes exactly what it always did; a later one is suffixed with its asset id.
+            if dest in written:
+                dest = os.path.join(out_dir, f"{stem}~{container}.glb")
+                say(f"    ! {name}: another container in this capture is also named {stem}.glb — "
+                    f"written as {os.path.basename(dest)} rather than over it")
             open(dest, "wb").write(data)
             written.append(dest)
             grew = len(data) / max(1, os.path.getsize(path))
