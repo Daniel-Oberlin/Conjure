@@ -596,8 +596,18 @@
       } catch (e) {
         hidden = [];
       }
+      // The list holds names as the FILE spells them, and three's loader renames nodes as it builds the
+      // scene graph — whitespace to "_", `[ ] . : /` removed. Matching raw names alone never hid
+      // `Plane.002_Baked` (loaded as `Plane002_Baked`) or `Switch.001`, and nothing said so. Only the raw
+      // spelling and three's exact rule are tried, not `variants()`: a bone LOOKUP takes the first
+      // spelling that exists, but hiding applies to every node that matches, so a looser spelling
+      // could switch off a different part.
       var want = Object.create(null);
-      for (var i = 0; i < hidden.length; i++) want[hidden[i]] = true;
+      for (var i = 0; i < hidden.length; i++) {
+        var raw = String(hidden[i]);
+        want[raw] = true;
+        want[raw.replace(/\s/g, "_").replace(/[\[\]./:]/g, "")] = true;
+      }
       // Every named node is visited, not just the hidden ones, so SHOWING is the same operation as
       // hiding and a node dropped from the list comes back without a reload.
       root.traverse(function (o) {

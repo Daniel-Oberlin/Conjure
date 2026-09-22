@@ -544,6 +544,15 @@ classifier proposes and **the entity holds the truth** — a wrong grouping is c
 mesh, not argued with. A word that is neither a category nor a mesh on this figure is reported back,
 since silently ignoring it reads as a working command.
 
+**The names are matched as three's loader writes them, not as the file spells them.** `GLTFLoader`
+renames every node on the way in — whitespace to `_`, the characters `[ ] . : /` removed — so a list
+holding `Plane.002_Baked` never reached the node the scene graph calls `Plane002_Baked`, and nothing said
+so. Each entry is matched in both spellings, and only those two: a bone LOOKUP can safely try every
+spelling in `variants()` and take the first that exists, but hiding applies to every node that matches,
+so a looser spelling could switch off a different part. The loader also renames a REPEATED name
+`_1`, `_2` in load order, which no client-side rule can undo — so the composer guarantees a hidden name
+is unique as loaded ([`specs/captures.md`](./captures.md) §3), and the verifier checks it that way.
+
 Hiding is **visibility, never removal**. The mesh stays in the scene, stays skinned and stays posed with
 the rest of the figure, so showing it again needs no reload and a pose survives undressing. Re-applied
 on `model-loaded`, exactly as `figure` re-applies a pose, or undressing a figure that is still loading

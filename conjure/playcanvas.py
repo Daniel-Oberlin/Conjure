@@ -34,6 +34,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import urllib.parse
@@ -122,6 +123,44 @@ class Binding:
     source: str = "scene"
 
 
+# What a browser download WROTE for a filename, where that differs from what the registry asks for.
+# Mirrored from the grabber, which cleans every path segment before asking Chrome to save it
+# (`browser-extension-glb-download/src/naming.js`, `cleanSegment`), and from what Chrome's save did on
+# top of that. Kept as a copy rather than imported: a capture outlives both repositories.
+_GRABBER_ILLEGAL = re.compile(r'["*:<>?|]+')
+
+
+def _saved_as(name: str) -> list[str]:
+    """Every name `name` may have been written under, most likely first, excluding `name` itself.
+
+    Five renamings, all found by content that was on disk and read as missing:
+
+    * a run of whitespace collapses to one — `BAKEFLOOR  SpecularMap 2k.png`, a texture;
+    * `" * : < > ? |` become `_` — `door.001|door.001Action.glb`, an animation;
+    * leading and trailing dots and spaces go;
+    * a run of dots collapses (Chrome) — `…VR holes dot com..mp3`, eight voice lines a capture;
+    * a space before the extension goes (Chrome) — `TOOLS .glb` saved as `TOOLS.glb`, the props
+      CONTAINER, in nearly every capture. Measured 2026-09-21: 21 containers across the original
+      twenty captures and 68 across the full set of 58 were reported "not in this capture" while
+      sitting in the right directory — so every one of them had been composed without its props.
+    """
+    def clean(seg: str) -> str:
+        out = "".join(c for c in seg if ord(c) >= 0x20 and ord(c) != 0x7F)
+        out = re.sub(r"\s+", " ", _GRABBER_ILLEGAL.sub("_", out)).strip()
+        return out.strip(".").strip()
+
+    def chrome(seg: str) -> str:
+        seg = re.sub(r"\.{2,}", ".", seg)
+        stem, dot, ext = seg.rpartition(".")
+        return f"{stem.rstrip(' ')}{dot}{ext}" if dot else seg
+
+    out = []
+    for candidate in (chrome(clean(name)), clean(name), chrome(name)):
+        if candidate and candidate != name and candidate not in out:
+            out.append(candidate)
+    return out
+
+
 @dataclass
 class Build:
     """A published PlayCanvas build: its asset registry, and what its scenes bind to what."""
@@ -170,7 +209,13 @@ class Build:
         # only surviving form is `Hands_diffuse_2K.basis`, so the decoded file and
         # the recorded name agree about everything except the extension.
         stem = os.path.splitext(decoded)[0] + ".png"
-        for candidate in (decoded, url, stem):
+        # Then the names the DOWNLOAD may have written instead — see `_saved_as`. Only the file name
+        # is rewritten: the directories are asset ids and versions, which nothing mangles. Tried
+        # after the exact forms, so a capture that kept the true name is never second-guessed.
+        folder = os.path.dirname(decoded)
+        renamed = [os.path.join(folder, alt) for form in (decoded, stem)
+                   for alt in _saved_as(os.path.basename(form))]
+        for candidate in (decoded, url, stem, *renamed):
             full = os.path.join(self.root, candidate)
             # Size, not existence. A failed download can leave a zero-byte file
             # behind, and an empty texture is not "present" in any sense that
@@ -569,6 +614,7 @@ class Node:
     rotation: tuple                             # euler DEGREES in PlayCanvas order — `compose.quat_from_euler`
     scale: tuple
     enabled: bool                               # this entity's OWN flag, uncomposed
+    guid: str = ""                              # the scene entity, so a subtree can be walked on its own
 
 
 @dataclass
@@ -625,6 +671,11 @@ class Thing:
     position: tuple = (0.0, 0.0, 0.0)
     rotation: tuple = (0.0, 0.0, 0.0)
     scale: tuple = (1.0, 1.0, 1.0)
+    # A FIGURE lifted out of the thing that held it (`_lift_figures`): which thing, and what said it was
+    # a figure. On the room, the names of what was lifted out of it. Both empty for everything else.
+    lifted_from: str = ""
+    lifted_by: str = ""
+    lifted: list = field(default_factory=list)
 
     @property
     def containers(self) -> dict[int, int]:
@@ -671,13 +722,18 @@ def thing_notes(build: Build, ts: Optional[list] = None, **kw) -> list[str]:
     # so converting it as one thing means she is not placeable at all — no clips, no rig, no figure.
     # susan is the same shape and was found by hand; this is so the next one is not.
     for thing in ts:
+        if thing.lifted_from:
+            out.append(f"{thing.name!r} was LIFTED out of {thing.lifted_from!r} — a humanoid rig "
+                       f"({thing.lifted_by}) inside a thing that also draws other geometry. Correct it in "
+                       f"captures/things.json if that is wrong")
+            continue
         skinned = [p for p in thing.pieces if _rigged(build, p.container)]
         rigid = [p for p in thing.pieces if p not in skinned]
         if skinned and len(rigid) >= 3:
             out.append(f"{thing.name!r} draws {len(skinned)} SKINNED piece(s) and {len(rigid)} rigid "
-                       f"one(s) — very likely a figure welded to its environment, which are two things "
-                       f"and separately useful. Split it in captures/things.json; left as one, the "
-                       f"figure stops being placeable")
+                       f"one(s), and no humanoid rig was found among them to lift out — a skinned prop "
+                       f"in its room, most likely. If a figure is welded in there after all, split it in "
+                       f"captures/things.json")
     for scene in sorted({t.scene for t in ts}):
         group = [t for t in ts if t.scene == scene]
         on = sum(1 for t in group if t.enabled)
@@ -804,14 +860,159 @@ def things(build: Build, *, roots: Optional[dict] = None, capture: str = "",
             if override is None and label in excluded:
                 continue                                  # the app's own machinery, site-wide
             thing = _walk(build, entities, guid, name)
-            _shadow_variants(build, thing)
+            # A reviewed override is the answer and is never second-guessed; the rule only proposes.
+            thing, figures = (thing, []) if override is not None else _lift_figures(build, entities, thing)
             thing.name = wanted.get(label, label) if override is not None else label
-            if thing.pieces or override is not None:
-                out.append(thing)
+            for figure in figures:
+                figure.lifted_from = thing.name
+            for part in [thing, *figures]:
+                _shadow_variants(build, part)
+                if part.pieces or override is not None:
+                    out.append(part)
     return out
 
 
-def _walk(build: Build, entities: dict, guid: str, scene: str) -> Thing:
+def _lift_figures(build: Build, entities: dict, thing: Thing) -> tuple[Thing, list[Thing]]:
+    """`(what is left, [figures])` — every FIGURE inside `thing` lifted out as a thing of its own.
+
+    The convention that a thing is a Root child is right until a scene stands its character inside the
+    room: cyberpunk's apartment, the hotel maid's room, the classroom and the washroom all compose as ONE
+    thing holding walls, furniture and a woman, and a figure welded to a room cannot be placed, posed or
+    given a clip. `thing_notes` had detected that shape for a while and asked for a hand-written split
+    in `things.json`, once per capture. This does the split from the file itself, with no names:
+
+    * a **rig** is the smallest subtree above a skinned piece that holds every bone its skin names —
+      glTF and scene facts only;
+    * it is a **figure** when `best_humanoid` recovers a humanoid map from its container, the same test
+      that decides at import whether a thing is a character or "a pair of disembodied hands". A skinned
+      chain in a basement and a school of fish are rigs and not figures, and stay where they are;
+    * it is lifted only when the thing ALSO draws something outside it — a figure that is the whole
+      thing is already its own thing — and from the HIGHEST wrapper that draws nothing else, so a
+      placement node carrying her scale travels with her. On the classroom that is `ModelParent`,
+      exactly what the hand-written `things.json` entry for it named.
+
+    Anything hanging off the figure (a prop on a hand bone) is inside her subtree and goes with her.
+    Measured 2026-09-21: 8 figures lifted across the 78 captures, from 8 things, none of them in the
+    original twenty; 5 skinned rigs left in place because they are not humanoid.
+    """
+    tree = thing.tree
+    kids: dict[int, list[int]] = {}
+    for i, node in enumerate(tree):
+        if node.parent >= 0:
+            kids.setdefault(node.parent, []).append(i)
+
+    def below(i: int) -> set:
+        out, stack = set(), [i]
+        while stack:
+            j = stack.pop()
+            out.add(j)
+            stack.extend(kids.get(j, []))
+        return out
+
+    def depth(i: int) -> int:
+        n = 0
+        while tree[i].parent >= 0:
+            i, n = tree[i].parent, n + 1
+        return n
+
+    rigs: dict[int, set] = {}
+    for piece in thing.pieces:
+        joints = _skin_joints(build, piece.container).get(piece.mesh)
+        if not joints:
+            continue
+        at = piece.node
+        while at > 0 and not joints <= {tree[j].name for j in below(at)}:
+            at = tree[at].parent
+        rigs.setdefault(at, set()).add(piece.container)
+
+    lifted: list[tuple[int, str]] = []
+    taken: set = set()
+    for at in sorted(rigs, key=depth):
+        if at <= 0 or at in taken:
+            continue
+        inside = below(at)
+        if all(p.node in inside for p in thing.pieces):
+            continue                                      # the rig IS the thing
+        source = next((s for s in (_humanoid(build, c) for c in sorted(rigs[at])) if s), "")
+        if not source:
+            continue                                      # a rig, not a figure: stays in the room
+        top = at
+        while tree[top].parent > 0:
+            up = tree[top].parent
+            if any(p.node in below(up) and p.node not in below(top) for p in thing.pieces):
+                break
+            top = up
+        lifted.append((top, source))
+        taken |= below(top)
+    if not lifted:
+        return thing, []
+
+    rest = _walk(build, entities, tree[0].guid, thing.scene,
+                 skip=frozenset(tree[top].guid for top, _ in lifted))
+    figures = []
+    for top, source in lifted:
+        figure = _walk(build, entities, tree[top].guid, thing.scene)
+        # Placed in THIS scene only if everything between the room's root and her is switched on — the
+        # room's own flag included, since a catalogued room catalogues what stands in it.
+        chain, i = [], top
+        while i > 0:
+            chain.append(i)
+            i = tree[i].parent
+        figure.enabled = thing.enabled and all(tree[i].enabled for i in chain)
+        figure.lifted_by = source
+        figures.append(figure)
+    rest.lifted = [f.name for f in figures]
+    return rest, figures
+
+
+_SKIN_JOINTS: dict[tuple, dict] = {}
+_HUMANOID: dict[tuple, str] = {}
+
+
+def _skin_joints(build: Build, container: int) -> dict[int, frozenset]:
+    """`{mesh index: joint names}` for every skinned mesh in a container. Cached per build."""
+    key = id(build), int(container)
+    if key not in _SKIN_JOINTS:
+        out: dict[int, frozenset] = {}
+        path = build.path(container)
+        if path and os.path.exists(path):
+            try:
+                doc, _bin = split_glb(open(path, "rb").read())
+            except Exception:                            # noqa: BLE001 — a bad file has no skin
+                doc = None
+            nodes = (doc or {}).get("nodes") or []
+            skins = (doc or {}).get("skins") or []
+            for node in nodes:
+                mesh, skin = node.get("mesh"), node.get("skin")
+                if mesh is not None and skin is not None and skin < len(skins):
+                    out.setdefault(int(mesh), frozenset(
+                        nodes[j].get("name") for j in skins[skin].get("joints") or [] if j < len(nodes)))
+        _SKIN_JOINTS[key] = out
+    return _SKIN_JOINTS[key]
+
+
+def _humanoid(build: Build, container: int) -> str:
+    """Which discovery layer recognised this container as a humanoid, or "" if none did. Cached.
+
+    `figures.best_humanoid` — the import's own test for a character, gated by `validate()`.
+    """
+    key = id(build), int(container)
+    if key not in _HUMANOID:
+        from .figures import best_humanoid                  # noqa: PLC0415 — only when a rig is found
+        found = ""
+        path = build.path(container)
+        if path and os.path.exists(path):
+            try:
+                doc, blob = split_glb(open(path, "rb").read())
+                mapping, source, _follows = best_humanoid(doc, blob) if doc else (None, None, None)
+                found = (source or "humanoid") if mapping else ""
+            except Exception:                            # noqa: BLE001 — unreadable is not a figure
+                found = ""
+        _HUMANOID[key] = found
+    return _HUMANOID[key]
+
+
+def _walk(build: Build, entities: dict, guid: str, scene: str, *, skip: frozenset = frozenset()) -> Thing:
     """Collect one thing's subtree: the entity TREE, and the pieces hanging off it.
 
     The tree is kept whole (see `Node`) because it is what the composer builds nodes from. The per-piece
@@ -826,7 +1027,7 @@ def _walk(build: Build, entities: dict, guid: str, scene: str) -> Thing:
     stack = [(guid, (), (), True, (0.0, 0.0, 0.0), (1.0, 1.0, 1.0), False, "", -1)]
     while stack:
         g, path, chain, on, pos, scl, rot, parent, up = stack.pop()
-        if g not in entities:
+        if g not in entities or g in skip:
             continue
         entity = entities[g]
         thing.entities += 1
@@ -845,7 +1046,7 @@ def _walk(build: Build, entities: dict, guid: str, scene: str) -> Thing:
         if not path:
             thing.position, thing.rotation, thing.scale = p, r, s
         thing.tree.append(Node(name=label, parent=up, position=p, rotation=r, scale=s,
-                               enabled=entity.get("enabled") is not False))
+                               enabled=entity.get("enabled") is not False, guid=g))
         mine = len(thing.tree) - 1
         # The THING's own flag is consumed by `Thing.enabled` and must NOT propagate: at that level it
         # means "in the catalogue, not placed in this scene", which is the entire props library — all
@@ -1697,6 +1898,17 @@ def rebuild_build(root: str, out_dir: str, *, max_texture: int = 1024, quality: 
             stem = os.path.splitext(os.path.basename(path))[0]
             os.makedirs(out_dir, exist_ok=True)
             dest = os.path.join(out_dir, f"{stem}.glb")
+            # One output directory serves every build in the capture, and a file NAME is not unique
+            # across them — nor always within one. Measured 2026-09-21: 3 of the original twenty
+            # captures and 18 of the full set hold two different containers under one name, among
+            # them a whole character (`model_britney_witch_ready.glb`, 3.7 MB and 10.2 MB in the SAME
+            # build) and the launcher's `Dilda.glb` beside the scene's. Each second write replaced the
+            # first and nothing said so. The first keeps the plain name, so a capture with no clash
+            # writes exactly what it always did; a later one is suffixed with its asset id.
+            if dest in written:
+                dest = os.path.join(out_dir, f"{stem}~{container}.glb")
+                say(f"    ! {name}: another container in this capture is also named {stem}.glb — "
+                    f"written as {os.path.basename(dest)} rather than over it")
             open(dest, "wb").write(data)
             written.append(dest)
             grew = len(data) / max(1, os.path.getsize(path))

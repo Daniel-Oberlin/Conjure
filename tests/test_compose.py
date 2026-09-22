@@ -600,34 +600,121 @@ def test_a_file_name_is_made_safe_without_colliding(tmp_path):
     assert _safe("...") == "thing"
 
 
-def test_a_figure_welded_to_its_room_is_reported(tmp_path):
-    """teacher's `SchoolCorridor` is 394 entities holding BOTH the corridor and the teacher, so
-    converting it as one thing means she is not placeable at all — no clips, no rig, no figure.
+def _humanoid_bones():
+    """A skeleton `best_humanoid` genuinely accepts: `test_figures._skeleton`'s layout in Mixamo names.
 
-    susan is the same shape and was found by hand, weeks apart. The convention cannot decide this, but
-    it can SEE it, and one line of output is the difference between a person finding it and a figure
-    quietly disappearing at the next import.
+    The composer's own `BONES` are two bones, which is right for testing welds and deliberately NOT a
+    character — so a rule that lifts figures out of rooms has to be tested against a real one.
     """
-    from conjure.playcanvas import thing_notes
-    room = _glb([(f"wall{i}", [6]) for i in range(4)])
-    figure = _glb([("Body", [30])], bones=BONES, skinned=[0])
+    b = [("Hips", None, (0, 1.0, 0), None), ("Spine", 0, (0, 0.15, 0), None), ("Spine1", 1, (0, 0.25, 0), None),
+         ("Neck", 2, (0, 0.10, 0), None), ("Head", 3, (0, 0.25, 0), None)]
+    for side, sign in (("Left", 1), ("Right", -1)):
+        up = len(b)
+        b += [(f"{side}UpLeg", 0, (sign * 0.10, -0.05, 0), None), (f"{side}Leg", up, (0, -0.40, 0), None),
+              (f"{side}Foot", up + 1, (0, -0.40, 0), None), (f"{side}ToeBase", up + 2, (0, -0.05, 0.10), None)]
+        sh = len(b)
+        b += [(f"{side}Shoulder", 2, (sign * 0.05, 0.20, 0), None), (f"{side}Arm", sh, (sign * 0.08, 0, 0), None),
+              (f"{side}ForeArm", sh + 1, (sign * 0.25, 0, 0), None), (f"{side}Hand", sh + 2, (sign * 0.25, 0, 0), None)]
+        b += [(f"{side}Hand{f}1", sh + 3, (sign * 0.08, 0, i * 0.02), None)
+              for i, f in enumerate(("Index", "Middle", "Ring"))]
+    return b
+
+
+def _bone_tree(bones, under=None):
+    """The same skeleton as scene entities, as `_scene` spells a subtree: `under` hangs extras off a bone."""
+    under = under or {}
+
+    def node(i):
+        name, _parent, t, _r = bones[i]
+        kids = [node(j) for j, bone in enumerate(bones) if bone[1] == i]
+        return (name, {"position": list(t)}, kids + list(under.get(name, [])))
+    return node(0)
+
+
+def _room_with(tmp_path, *, rig_bones, wrapper=None, extra=()):
+    """A room of four walls with a skinned body standing in it — the shape of teacher's corridor."""
+    room = _glb([(f"wall{i}", [6]) for i in range(4)] + [("mug", [4])])
+    figure = _glb([("Body", [30])], bones=rig_bones, skinned=[0])
+    body = ("MainModelTeacher", {}, [_bone_tree(rig_bones, dict(extra)), ("Body", _render(11, 0, [30]), [])])
     tree = ("SchoolCorridor", {}, [
         ("EnvironmentVR", {}, [(f"wall{i}", _render(10, i, [30]), []) for i in range(4)]),
-        ("MainModelTeacher", {}, [("Body", _render(11, 0, [30]), [])]),
+        (wrapper, {"scale": [1.1, 1.1, 1.1]}, [body]) if wrapper else body,
     ])
     root = _build(tmp_path,
                   containers=[(10, "room.glb", "files/room.glb"), (11, "teacher.glb", "files/teacher.glb")],
-                  renders=[(10000 + i, f"wall{i}", 10, i) for i in range(4)] + [(11000, "Body", 11, 0)],
+                  renders=[(10000 + i, f"wall{i}", 10, i) for i in range(5)] + [(11000, "Body", 11, 0)],
                   glbs=[("files/room.glb", room), ("files/teacher.glb", figure)], scene_tree=tree)
-    build = read_build(root)
-    bare = {"exclude": [], "captures": {}}
-    assert any("welded to its environment" in n for n in thing_notes(build, rules=bare))
-    # Split, and the note goes away — the report is about the CHOICE, not about the geometry.
-    split = {"exclude": [], "captures": {"cap": {"scene.json": {"MainModelTeacher": "Teacher",
-                                                                "EnvironmentVR": "corridor"}}}}
-    notes = thing_notes(build, capture="cap", rules=split)
-    assert not any("welded" in n for n in notes), notes
-    assert sorted(t.name for t in things(build, capture="cap", rules=split)) == ["Teacher", "corridor"]
+    return read_build(root)
+
+
+BARE = {"exclude": [], "captures": {}}
+
+
+def test_a_figure_standing_in_its_room_is_lifted_out(tmp_path):
+    """cyberpunk's apartment, the hotel maid's room, the classroom and the washroom each composed as ONE
+    thing holding walls, furniture and a woman — and a figure welded to a room cannot be placed, posed or
+    given a clip. The split comes from the file: a rig the humanoid test recognises, inside a thing that
+    also draws other geometry."""
+    from conjure.playcanvas import thing_notes
+    build = _room_with(tmp_path, rig_bones=_humanoid_bones())
+    got = {t.name: t for t in things(build, rules=BARE)}
+    assert sorted(got) == ["MainModelTeacher", "SchoolCorridor"]
+    teacher, corridor = got["MainModelTeacher"], got["SchoolCorridor"]
+    assert [p.entity for p in teacher.pieces] == ["Body"]
+    assert sorted(p.entity for p in corridor.pieces) == [f"wall{i}" for i in range(4)]
+    assert teacher.lifted_from == "SchoolCorridor" and teacher.lifted_by == "convention:mixamo"
+    assert corridor.lifted == ["MainModelTeacher"]
+    assert any("LIFTED out of 'SchoolCorridor'" in n for n in thing_notes(build, rules=BARE))
+
+
+def test_a_lifted_figure_takes_the_wrapper_that_places_her(tmp_path):
+    """From the HIGHEST node that draws nothing else, so a placement wrapper carrying her scale goes with
+    her. On the classroom that is `ModelParent` — what its hand-written `things.json` entry named."""
+    build = _room_with(tmp_path, rig_bones=_humanoid_bones(), wrapper="ModelParent")
+    lifted = next(t for t in things(build, rules=BARE) if t.lifted_from)
+    assert lifted.name == "ModelParent" and lifted.scale == (1.1, 1.1, 1.1)
+
+
+def test_a_prop_on_her_hand_goes_with_her(tmp_path):
+    """Oktoberfest's beer hangs off `DEF-hand.R`: inside her subtree, so it is hers and not the room's."""
+    mug = ("mug", _render(10, 4, [30]), [])
+    build = _room_with(tmp_path, rig_bones=_humanoid_bones(), extra={"RightHand": [mug]})
+    got = {t.name: t for t in things(build, rules=BARE)}
+    assert sorted(p.entity for p in got["MainModelTeacher"].pieces) == ["Body", "mug"]
+    assert "mug" not in [p.entity for p in got["SchoolCorridor"].pieces]
+
+
+def test_a_rig_that_is_not_humanoid_stays_in_its_room(tmp_path):
+    """A skinned chain in a basement and a school of fish are rigs, not figures: fucked.in.basement's
+    `Chains` (52 bones) and underwater's three fish fail `best_humanoid` and stay where they are."""
+    from conjure.playcanvas import thing_notes
+    build = _room_with(tmp_path, rig_bones=BONES)
+    assert [t.name for t in things(build, rules=BARE)] == ["SchoolCorridor"]
+    assert any("no humanoid rig was found" in n for n in thing_notes(build, rules=BARE))
+
+
+def test_a_figure_that_is_the_whole_thing_is_left_alone(tmp_path):
+    figure = _glb([("Body", [30])], bones=_humanoid_bones(), skinned=[0])
+    tree = ("Teacher", {}, [_bone_tree(_humanoid_bones()), ("Body", _render(10, 0, [30]), [])])
+    root = _build(tmp_path, renders=[(10000, "Body", 10, 0)], glbs=[("files/body.glb", figure)],
+                  scene_tree=tree)
+    got = things(read_build(root), rules=BARE)
+    assert [(t.name, t.lifted_from) for t in got] == [("Teacher", "")]
+
+
+def test_a_reviewed_override_is_not_second_guessed(tmp_path):
+    """The rule proposes; `things.json` is the reviewed answer and wins wherever it speaks."""
+    build = _room_with(tmp_path, rig_bones=_humanoid_bones())
+    split = {"exclude": [], "captures": {"cap": {"scene.json": {"SchoolCorridor": "corridor"}}}}
+    got = things(build, capture="cap", rules=split)
+    assert [(t.name, t.lifted_from) for t in got] == [("corridor", "")], "named whole, kept whole"
+
+
+def test_a_lifted_figure_composes_and_verifies(tmp_path):
+    build = _room_with(tmp_path, rig_bones=_humanoid_bones(), wrapper="ModelParent")
+    for thing in things(build, rules=BARE):
+        data, notes = compose_thing(build, thing)
+        assert verify_thing(build, thing, data) == [], (thing.name, notes)
 
 
 def test_the_capture_name_is_not_in_the_bytes(tmp_path):
@@ -646,3 +733,114 @@ def test_the_capture_name_is_not_in_the_bytes(tmp_path):
     mark = _parse(first)["extras"]["conjure"]
     assert "capture" not in mark
     assert set(mark) == {"thing", "scene", "pieces", "hidden", "rebound", "containers", "shown"}
+
+
+# ---------------------------------------------------------------- situations the full set of 58 found
+
+
+def test_a_second_thing_with_the_same_name_does_not_overwrite_the_first(tmp_path):
+    """The guard said "never silently overwrite" and did the opposite: it only looked for a new name
+    when the file existed AND this run had not written it. So a second same-named thing overwrote the
+    first, and a re-run into the same directory suffixed every file instead of replacing it."""
+    import json
+    from conjure.compose import compose_build
+    root = _build(tmp_path, scene_tree=("unused", {}, []),
+                  renders=[(10000, "a", 10, 0), (10001, "b", 10, 1)],
+                  glbs=[("files/body.glb", _glb([("a", [3]), ("b", [4])]))])
+    # Two things with ONE name, side by side under Root — what `_scene` cannot express.
+    ents = {"r": {"name": "Root", "children": ["p1", "p2"]},
+            "p1": {"name": "Prop", "children": ["m1"]}, "m1": {"name": "mesh", "children": [], **_render(10, 0, [30])},
+            "p2": {"name": "Prop", "children": ["m2"]}, "m2": {"name": "mesh", "children": [], **_render(10, 1, [31])}}
+    (tmp_path / "scene.json").write_text(json.dumps({"entities": ents}))
+    out = str(tmp_path / "out")
+    for _run in range(2):
+        made, _problems = compose_build(root, out, decode=False)
+        assert sorted(os.path.basename(m) for m in made) == ["Prop-2.glb", "Prop.glb"]
+    assert sorted(os.listdir(out)) == ["Prop-2.glb", "Prop.glb"], "a re-run replaces, it does not pile up"
+
+
+def test_a_material_the_registry_never_had_does_not_fail_the_thing(tmp_path):
+    """fucked.in.basement binds a doorframe and two chains to material ids in no `config.json`. The site
+    draws those with its default material and so does a glTF primitive with none, so the file already
+    matches what runs; failing it made the capture exit 1 for something no re-download can change."""
+    tree = ("Chains", {}, [("Chain", _render(10, 0, [99999]), [])])
+    build, thing = _one(tree, tmp_path, renders=[(10000, "Chain", 10, 0)],
+                        glbs=[("files/body.glb", _glb([("Chain", [3])]))])
+    data, _notes = compose_thing(build, thing)
+    assert verify_thing(build, thing, data) == []
+
+
+def test_a_hidden_part_is_named_so_the_client_hides_exactly_it(tmp_path):
+    """The runtime hides by node name, after three's loader has renamed repeats `_1`, `_2`. rave.wc's
+    washroom has `Stall_Door` three times — a group, a switched-off door and a drawn one — and hiding
+    "Stall_Door" hid whichever loaded first. Pieces now get unique names; the scene's name is kept."""
+    from conjure.compose import loader_name
+    tree = ("Toalety", {}, [
+        ("Stall_Door", {}, [("stall", {}, [])]),                                   # a GROUP, not a piece
+        ("Blue", {}, [("Stall_Door", {**_render(10, 0, [30]), "enabled": False}, [])]),
+        ("White", {}, [("Stall_Door", _render(10, 1, [30]), [])]),
+    ])
+    build, thing = _one(tree, tmp_path, renders=[(10000, "a", 10, 0), (10001, "b", 10, 1)],
+                        glbs=[("files/body.glb", _glb([("a", [3]), ("b", [3])]))])
+    data, _notes = compose_thing(build, thing)
+    assert verify_thing(build, thing, data) == []
+    doc = _parse(data)
+    hidden = doc["extras"]["conjure"]["hidden"]
+    seen = [loader_name(n["name"]) for n in doc["nodes"]]
+    assert len(hidden) == 1 and seen.count(loader_name(hidden[0])) == 1
+    off = next(n for n in doc["nodes"] if n.get("name") == hidden[0])
+    assert off["extras"]["conjure"]["optional"] is True, "and it is the switched-off door that is hidden"
+    assert off["extras"]["conjure"]["entity"] == "Stall_Door", "the scene's own name is kept"
+    assert any(n.get("name") == "Stall_Door" and n.get("mesh") is None for n in doc["nodes"]), \
+        "the group keeps its name — only drawn pieces are renamed"
+
+
+def test_the_verifier_judges_a_hidden_name_as_the_client_will_load_it(tmp_path):
+    """Bianca's two `underwear` meshes were both in the list and both named `underwear`, so a raw-name
+    check passed while the loader called the second `underwear_1` and the runtime left it drawn."""
+    build, thing = _figure_build(tmp_path)
+    data, _n = compose_thing(build, thing)
+
+    def twin(doc):
+        doc["nodes"][_named(doc)["Dress"]]["name"] = "Slip"
+    assert any("cannot reach exactly this one" in p for p in verify_thing(build, thing, _tamper(data, twin)))
+
+    def dotted(doc):   # distinct raw names that the loader turns into one
+        doc["nodes"][_named(doc)["Dress"]]["name"] = "Sl.ip"
+        doc["nodes"][_named(doc)["Slip"]]["name"] = "Slip"
+        doc["extras"]["conjure"]["hidden"] = ["Slip"]
+    assert any("cannot reach exactly this one" in p for p in verify_thing(build, thing, _tamper(data, dotted)))
+
+
+def test_rigs_that_reuse_bone_names_each_keep_their_own_bones(tmp_path):
+    """underwater's MOVING group holds three fish, each its own subtree with its own `core`, `spine01`.
+    Bones keyed by name, first wins, skinned every fish to the FIRST fish's bones and drew them piled
+    onto it: 5 bones off each against the first fish, 0 against their own."""
+    small = [("core", None, (0.0, 0.0, 0.1), None), ("tail", 0, (0.0, 0.0, -0.1), None)]
+    large = [("core", None, (0.0, 0.0, 0.3), None), ("tail", 0, (0.0, 0.0, -0.3), None)]
+    tree = ("School", {}, [
+        ("fishA", {}, [("core", {"position": [0.0, 0.0, 0.1]}, [("tail", {"position": [0.0, 0.0, -0.1]}, [])]),
+                       ("bodyA", _render(10, 0, [30]), [])]),
+        ("fishB", {}, [("core", {"position": [0.0, 0.0, 0.3]}, [("tail", {"position": [0.0, 0.0, -0.3]}, [])]),
+                       ("bodyB", _render(11, 0, [30]), [])]),
+    ])
+    build, thing = _one(tree, tmp_path,
+                        containers=[(10, "fishA.glb", "files/a.glb"), (11, "fishB.glb", "files/b.glb")],
+                        renders=[(10000, "bodyA", 10, 0), (11000, "bodyB", 11, 0)],
+                        glbs=[("files/a.glb", _glb([("bodyA", [6])], bones=small, skinned=[0])),
+                              ("files/b.glb", _glb([("bodyB", [6])], bones=large, skinned=[0]))])
+    data, notes = compose_thing(build, thing)
+    assert verify_thing(build, thing, data) == [], notes
+    assert not any("DIFFERENT rest pose" in n for n in notes), "each fish agrees with its own rig"
+    doc = _parse(data)
+    parents = _parents(doc)
+
+    def under(i, top):
+        while i in parents:
+            i = parents[i]
+            if doc["nodes"][i]["name"] == top:
+                return True
+        return False
+    for body, fish in (("bodyA", "fishA"), ("bodyB", "fishB")):
+        skin = doc["skins"][doc["nodes"][_named(doc)[body]]["skin"]]
+        assert all(under(j, fish) for j in skin["joints"]), f"{body} is skinned to {fish}'s own bones"

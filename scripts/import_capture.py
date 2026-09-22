@@ -330,8 +330,14 @@ def run(capture: str, rebuilt: str, *, scope: str, library: AssetLibrary, cache:
         # A FIGURE, not merely something with a skin: `rig_sig` is only set when a humanoid map was
         # recovered, which is the difference between a character and a pair of disembodied hands.
         if result.attributes.get("rig_sig"):
-            build = next((by_container[int(c)] for c in (mark.get("containers") or {})
-                          if int(c) in by_container), None) or by_stem.get(os.path.splitext(file)[0])
+            stem = os.path.splitext(file)[0]
+            # `name~<asset id>` is the per-container output for a second container sharing a file
+            # name with another in the same capture (`rebuild_build`): the id says which one it is.
+            tail = stem.rpartition("~")[2]
+            build = (next((by_container[int(c)] for c in (mark.get("containers") or {})
+                           if int(c) in by_container), None)
+                     or (by_container.get(int(tail)) if "~" in stem and tail.isdigit() else None)
+                     or by_stem.get(stem))
             if build:
                 figures[build].append(asset_id)
             else:

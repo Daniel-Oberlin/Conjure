@@ -1247,3 +1247,64 @@ def test_a_textured_metal_is_not_a_mirror(tmp_path):
     m = material_from({"diffuseMap": ids["skin"], "opacity": 0.4, "useMetalness": True,
                        "metalness": 1, "useSkybox": True}, "chrome", tex)
     assert m["pbrMetallicRoughness"].get("baseColorFactor") != [0.0, 0.0, 0.0, 0.0]
+
+
+# ---------------------------------------------------------------- names a download rewrote
+
+
+def test_a_file_the_download_renamed_is_found_where_it_landed(tmp_path):
+    """The grabber cleans each path segment before Chrome saves it, and Chrome rewrites a little more.
+    Each rename leaves a file that is present, complete, and unreachable by the name the registry asks
+    for — and it read as NOT IN THIS CAPTURE. `TOOLS .glb` is the props container in nearly every
+    capture (21 of the original twenty, 68 across the full set of 58, measured 2026-09-21)."""
+    files = tmp_path / "files"
+    os.makedirs(files, exist_ok=True)
+    (files / "TOOLS.glb").write_bytes(_glb())                          # a space before the extension
+    (files / "BAKEFLOOR SpecularMap 2k.png").write_bytes(b"x")         # a run of spaces
+    (files / "door.001_door.001Action.glb").write_bytes(b"x")          # a character Chrome refuses
+    (files / "I love you. VR holes dot com.mp3").write_bytes(b"x")    # a run of dots
+    build = Build(root=str(tmp_path), assets={
+        1: {"id": "1", "type": "container", "name": "TOOLS .glb",
+            "file": {"filename": "TOOLS .glb", "url": "files/TOOLS%20.glb"}},
+        2: {"id": "2", "type": "texture", "name": "floor",
+            "file": {"filename": "BAKEFLOOR  SpecularMap 2k.png", "url": "files/BAKEFLOOR%20%20SpecularMap%202k.png"}},
+        3: {"id": "3", "type": "animation", "name": "door",
+            "file": {"filename": "door.001|door.001Action.glb", "url": "files/door.001%7Cdoor.001Action.glb"}},
+        4: {"id": "4", "type": "audio", "name": "line",
+            "file": {"filename": "I love you. VR holes dot com..mp3",
+                     "url": "files/I%20love%20you.%20VR%20holes%20dot%20com..mp3"}},
+    })
+    for aid, landed in [(1, "TOOLS.glb"), (2, "BAKEFLOOR SpecularMap 2k.png"),
+                        (3, "door.001_door.001Action.glb"), (4, "I love you. VR holes dot com.mp3")]:
+        assert os.path.basename(build.path(aid)) == landed
+    assert missing_files(build, kinds=("texture", "container", "animation", "audio")) == []
+
+
+def test_a_capture_that_kept_the_true_name_is_never_second_guessed(tmp_path):
+    """The renamed forms are tried only after the exact ones, so where both exist the registry's own
+    name wins — a rename is a fallback for a download that lost the name, not a rule about files."""
+    files = tmp_path / "files"
+    os.makedirs(files, exist_ok=True)
+    (files / "TOOLS .glb").write_bytes(b"the real one")
+    (files / "TOOLS.glb").write_bytes(b"something else entirely")
+    build = Build(root=str(tmp_path), assets={1: {
+        "id": "1", "type": "container", "name": "TOOLS .glb",
+        "file": {"filename": "TOOLS .glb", "url": "files/TOOLS%20.glb"}}})
+    assert os.path.basename(build.path(1)) == "TOOLS .glb"
+
+
+def test_two_containers_sharing_a_file_name_are_both_written(tmp_path):
+    """One output directory serves every build in a capture, and a file name is not unique across them
+    — nor always within one: `model_britney_witch_ready.glb` is two different containers, 3.7 MB and
+    10.2 MB, in the same build. The second write used to replace the first, silently."""
+    from conjure.playcanvas import rebuild_build
+    root = _build(tmp_path,
+                  containers=[(10, "Dilda.glb", "files/a/Dilda.glb"), (11, "Dilda.glb", "files/b/Dilda.glb")],
+                  renders=[(20, "a", 10, 0), (21, "b", 11, 0)],
+                  entities=[("a", 20, [30]), ("b", 21, [31])],
+                  glbs=[("files/a/Dilda.glb", _glb()), ("files/b/Dilda.glb", _glb())])
+    said = []
+    written = rebuild_build(root, str(tmp_path / "out"), decode=False, report=said.append)
+    assert len(written) == 2 and len(set(written)) == 2, written
+    assert sorted(os.path.basename(w) for w in written) == ["Dilda.glb", "Dilda~11.glb"]
+    assert any("also named Dilda.glb" in s for s in said), "and it says so"

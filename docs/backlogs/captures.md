@@ -323,6 +323,15 @@ them. It is not.
 Worth resolving before the full set is captured, because 47 files × every capture is either a large
 recurring hole or a line that can stop being printed.
 
+**Answered for the containers, 2026-09-21, over the full set of 58.** Of the three, one was never
+missing: `TOOLS .glb` was on disk as `TOOLS.glb` in every capture, a download rename the rebuild now
+resolves (next section). The other two are genuinely absent from every capture:
+`TOOLS%2520UPGRADE2.glb` — an asset whose NAME contains a literal `%20`, so its URL is encoded three
+deep (`TOOLS%252520UPGRADE2.glb`) — and `gothic_steel_dildo.glb`. Between them 176 props go unbuilt
+across the set (Fork, Lollipop and Vibrator1 from the first, Gothic from the second). Whether the triple
+encoding is why the grabber never saves the first is the obvious next question and has not been tested.
+The textures are down to 17 distinct files still absent.
+
 ## The extension drops a trailing SPACE from a filename, as it drops a run of dots (2026-09-17)
 
 Two manglings, same place — the characters just before the extension — and both write a file that is
@@ -346,3 +355,67 @@ the mirrored name stays as the record of the download). **Not fixed at source**,
 download that cannot round-trip the name it asked for is a producer bug, and the workaround only helps
 a capture that goes through `pcunpack`. Related: the same fix shape would cover whatever else the
 download pipeline normalises, which nobody has enumerated.
+
+**Enumerated and worked around in the rebuild too, 2026-09-21.** Five renamings, not two: whitespace
+runs collapse, `" * : < > ? |` become `_`, edge dots go (all the grabber's `cleanSegment`), plus Chrome's
+dot runs and space-before-extension. `Build.locate` now tries the names they produce after the exact
+ones — [`specs/captures.md`](../specs/captures.md) §3 — which recovered 21 containers across the original
+twenty captures and 68 across the 58. Still not fixed at source, and it still should be: every consumer
+of a capture now carries its own copy of the grabber's naming rule, and there are three.
+
+## The full set leaves 354 things unbuilt, every one for want of a download (2026-09-21)
+
+The rebuild over all 58 captures composes 755 things and SKIPS 354, each with the reason "not in this
+capture" — and in every case that is true: the registry declares the container, and it is on disk under
+no name at all, renamed or otherwise. None is a rebuild problem. By container:
+
+| container | things skipped | what it is |
+|---|---|---|
+| `TOOLS%2520UPGRADE2.glb` | 132 | three props in 44 captures; the name holds a literal `%20` (above) |
+| `gothic_steel_dildo.glb` | 44 | one prop, every capture that has the props library |
+| `MainModel{Basement,Toilet}…VER2.glb` | ~178 | skin-tone variants of the scene's character — 11 Basement, 12 Toilet |
+
+The `VER2` characters are new since the original twenty were captured: the site has updated those
+releases, and the scene now catalogues each variant as a disabled entity. The page loads only the one it
+shows, and the grabber offers every registry entry, so these were offered and not saved — the same "not
+ticked" cause as 2026-09-15, or a download that failed without saying so. Either way the fix is at
+capture time: they are character models, so a re-download with everything selected is worth one
+capture's test before the other 57.
+
+## A room is named after the scene that places it (2026-09-21)
+
+In the new captures the environment's Root entity carries the SCENE's title: the office is
+`Fastfood Blondie` in `hot.manager.in.office.vr`, the jet `Steward Pussy`, the temple `Greek Goddess` —
+where the original twenty called the same content `office`, `private-jet` and `greek-temple`. Each is the
+same file (same meshes, materials and size to the centimetre), and the importer labels by thing name, so
+a room would enter the catalog under a character's name. `captures/things.json` exists for exactly this
+kind of per-capture renaming; it wants the entries, and possibly a rule — a thing that is mostly static
+geometry and tens of metres across is not a character, whatever it is called.
+
+## The rest-pose check fires on pieces that are bound correctly (2026-09-21)
+
+`joints_agree` reports `model_britney_bride.glb` (both bride captures) and gothic.witch.hunt's
+`test2.glb` and `underwear.glb` as bound against a different rest — four of the five problems left over
+the 58. Each file's bone NODES are stored in a different pose from the scene's (123 of 222 rotations
+differ; translations agree), and that is all the check compares. What decides whether a skin sits right
+under the others is its BINDING: under a shared skeleton two pieces move together exactly when their
+inverse bind matrices agree up to one constant, which absorbs any difference of units or mesh space and
+does not depend on the pose at all. Measured on the composed files: her body against her dress, and the
+witch's body and underwear against her hair, **0.0 cm apart on all 222 bones**. So the composed files
+are right, and consistent with [`investigations/bride-eyelid.md`](../investigations/bride-eyelid.md),
+which found on device that the site binds every piece to one skeleton and that forcing the body back to
+its own rest made it far worse.
+
+Two measurements on the way were wrong and are worth not repeating: comparing each vertex's blend with
+its own dominant bone scores a rigidly misplaced limb as zero, and comparing against one common frame
+flags the dress too, because it measures that she is posed.
+
+**Proposed, not built:** judge weldability by bindings — inverse bind matrices up to one constant —
+instead of node transforms. It would clear all four and still catch a genuinely different rig. It
+reverses a documented decision (`specs/captures.md` §3: "comparing inverse bind matrices was the wrong
+question"), whose reason was the cm-versus-m difference the constant handles; decide before building.
+It says nothing about bride's missing left lower eyelid, which stays open in that investigation.
+
+Also found: `captures/things.json` renames bride's thing by the OLD capture name (`bride`), so in the new
+captures she composes as `bride_ready`. The same per-capture-name keying will miss every capture that
+arrived under a new folder name.
