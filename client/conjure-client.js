@@ -2175,6 +2175,24 @@
       // thin wrappers adapt it to the component's state (this._ref, this._regStat). See that file.
       _euler: function (q) { return window.SpaceSnap.eulerYXZ(AFRAME.THREE, q); },
       _yawOf: function (n) { return window.SpaceSnap.yawOf(n); },
+      // A rooms step threw. It must not cost the capture — segmentation and the residual probe are both
+      // strictly additive — but a swallowed exception needs somewhere READABLE to land, and a headset's
+      // console is not that: reaching it means chrome://inspect against a device someone is wearing, which
+      // is not a step anyone performs while debugging in AR. So it goes to the always-on geometry log,
+      // where a grep finds it afterwards, like every other fault on that lane.
+      //
+      // Once per distinct failure, since anything throwing here throws on every capture at ~0.5 Hz and a
+      // log that floods stops being affordable to leave running.
+      _roomFail: function (where, err) {
+        var msg = (err && (err.message || err)) + "";
+        var seen = this._roomFails = this._roomFails || {};
+        var key = where + ":" + msg;
+        console.warn("[conjure] room " + where + " failed", err);
+        if (seen[key]) return;
+        seen[key] = 1;
+        geoLog("room.error", { where: where, msg: msg.slice(0, 200) });
+      },
+
       // Per-room registration residuals → the geometry event log (§10). MEASURES ONLY: nothing here moves
       // a surface. The first increment of piecewise-rigid registration is finding out how large the
       // effect is in the field, because §1's ~9 cm is an aggregate over one space on one day.
@@ -2201,7 +2219,7 @@
         var rows;
         try {
           rows = window.SpaceSnap.roomResiduals(AFRAME.THREE, this._regRes, this._ref, roomOf);
-        } catch (err) { return; }
+        } catch (err) { this._roomFail("residuals", err); return; }
         var gate = WM.roomResidualGate(this._roomRes || {}, rows);
         this._roomRes = gate.next;
         gate.emit.forEach(function (r) {
@@ -3181,7 +3199,7 @@
         try {
           seg = window.SpaceSnap.segmentRooms(AFRAME.THREE, surfaces);
         } catch (err) {
-          console.warn("[conjure] room segmentation failed", err);       // never block the capture POST
+          this._roomFail("segment", err);                                // never block the capture POST
         }
         this._logRoomResiduals(seg);
         var reasons = [];

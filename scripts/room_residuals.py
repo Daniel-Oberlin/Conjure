@@ -66,6 +66,14 @@ def main() -> int:
         print("  → under ~0.02 m, the effect is real but not worth correcting (drop step 3).")
         print("  → near ~0.09 m, it is eating most of matchWall's 0.15 m identity budget (do step 3).")
 
+    err = _rows(day, "room.error")
+    if err:
+        print(f"\n=== room.error — a rooms step THREW ({len(err)} distinct) ===")
+        for e in err:
+            print(f"  {e.get('where')}: {e.get('msg')}")
+        print("  Logged once per distinct failure. Segmentation and the residual probe are additive, so")
+        print("  the capture still landed — but anything above means section A of the device run failed.")
+
     lv = _rows(day, "level.anomaly")
     print(f"\n=== level.anomaly — the independent estimate ({len(lv)} events) ===")
     if not lv:

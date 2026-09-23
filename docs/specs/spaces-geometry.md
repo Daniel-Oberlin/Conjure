@@ -776,6 +776,7 @@ it now confirms a measurement rather than an argument.
 | `churn.restyle_lost` | an id that used to render with a material now renders bare |
 | `level.census` / `.anomaly` | a floor/ceiling height moved >2 cm; a height moved relative to the rest of the space |
 | `track.reset` / `.lock` | reference-space recenter (boundary trip); lock lost or regained |
+| `room.error` | a rooms step threw — segmentation or the residual fit; once per distinct failure |
 | `room.residual` | a room's fit against the global transform first appears, moves >1 cm, or flips its verdict (§4.4) |
 | `void.establish` | a void world's canonical frame was established — wall count, held captures, `forced` (§4.1.2) |
 | `seed.add` / `.update` / `.prune` | the server's own view — a prune is where a surface's material is destroyed |

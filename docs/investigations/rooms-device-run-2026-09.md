@@ -64,8 +64,10 @@ section is meaningless.
 | # | Run this | Pass if | Result |
 |---|---|---|---|
 | A1 | watch terminal 1 while entering AR | a line like `[space] rooms: 3 group(s) → room_1, room_2, room_3` | |
-| A2 | headset browser console (`chrome://inspect` or the Quest devtools) | **no** `room segmentation failed` | |
+| A2 | `.venv/bin/python scripts/room_residuals.py` | **no** `room.error` section — if one appears it names which step threw | |
 | A3 | `.venv/bin/python -m conjure.ctl rooms` | three rooms listed, each with a `floor=` | |
+
+A2 needs no devtools on purpose. Reaching a Quest's console means `chrome://inspect` against a headset someone is wearing, which is not a step anyone performs mid-session — so a swallowed exception goes to the always-on geometry log instead, where a grep finds it afterwards.
 
 **If A1 never appears but A2 is clean**, there are now three causes, in the order they bite on a cold
 entry:
