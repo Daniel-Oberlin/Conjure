@@ -3224,6 +3224,28 @@
         });
         var bstr = boundary ? JSON.stringify(boundary) : null;
         if (bstr && bstr !== self2._postedBoundary) reasons.push("boundary");
+
+        // A SEGMENTATION the server does not have is a structural change too. Without this the rooms of a
+        // settled space are never sent at all: every other reason here is a change to the SURFACES, and a
+        // space that is already fully captured — the normal case on a return visit — has none. Measured
+        // 2026-09-23 on a three-room home: the one post of the session fired for a moved wall, before the
+        // load and select gates had let a capture through to segmentation, so `rooms` was null and the
+        // space ended the session with no rooms at all while the algorithm was working perfectly.
+        //
+        // Keyed on the floors, because a room IS its floor to the server (`rooms[].floor`), and compared
+        // against the record it broadcasts back. Self-limiting: once the server records them the floors
+        // match and this stops firing. `_postedRooms` is the backstop for the case where it never does —
+        // otherwise a segmentation the server rejects would post at the capture rate forever.
+        var segSig = seg && seg.rooms && seg.rooms.length
+          ? seg.rooms.map(function (r) { return r.floor; }).sort().join(",") : "";
+        if (segSig && segSig !== self2._postedRooms) {
+          var known = {};
+          Object.keys(spaceRooms).forEach(function (rid) {
+            if (spaceRooms[rid] && spaceRooms[rid].floor) known[spaceRooms[rid].floor] = 1;
+          });
+          if (seg.rooms.some(function (r) { return !known[r.floor]; })) reasons.push("rooms");
+        }
+
         if (!reasons.length) return;                                      // settled → nothing to POST
         var reason = reasons.join(", ");
 
@@ -3232,6 +3254,7 @@
         payload.forEach(function (s) { self2._posted[s.id] = { position: s.position, rotation: s.rotation,
           extent: s.extent, holes: (s.holes || []).length, semantic: s.semantic }; });
         if (bstr) self2._postedBoundary = bstr;
+        if (segSig) self2._postedRooms = segSig;
         if (window.CONJURE_DEBUG_REGISTRATION) debugLog("post", payload.length + " surfaces (" + reason + ")", true);
         fetch("/space/capture", {
           method: "POST",

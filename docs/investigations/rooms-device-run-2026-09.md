@@ -79,8 +79,11 @@ entry:
    `space.selected`; it is usually a few seconds.
 2. **The load gate is still holding** — *"Restoring your room…"*, below 60% of the seed. Also correct, and
    also transient.
-3. **The POST gate never fired** — a settled space posts nothing. Walk around, or leave and re-enter AR to
-   force a structural change.
+3. **The POST gate never fired** — a settled space posts nothing. Until 2026-09-23 this was fatal rather
+   than transient: every POST reason was a change to the SURFACES, and a fully-captured space has none,
+   so its rooms were never sent at all. A segmentation the server lacks is now a reason in its own
+   right, so this should self-resolve within a capture or two. If it does not, walk around to force a
+   structural change and say so — the reason was added for exactly this run's failure.
 
 Only the third needs anything from you. If the headset instead says *"step out of your play area and back
 in"*, that is the genuine lost-lock case and section A has failed for a reason that has nothing to do with
