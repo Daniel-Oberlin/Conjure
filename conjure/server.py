@@ -3711,7 +3711,12 @@ async def ingest_capture(req: CaptureUpdate) -> dict:
         await _broadcast({"type": "patch", "patch": patch})
 
     if geo_ops or wire_ops:
-        _slog("space", f"accept client={req.client_id} → {active_scope.split('/', 1)[0]}/{active_world} "
+        # `rooms=` says whether a SEGMENTATION arrived, not just how many surfaces did. Without it a
+        # capture that carries none and one that carries three are the same line, which cost a whole
+        # device run: the rooms never landed and the log could not say whether the client had sent them
+        # or the server had dropped them (2026-09-23).
+        nrooms = "none" if req.rooms is None else str(len(req.rooms))
+        _slog("space", f"accept client={req.client_id} rooms={nrooms} → {active_scope.split('/', 1)[0]}/{active_world} "
                       f"surfaces={len(req.surfaces)} changed={len(changed_ids)} seed_ops={len(geo_ops)} wire={len(wire_ops)}")
     return {"ok": True, "surfaces": len(req.surfaces), "authority": req.client_id}
 
