@@ -259,32 +259,41 @@ Disagreement says which room to look at — more than either gives alone. If the
 
 ---
 
-## H — did we break `main`?
+## H — does a branch that predates rooms strip the labels? (optional, once)
 
-The schema is additive by construction and was verified by reading `main`'s write paths. The point of a
-device run is to stop trusting that alone.
+**Superseded in its original form.** H used to ask whether `main` — which then had no rooms code — would
+drop `meta.room` and `space.rooms` from the shared space file. Since the merge there is no such `main`, so
+that version of the question answers itself.
+
+The hazard moved rather than went away. **Seven unmerged branches predate the rooms work and share the same
+live data dir**, and one of them is `feat/fix-floating-rooms` — the branch step 3 is most likely to reach
+for, since it carries the floating-room corrector. So the check is worth running once, against any of them,
+rather than discovered later by a lost room name.
+
+It is **not** covered by D3. That restarts the same server and proves the record round-trips to disk; this
+asks whether a writer that has never heard of `rooms` leaves it alone.
 
 ```bash
+git stash list >/dev/null; git checkout feat/fix-floating-rooms
+.venv/bin/python -m conjure            # enter AR, wait ~15 s, Ctrl-C
 git checkout main
-.venv/bin/python -m conjure            # enter AR, wait ~10 s, Ctrl-C
 .venv/bin/python -c "
-import json; d = json.load(open('$HOME/.local/share/conjure/users/daniel/spaces/space-1.json'))
-print('rooms record:', bool(d.get('rooms')), '|', len(d.get('rooms') or {}), 'rooms')
+import json, os
+d = json.load(open(os.path.expanduser('~/.local/share/conjure/users/daniel/spaces/space-1.json')))
+print('rooms record:', len(d.get('rooms') or {}), 'rooms')
 print('surfaces with meta.room:', sum(1 for s in d['surfaces'] if (s.get('meta') or {}).get('room')), '/', len(d['surfaces']))"
-git checkout feat/rooms
 ```
 
 | # | Check | Pass if | Result |
 |---|---|---|---|
-| H1 | `main` starts and the space loads | no error | |
-| H2 | `rooms record: True` | and the same count as before | |
-| H3 | `surfaces with meta.room` | unchanged from before the `main` run | |
-| H4 | back on `feat/rooms`, `ctl rooms` | names intact, no re-mint | |
+| H1 | the old branch starts and the space loads | no error | |
+| H2 | `rooms record:` | the same count as before the old-branch run | |
+| H3 | `surfaces with meta.room:` | unchanged | |
+| H4 | back on `main`, `ctl rooms` | names intact, no re-mint | |
 
-**If H2 says `False`,** `main` cleared it, and the identity tiers stop being a hedge and become
-load-bearing — tier 2 should recover the rooms by floor id on the next capture, which is what H4 shows.
-
----
+**If H2 or H3 dropped,** that branch cleared what it did not recognise, and the identity tiers stop being a
+hedge: tier 2 recovers the rooms by floor id on the next capture, which is what H4 shows. Then either merge
+`main` into those branches before using them, or accept the re-derivation each time.
 
 ## If something goes badly wrong
 
