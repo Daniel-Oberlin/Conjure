@@ -22,6 +22,24 @@ are settled.
 
 ---
 
+## `test_a_prop_on_her_hand_goes_with_her` is flaky — 1 run in 4
+
+Measured 2026-09-23: the full suite fails on that one assertion roughly once in
+four runs and passes in isolation every time, with and without unrelated edits.
+
+```
+assert sorted(p.entity for p in got["MainModelTeacher"].pieces) == ["Body", "mug"]
+KeyError: 'MainModelTeacher'
+```
+
+The key is sometimes absent entirely, which points at iteration order deciding a
+name rather than at the composition itself.
+
+Worth fixing above its apparent size. A flaky test is worse than a failing one:
+it trains everyone to re-run rather than read, and it cost real time here — a
+one-line logging change looked like it had broken compose until four runs showed
+the failure moving on its own.
+
 ## Open — seen in the headset, not reproducible from files
 
 ### Clip playback has not been run on a headset yet (2026-09-13)
