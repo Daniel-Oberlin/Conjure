@@ -218,6 +218,13 @@ the right room every time. **Every failure was in what it did next, never in wha
 as separate floor planes; an anchor resolving against the bedroom floor while the object stands over the
 living-room floor lands ~190 mm out, which matches models being buried to the neck. Unverified.
 
+**A first, partial observation, 2026-09-23.** With one floor dropped from the render set, two anchored
+models in the living room visibly relocated into the kitchen — metres, not 190 mm — with nothing written
+to the record. It is *not* confirmation: the run also restarted the server and re-entered AR, and a
+relocalization explains the same symptom. See *"Placed content moved ROOMS when one floor left the render
+set"* in [`backlogs/spaces-geometry.md`](../backlogs/spaces-geometry.md) for the experiment that separates
+the two.
+
 If that is real it is a **bug on `main`, independent of any correction**, and fixing it removes the *visible
 harm* — content in the wrong place — while leaving the floor cosmetically wrong. That is a far better
 trade than moving space geometry, and it is the cheaper thing to be right about.

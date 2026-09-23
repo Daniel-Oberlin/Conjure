@@ -65,6 +65,44 @@ Instrumented by [the geometry event log](#instrumentation--the-geometry-event-lo
 probe is unexercised; nothing is confirmed about which of the three causes fires, because none of them did.
 Worth noting the sessions were short and stationary-ish — the symptom is occasional by report.
 
+### Placed content moved ROOMS when one floor left the render set — observed, cause not established
+
+**Status:** observed once on device 2026-09-23. Nothing persisted. Cause **not** established, and there is
+a confound named below.
+
+Running with `--drop-surface real_floor_10` (the kitchen floor), two anchor-backed models standing in the
+**living room** — a `grounded` beagle and a `free` spaceship — visibly relocated into the **kitchen**.
+
+**Nothing was written.** Both entities' stored positions were unchanged, last touched by a grab commit the
+previous day, and both still resolve over `real_floor_8` by footprint. So this is the render-time anchor
+solve, not the record. A reload put them back.
+
+**Why it is worth keeping.** [`raised-floor.md`](../investigations/raised-floor.md) carries this as an
+inference nobody had tested:
+
+> *"all three floors enter the anchor solve as separate floor planes, so an anchor resolving against the
+> wrong floor lands ~190 mm out. Worth confirming — it would be a bug on main independent of any
+> correction… probably the highest-value next step here."*
+
+A room-crossing displacement is metres, not 190 mm. And a client failing to see a floor is not artificial:
+§6's recovery exists precisely because it happens.
+
+**What does not add up, and is the reason this is not filed as confirmed.** The beagle is `grounded`, whose
+XZ comes from multilateration against **walls** — the floor contributes height only (§5.3). A missing floor
+should move it vertically, not into another room. That it moved horizontally says either the wall set or
+the solve's conditioning changed too, or something other than the missing floor is responsible.
+
+**The confound:** the server was restarted and AR re-entered in the same step, and this session logged
+seven `track.reset` events. A relocalization on re-entry moves content on its own, and would look identical
+from inside the headset.
+
+**How to separate them,** and it is cheap: enter AR normally, confirm the models are in the living room,
+then restart with `--drop-surface` on the kitchen floor **without leaving the play area**, and watch whether
+they move at the moment the flag takes effect rather than at re-entry. If they hold still, this is the
+relocalization and the entry closes. If they cross the boundary, the anchor solve is far more floor-
+sensitive than §5.1 claims and the raised-floor inference is confirmed with a much larger number than it
+predicted.
+
 ### A room's floor floats — **diagnosed, device-side; no fix on main**
 
 **Status:** cause established. Detected and measured; **not corrected.** The full campaign, including four
