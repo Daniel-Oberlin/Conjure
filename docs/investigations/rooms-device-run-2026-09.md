@@ -160,14 +160,26 @@ resolution is the only thing protecting it.
 | D1 | `ctl name-room "room 1" kitchen` then `ctl rooms` | the *right physical room* is now `kitchen` | ✅ `room #3 → kitchen`, and `style kitchen` then hit 27 surfaces, all room_3 |
 | D2 | take the headset off, put it back on, `ctl rooms` | still `kitchen`, same room | ✅ client restart 16:06 — `rooms=3`, **1 label op**, same rooms on the same floors |
 | D3 | Ctrl-C the server, restart it, re-enter AR, `ctl rooms` | still `kitchen` — proves it reached the space file | ✅ server restarted 16:13:33, last capture 16:06:17 — the record came off the **space file** via `_compose`, no capture to re-resolve it; live doc identical to disk, 66/66 labels composed in |
-| D4 | see below | **still `kitchen`** | |
+| D4 | see below | **still `kitchen`**, on the ten-shelf room | ⏳ attempted 2026-09-23, but no room had been named and the dropped floor was another room's — see the corrected steps |
 
 ```bash
-# D4 — the real test. Restart the server pretending that room's FLOOR was never captured, which forces
-# identity onto surface-set overlap alone (tier 1) because the recorded defining floor is gone.
-# Use the floor id `ctl rooms` printed for the kitchen.
-.venv/bin/python -m conjure --drop-surface real_floor_8
-# …re-enter AR, wait ~10s, then:
+# D4 — the real test, in four steps. Do NOT skip step 1: without a name there is nothing for this to
+# preserve, and the run proves only that segmentation still works.
+
+# 1. NAME a room, and note the floor id `ctl rooms` prints for THAT room.
+.venv/bin/python -m conjure.ctl name-room "room 3" kitchen
+.venv/bin/python -m conjure.ctl rooms            # → kitchen [room_3] floor=real_floor_10
+
+# 2. Restart pretending THAT room's floor was never captured — the id from step 1, not the one below.
+#    (An earlier version of this file hardcoded real_floor_8 here while telling you to use the kitchen's,
+#    which in this space is a different room. Read the id off step 1.)
+.venv/bin/python -m conjure --geometry-log-days 0 --drop-surface real_floor_10
+
+# 3. Enter AR and stay in for ~30 s. The surface does not vanish on the first capture: `_known` is seeded
+#    from the persisted doc, so it takes the three-capture absence debounce before it is really gone.
+#    Wait for a `[space] accept` whose surface count has DROPPED to 65.
+
+# 4. Only then:
 .venv/bin/python -m conjure.ctl rooms
 ```
 
