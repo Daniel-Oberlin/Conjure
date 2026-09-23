@@ -3249,16 +3249,24 @@
         //
         // Keyed on the floors, because a room IS its floor to the server (`rooms[].floor`), and compared
         // against the record it broadcasts back. Self-limiting: once the server records them the floors
-        // match and this stops firing. `_postedRooms` is the backstop for the case where it never does —
-        // otherwise a segmentation the server rejects would post at the capture rate forever.
+        // match and this stops firing. The try counter below is the backstop for the case where it never
+        // does — otherwise a segmentation the server rejects would post at the capture rate forever.
         var segSig = seg && seg.rooms && seg.rooms.length
           ? seg.rooms.map(function (r) { return r.floor; }).sort().join(",") : "";
-        if (segSig && segSig !== self2._postedRooms) {
-          var known = {};
-          Object.keys(spaceRooms).forEach(function (rid) {
-            if (spaceRooms[rid] && spaceRooms[rid].floor) known[spaceRooms[rid].floor] = 1;
-          });
-          if (seg.rooms.some(function (r) { return !known[r.floor]; })) reasons.push("rooms");
+        var ackSig = Object.keys(spaceRooms).map(function (rid) {
+          return spaceRooms[rid] && spaceRooms[rid].floor;
+        }).filter(Boolean).sort().join(",");
+        if (segSig && segSig !== ackSig) {
+          // Compared against what the SERVER acknowledges, not against what we last sent. Keying on our
+          // own segmentation was wrong in the one direction that matters: if the server loses or changes
+          // the record while our floors stay the same — a pre-rooms branch stripping it, a hand-edit, the
+          // record simply never landing — the client would sit on an unchanged segmentation and never
+          // re-send it. Found 2026-09-23 by a test that changed the record and watched nothing happen.
+          if (self2._roomsAck !== ackSig) { self2._roomsAck = ackSig; self2._roomsTries = 0; }
+          if ((self2._roomsTries || 0) < 5) {        // the server is not recording it; stop asking
+            self2._roomsTries = (self2._roomsTries || 0) + 1;
+            reasons.push("rooms");
+          }
         }
 
         if (!reasons.length) return;                                      // settled → nothing to POST
@@ -3269,7 +3277,7 @@
         payload.forEach(function (s) { self2._posted[s.id] = { position: s.position, rotation: s.rotation,
           extent: s.extent, holes: (s.holes || []).length, semantic: s.semantic }; });
         if (bstr) self2._postedBoundary = bstr;
-        if (segSig) self2._postedRooms = segSig;
+
         if (window.CONJURE_DEBUG_REGISTRATION) debugLog("post", payload.length + " surfaces (" + reason + ")", true);
         fetch("/space/capture", {
           method: "POST",
