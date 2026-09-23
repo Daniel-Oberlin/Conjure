@@ -158,8 +158,8 @@ resolution is the only thing protecting it.
 | # | Run this | Pass if | Result |
 |---|---|---|---|
 | D1 | `ctl name-room "room 1" kitchen` then `ctl rooms` | the *right physical room* is now `kitchen` | ✅ `room #3 → kitchen`, and `style kitchen` then hit 27 surfaces, all room_3 |
-| D2 | take the headset off, put it back on, `ctl rooms` | still `kitchen`, same room | |
-| D3 | Ctrl-C the server, restart it, re-enter AR, `ctl rooms` | still `kitchen` — proves it reached the space file | |
+| D2 | take the headset off, put it back on, `ctl rooms` | still `kitchen`, same room | ✅ client restart 16:06 — `rooms=3`, **1 label op**, same rooms on the same floors |
+| D3 | Ctrl-C the server, restart it, re-enter AR, `ctl rooms` | still `kitchen` — proves it reached the space file | ✅ server restarted 16:13:33, last capture 16:06:17 — the record came off the **space file** via `_compose`, no capture to re-resolve it; live doc identical to disk, 66/66 labels composed in |
 | D4 | see below | **still `kitchen`** | |
 
 ```bash
@@ -225,7 +225,7 @@ are painted, and only passthrough shows that. E3 is the important one: an unreso
 |---|---|---|---|
 | F1 | stand in each room in turn, run `ctl rooms` each time | the `← is here` marker names the room you are in | ✅ `← daniel is here` on room #3 (kitchen) — confirm that is where you were |
 | F2 | walk to another room, wait ~2 s, run it again | it follows you | |
-| F3 | take the headset off, run it again | **no** `← is here` marker anywhere | |
+| F3 | take the headset off, run it again | **no** `← is here` marker anywhere | ✅ `whereami standing: {}` with no headset in AR |
 
 F3 is a real assertion: only an AR client reports a floor, so the honest answer for a CLI user is that
 nobody is standing anywhere. A marker that persists after the headset is off means stale state.
@@ -378,8 +378,13 @@ the same room by a completely separate path — but at −51 mm against the fit'
 *which* room and differ ~5× on *how much*, which is exactly the disagreement G5 was built to surface. That
 is the open question this run produced.
 
-**Still to run:** D2–D4 (does a name survive a re-entry, a restart, and losing its defining floor), F2–F3,
-and H. D is the only section where failure loses something unrecoverable.
+**Still to run:** **D4** — `--drop-surface` on a room's defining floor, which forces identity onto
+surface-set overlap alone. It is the last section where failure loses something unrecoverable, and the
+only one that exercises the tier the design was argued around. Also F2 and the optional H.
+
+D3 passed in its strongest form: the server was restarted **after** the last capture, so the rooms it
+served came off the space file rather than from a re-resolution that would have hidden a broken
+round-trip.
 
 Two defects this run found, both fixed: segmentation ran after the capture pass strips `_lp`/`_lq` off the
 surface array, so it silently found nothing on every capture; and an unresolvable `room=` blamed the target
