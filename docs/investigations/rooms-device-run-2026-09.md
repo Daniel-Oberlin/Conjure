@@ -160,7 +160,7 @@ resolution is the only thing protecting it.
 | D1 | `ctl name-room "room 1" kitchen` then `ctl rooms` | the *right physical room* is now `kitchen` | ✅ `room #3 → kitchen`, and `style kitchen` then hit 27 surfaces, all room_3 |
 | D2 | take the headset off, put it back on, `ctl rooms` | still `kitchen`, same room | ✅ client restart 16:06 — `rooms=3`, **1 label op**, same rooms on the same floors |
 | D3 | Ctrl-C the server, restart it, re-enter AR, `ctl rooms` | still `kitchen` — proves it reached the space file | ✅ server restarted 16:13:33, last capture 16:06:17 — the record came off the **space file** via `_compose`, no capture to re-resolve it; live doc identical to disk, 66/66 labels composed in |
-| D4 | see below | **still `kitchen`**, on the ten-shelf room | ⏳ attempted 2026-09-23, but no room had been named and the dropped floor was another room's — see the corrected steps |
+| D4 | see below | **still `kitchen`**, on the ten-shelf room | ✅ **PASSED** — with `room_3.floor` pointed at a nonexistent id, `kitchen` stayed on the ten-shelf room and the record self-repaired to `real_floor_10`. Tier 1 alone. |
 
 ```bash
 # D4 — the real test, in four steps. Do NOT skip step 1: without a name there is nothing for this to
@@ -390,9 +390,17 @@ the same room by a completely separate path — but at −51 mm against the fit'
 *which* room and differ ~5× on *how much*, which is exactly the disagreement G5 was built to surface. That
 is the open question this run produced.
 
-**Still to run:** **D4** — `--drop-surface` on a room's defining floor, which forces identity onto
-surface-set overlap alone. It is the last section where failure loses something unrecoverable, and the
-only one that exercises the tier the design was argued around. Also F2 and the optional H.
+**Still to run:** F2 (does the marker follow you between rooms) and the optional H. Neither can lose
+anything.
+
+**D4 passed**, and the method had to be corrected twice to get there. `--drop-surface` was the wrong tool:
+it is used at exactly one line, guarding `localSurfaces.push` — it hides a surface from what the headset
+RENDERS, not from the POST, so the floor went transparent while the seed kept it and nothing was ever
+tested. It exists to exercise recovery (§6), not pruning.
+
+What tests tier 1 is breaking tier 2 directly: point `rooms.<id>.floor` at an id that names nothing, keep
+the name, and see whether overlap still lands it on the right room. It did, and the record repaired its own
+floor on the next capture.
 
 D3 passed in its strongest form: the server was restarted **after** the last capture, so the rooms it
 served came off the space file rather than from a re-resolution that would have hidden a broken
