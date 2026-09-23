@@ -3201,6 +3201,21 @@
         } catch (err) {
           this._roomFail("segment", err);                                // never block the capture POST
         }
+        // Segmentation produced nothing from a non-empty capture. `segmentRooms` opens a room for EVERY
+        // floor unconditionally, so zero rooms means it saw no surface it considered a floor — and the same
+        // space's stored seed segments into three. Report what the LIVE array actually held, because that
+        // is the only difference left and two rounds of reading the code did not find it (2026-09-23).
+        if (surfaces.length && (!seg || !seg.rooms || !seg.rooms.length) && !this._roomEmptyLogged) {
+          this._roomEmptyLogged = 1;
+          var tally = {}, noLp = 0, noExt = 0;
+          surfaces.forEach(function (x) {
+            tally[x.semantic] = (tally[x.semantic] || 0) + 1;
+            if (!x._lp || !x._lq) noLp++;
+            if (!x.extent) noExt++;
+          });
+          geoLog("room.empty", { n: surfaces.length, sem: tally, noPose: noLp, noExtent: noExt,
+                                 has: typeof (window.SpaceSnap && window.SpaceSnap.segmentRooms) });
+        }
         this._logRoomResiduals(seg);
         var reasons = [];
         Object.keys(self2._known).forEach(function (id) {                 // debounced removals (3 misses)

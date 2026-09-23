@@ -66,6 +66,14 @@ def main() -> int:
         print("  → under ~0.02 m, the effect is real but not worth correcting (drop step 3).")
         print("  → near ~0.09 m, it is eating most of matchWall's 0.15 m identity budget (do step 3).")
 
+    empty = _rows(day, "room.empty")
+    if empty:
+        print(f"\n=== room.empty — segmentation saw no floor ({len(empty)}) ===")
+        for e in empty:
+            print(f"  {e.get('n')} surfaces, segmentRooms={e.get('has')}, "
+                  f"{e.get('noPose')} without a pose, {e.get('noExtent')} without extent")
+            print(f"  semantics: {json.dumps(e.get('sem'))}")
+
     err = _rows(day, "room.error")
     if err:
         print(f"\n=== room.error — a rooms step THREW ({len(err)} distinct) ===")
