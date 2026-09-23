@@ -321,6 +321,43 @@ cp /tmp/space-1.backup.json ~/.local/share/conjure/users/daniel/spaces/space-1.j
 
 ---
 
+## Second session, and what two sessions settle
+
+A client restart (page reload + headset re-entry, server untouched) at 16:06 re-entered cleanly:
+`rooms=3`, and **1 label op** — the labels were already right, so only one surface needed touching. The
+same three rooms on the same three floors. **That is D2, passed.** D3 still wants a *server* restart, which
+would prove the record reads back off the space file rather than out of memory.
+
+**G1, settled, both sessions:**
+
+| | room_1 | room_2 | room_3 |
+|---|---|---|---|
+| session 1 | 0.0158 | 0.0146 | 0.0145 |
+| session 2 | 0.0054 | 0.0100 | 0.0052 |
+
+**5–16 mm, converging, in two independent sessions.** This document's threshold for acting is 20 mm, and
+the transient that opens each session at 150–170 mm is a whole-space tracking settle — all three rooms decay
+together on one curve. **The recommendation is to drop step 3**, not defer it: the effect is real, it is
+measured, and it is under the bar the plan set for itself before any of it was built.
+
+**G5 answered, and not the way it was framed.** The premise was that `level.anomaly` and the fit's `dy`
+would name the same room at a similar size. At settle they do not: the detector fires on
+`real_ceiling_25` at **+71 mm** while every room's `dy` is within **4 mm** of zero.
+
+That is not a contradiction, it is the two probes measuring different things, and the run is what made it
+obvious:
+
+- **`levelDeviation`** finds *one surface* displaced relative to the rest of the space.
+- **`roomResiduals`** fits a *rigid translation of a whole room*.
+
+A single ceiling 71 mm out is, to a 22-surface rigid fit, one outlier to be averaged away — correctly, since
+one surface moving is not the room moving. They agreed during the transient only because everything was
+moving at once.
+
+So **`dy` is not a proxy for the floating-room fault**, and the cross-check works in one direction only: if
+the fit *does* show a large per-room `dy`, that is a whole-room displacement and the detector should
+corroborate it. The reverse does not follow.
+
 ## Where it stands — 2026-09-23
 
 **A, B, C, E and G are done and pass.** Segmentation reproduces the ground truth exactly: three rooms,

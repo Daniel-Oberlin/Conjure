@@ -260,7 +260,13 @@ have no room and should say so rather than guess.
 
    **Nothing has been read on device.** The whole point of this increment is the field data, and there is
    none yet — every number so far is from synthetic pairs and the golden capture.
-3. **Apply the refinement**, with the guards above.
+3. **Apply the refinement** — ⛔ **recommend DROPPING, on the measurement it was deferred for.** Two device
+   sessions (2026-09-23) settle the inter-room residual at **5–16 mm** per room, against the 20 mm bar this
+   plan set for itself before anything was built. The 150–170 mm each session opens with is a whole-space
+   tracking settle, not per-room non-rigidity: all three rooms decay together on one curve. The refinement
+   does still halve what remains, so this is "real and small", not "absent" — but it has to argue for
+   itself now, and the argument it was going to make has been measured away. See
+   [`investigations/rooms-device-run-2026-09.md`](../investigations/rooms-device-run-2026-09.md) §G.
 4. **Per-room boundary**, separately: it changes a schema with two consumers and deserves its own increment.
 
 Step 1 is verifiable with no device. `fixtures/golden-space.json` is 45 surfaces across two rooms — a known
