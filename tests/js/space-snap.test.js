@@ -1447,3 +1447,23 @@ test("roomResiduals bounds x/z and y separately, because they fail differently",
   const wideFault = RS.roomResiduals(THREE, pairs(ref, [0.28, 0, 0]), ref, roomOf)[0];
   assert.equal(wideFault.ok, false, "0.28 m of GROUND offset is a bad lock");
 });
+
+test("segmentRooms on pose-stripped surfaces finds NOTHING — the trap that cost three device runs", () => {
+  // `surfaces` in the capture pass doubles as the POST payload, and the client strips `_lp`/`_lq` off it
+  // before serialising. Segmenting after that strip hands this function a complete-looking set — right
+  // semantics, right extents, floors present — with no poses, and it opens no rooms. Silently, because a
+  // space with no floors is a legitimate answer, so nothing throws and nothing logs.
+  //
+  // This pins the shape rather than the call site, which no unit test can reach. What found it on device
+  // was the `room.empty` diagnostic reporting "66 surfaces, 66 without a pose".
+  const posed = twoRooms();
+  assert.equal(RS.segmentRooms(THREE, posed).rooms.length, 2, "posed: two rooms");
+
+  const stripped = twoRooms().map((s) => {
+    const c = Object.assign({}, s); delete c._lp; delete c._lq; return c;
+  });
+  assert.equal(stripped.filter((s) => s.semantic === "floor").length, 2, "the floors are still there");
+  assert.equal(stripped.every((s) => s.extent), true, "and so are the extents");
+  assert.equal(RS.segmentRooms(THREE, stripped).rooms.length, 0,
+               "yet no rooms — indistinguishable from a space that has none");
+});

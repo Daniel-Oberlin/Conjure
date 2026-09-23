@@ -3167,6 +3167,24 @@
           var rr = refById[s.id];                                        // stamp onto _ref for next capture's match
           if (rr) { rr.hostWall = s.hostWall; rr.anchor = { along: anc.along, vertical: anc.vertical }; }
         });
+        // Rooms (plans/rooms.md). HERE, not after the line below: `surfaces` is the POST payload, and the
+        // next statement strips `_lp`/`_lq` off it before serialising. Segmenting after that hands
+        // `segmentRooms` a set with no poses, so `placed` is empty and it opens no rooms — silently, since
+        // a space with no floors is a legitimate answer. Three device runs and two passes over the code
+        // read as "the algorithm found nothing" before the diagnostic said 66 surfaces, 66 without a pose.
+        //
+        // The order that matters is: joinCorners → sealWalls → snapInsets → inset anchors → SEGMENT → strip.
+        // Segmentation needs hostWall (insets ride their recorded wall) and the sealed geometry, so it
+        // cannot move earlier either; this is the one window where the array is both complete and posed.
+        //
+        // Groups, never per-surface labels: which PERSISTENT room a group is belongs to the server
+        // (conjure/rooms.py), and a client cannot know it — its own ids are all it has.
+        var seg = null;
+        try {
+          seg = window.SpaceSnap.segmentRooms(AFRAME.THREE, surfaces);
+        } catch (err) {
+          this._roomFail("segment", err);                                // never block the capture POST
+        }
         surfaces.forEach(function (s) { delete s._lp; delete s._lq; });
         if (JIT) this._jMark("authO");                    // owner: joinCorners + snapInsets + inset-anchor authoring
         this.lastPost = time;
@@ -3183,24 +3201,6 @@
         var self2 = this, curById = {};
         surfaces.forEach(function (s) { curById[s.id] = s; self2._absent[s.id] = 0; self2._known[s.id] = s; });
 
-        // Rooms (docs/backlogs/spaces-geometry.md, *rooms as a first-class unit*). Segment the LIVE
-        // capture, not `_known`: `_known` is seeded from the persisted doc on entry, whose entries carry
-        // `position`/`rotation` rather than the `_lp`/`_lq` the geometry needs. Surfaces in `_known` but
-        // absent from this capture simply keep the labels they have — the server only relabels ids this
-        // segmentation actually names.
-        //
-        // Groups, never per-surface labels: which PERSISTENT room a group is belongs to the server
-        // (conjure/rooms.py), and a client cannot know it — its own ids are all it has.
-        //
-        // Computed BEFORE the POST gate below, which returns early on a settled space. The residual
-        // reading wants a settled space most of all — that is when a stable inter-room offset is real
-        // rather than a capture still arriving.
-        var seg = null;
-        try {
-          seg = window.SpaceSnap.segmentRooms(AFRAME.THREE, surfaces);
-        } catch (err) {
-          this._roomFail("segment", err);                                // never block the capture POST
-        }
         // Segmentation produced nothing from a non-empty capture. `segmentRooms` opens a room for EVERY
         // floor unconditionally, so zero rooms means it saw no surface it considered a floor — and the same
         // space's stored seed segments into three. Report what the LIVE array actually held, because that

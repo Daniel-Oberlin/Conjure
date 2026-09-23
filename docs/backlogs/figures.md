@@ -22,23 +22,26 @@ are settled.
 
 ---
 
-## `test_a_prop_on_her_hand_goes_with_her` is flaky — 1 run in 4
+## `tests/test_compose.py` is flaky — roughly 2 runs in 5, and it moves
 
-Measured 2026-09-23: the full suite fails on that one assertion roughly once in
-four runs and passes in isolation every time, with and without unrelated edits.
+Measured 2026-09-23. It is the **module**, not one assertion: repeated runs fail
+on different tests, and `test_compose.py` on its own fails about two runs in five
+with nothing else in the process.
 
-```
-assert sorted(p.entity for p in got["MainModelTeacher"].pieces) == ["Body", "mug"]
-KeyError: 'MainModelTeacher'
-```
+Seen so far:
 
-The key is sometimes absent entirely, which points at iteration order deciding a
-name rather than at the composition itself.
+- `test_a_prop_on_her_hand_goes_with_her` — `KeyError: 'MainModelTeacher'`, the
+  key absent entirely rather than holding the wrong value
+- `test_a_lifted_figure_takes_the_wrapper_that_places_her`
+
+A key that is sometimes missing altogether points at iteration order deciding a
+name — a dict or set walked in whatever order it comes out in, with the first or
+last writer winning.
 
 Worth fixing above its apparent size. A flaky test is worse than a failing one:
-it trains everyone to re-run rather than read, and it cost real time here — a
-one-line logging change looked like it had broken compose until four runs showed
-the failure moving on its own.
+it trains everyone to re-run rather than read. It has already cost time twice
+here, once looking like a one-line logging change had broken compose, and once
+during a rooms fix where the only real question was whether the suite was green.
 
 ## Open — seen in the headset, not reproducible from files
 
