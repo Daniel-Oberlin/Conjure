@@ -3744,7 +3744,10 @@ async def texture_surface(req: TextureSurfaceRequest) -> dict:
     rec, _, err = _get_image(req.image_id)
     if err:
         return {"ok": False, "error": err}
-    targets = _surface_targets(req.target, req.room)
+    try:
+        targets = _surface_targets(req.target, req.room)
+    except UnknownRoom as e:
+        return {"ok": False, "error": f"no room {e.room!r} — try query_space to see them"}
     if not targets:
         return {"ok": False, "error": f"no real surface matches {req.target!r} (try query_space)"}
     mat = {"components.material.src": rec.url, "components.material.shader": "flat",
@@ -3807,6 +3810,17 @@ def _real_surface_match(e: dict, target: str) -> bool:
     return bool(rid and m.get("room") == rid)
 
 
+class UnknownRoom(Exception):
+    """A `room=` scope that names no room. Raised rather than returned as an empty match so the caller can
+    say WHICH half failed: "no surface matches 'all'" blames the target for a scope that did not resolve,
+    which is the opposite of the truth and sends the reader looking at the wrong thing (found on device
+    2026-09-23, where the message for `--room attic` read as though `all` were the problem)."""
+
+    def __init__(self, room: str):
+        super().__init__(room)
+        self.room = room
+
+
 def _surface_targets(target: str, room: Optional[str] = None) -> list[dict]:
     """Real surfaces matching `target` (see _real_surface_match), optionally narrowed to one room.
 
@@ -3820,7 +3834,7 @@ def _surface_targets(target: str, room: Optional[str] = None) -> list[dict]:
     if room:
         rid = _room_id_for(room)
         if not rid:
-            return []
+            raise UnknownRoom(room)
         out = [e for e in out if (e.get("meta") or {}).get("room") == rid]
     return out
 
@@ -3846,7 +3860,10 @@ async def show_surface(req: ShowSurfaceRequest) -> dict:
     Exists so visibility resolves targets HERE, through `_surface_targets`, like every other surface tool.
     The MCP layer used to do its own matching, which quietly meant a weaker vocabulary for this one tool:
     no `wall 4` form and, once rooms landed, no rooms either. One chokepoint or it is not a chokepoint."""
-    targets = _surface_targets(req.target, req.room)
+    try:
+        targets = _surface_targets(req.target, req.room)
+    except UnknownRoom as e:
+        return {"ok": False, "error": f"no room {e.room!r} — try query_space to see them"}
     if not targets:
         return {"ok": False, "error": f"no real surface matches {req.target!r} (try query_space)"}
     patch = store.apply_patch([{"op": "update", "id": e["id"],
@@ -3867,7 +3884,10 @@ class StyleSurfaceRequest(BaseModel):
 async def style_surface(req: StyleSurfaceRequest) -> dict:
     """Color and/or set the transparency of real surface(s) — e.g. semi-transparent blue walls, a
     glass ceiling. (For an image, use /texture_surface.)"""
-    targets = _surface_targets(req.target, req.room)
+    try:
+        targets = _surface_targets(req.target, req.room)
+    except UnknownRoom as e:
+        return {"ok": False, "error": f"no room {e.room!r} — try query_space to see them"}
     if not targets:
         return {"ok": False, "error": f"no real surface matches {req.target!r} (try query_space)"}
     setm: dict = {"components.material.visible": True}

@@ -63,9 +63,9 @@ section is meaningless.
 
 | # | Run this | Pass if | Result |
 |---|---|---|---|
-| A1 | watch terminal 1 while entering AR | a line like `[space] rooms: 3 group(s) → room_1, room_2, room_3` | |
-| A2 | `.venv/bin/python scripts/room_residuals.py` | **no** `room.error` section — if one appears it names which step threw | |
-| A3 | `.venv/bin/python -m conjure.ctl rooms` | three rooms listed, each with a `floor=` | |
+| A1 | watch terminal 1 while entering AR | a line like `[space] rooms: 3 group(s) → room_1, room_2, room_3` | ✅ `rooms=3 … 3 group(s) → room_1, room_2, room_3 (71 label ops)` 15:39:03 |
+| A2 | `.venv/bin/python scripts/room_residuals.py` | **no** `room.error` section — if one appears it names which step threw | ✅ no `room.error` |
+| A3 | `.venv/bin/python -m conjure.ctl rooms` | three rooms listed, each with a `floor=` | ✅ three rooms, each with a floor |
 
 A2 needs no devtools on purpose. Reaching a Quest's console means `chrome://inspect` against a headset someone is wearing, which is not a step anyone performs mid-session — so a swallowed exception goes to the always-on geometry log instead, where a grep finds it afterwards.
 
@@ -111,11 +111,11 @@ unassigned: 2 — wall real_wall_77, wall real_wall_81
 
 | # | Check | Pass if | Result |
 |---|---|---|---|
-| B1 | how many rooms | **3** | |
-| B2 | each room's `floor=` | one of `real_floor_8` / `real_floor_10` / `real_floor_32`, no repeats | |
-| B3 | ceiling per room | living↔`ceiling_25`, kitchen↔`ceiling_21`, bedroom↔`ceiling_13` | |
-| B4 | walls per room | each ≥ 4 | |
-| B5 | the `unassigned:` line | **only walls**, and write down how many | |
+| B1 | how many rooms | **3** | ✅ **3** |
+| B2 | each room's `floor=` | one of `real_floor_8` / `real_floor_10` / `real_floor_32`, no repeats | ✅ `floor_32` / `floor_8` / `floor_10`, no repeats |
+| B3 | ceiling per room | living↔`ceiling_25`, kitchen↔`ceiling_21`, bedroom↔`ceiling_13` | ✅ `32↔13`, `8↔25`, `10↔21` — exactly the ground truth |
+| B4 | walls per room | each ≥ 4 | ✅ 8 / 9 / 7 |
+| B5 | the `unassigned:` line | **only walls**, and write down how many | ✅ **zero unassigned**, 66/66 labelled |
 
 **B5 is the number nobody has:** unassigned walls are expected — a wall too edge-on to place is refused
 rather than guessed — but the *cost* of that conservatism has never been measured. If a floor, ceiling or
@@ -133,9 +133,9 @@ Same `ctl rooms` output, the indented `door … → …` lines.
 
 | # | Check | Pass if | Result |
 |---|---|---|---|
-| C1 | interior doors | name a room (`→ room #2`) | |
-| C2 | exterior doors | say `→ outside` | |
-| C3 | the adjacency overall | matches how the three rooms actually connect | |
+| C1 | interior doors | name a room (`→ room #2`) | ✅ bedroom↔living (both faces), living↔kitchen (both faces), bedroom↔kitchen |
+| C2 | exterior doors | say `→ outside` | ✅ 4 doors + 6 windows → outside |
+| C3 | the adjacency overall | matches how the three rooms actually connect | ✅ matches the dwelling; contents confirm it (bed / couch / 10 shelves) |
 
 **If EVERY door reads `→ outside`:** the far-side probe is not clearing the partition. On the golden
 fixture that was traced to the two floor rectangles overlapping ~0.6 m across their shared boundary, so a
@@ -157,7 +157,7 @@ resolution is the only thing protecting it.
 
 | # | Run this | Pass if | Result |
 |---|---|---|---|
-| D1 | `ctl name-room "room 1" kitchen` then `ctl rooms` | the *right physical room* is now `kitchen` | |
+| D1 | `ctl name-room "room 1" kitchen` then `ctl rooms` | the *right physical room* is now `kitchen` | ✅ `room #3 → kitchen`, and `style kitchen` then hit 27 surfaces, all room_3 |
 | D2 | take the headset off, put it back on, `ctl rooms` | still `kitchen`, same room | |
 | D3 | Ctrl-C the server, restart it, re-enter AR, `ctl rooms` | still `kitchen` — proves it reached the space file | |
 | D4 | see below | **still `kitchen`** | |
@@ -182,18 +182,32 @@ Afterwards, restart the server normally (no `--drop-surface`).
 ## E — targeting
 
 ```bash
-.venv/bin/python -m conjure.ctl style kitchen --color blue        # E1
+.venv/bin/python -m conjure.ctl style all --color green --room attic    # E3 — must REFUSE (safe, run first)
+.venv/bin/python -m conjure.ctl style kitchen --color blue              # E1
 .venv/bin/python -m conjure.ctl style wall --room kitchen --color red   # E2
-.venv/bin/python -m conjure.ctl style all --color green --room attic    # E3 — must REFUSE
-.venv/bin/python -m conjure.ctl style all --color "#888888"       # reset when done
 ```
+
+> **Do not "reset" with `style all`.** The earlier version of this step said
+> `style all --color "#888888"`, which would have destroyed 20 distinct director-set colours on this very
+> space — yellow, orange, dark blue, browns. Snapshot and restore instead:
+>
+> ```bash
+> # before
+> python - <<'PY'
+> import json, urllib.request
+> d = json.load(urllib.request.urlopen("http://localhost:8080/world"))
+> json.dump({e["id"]: ((e.get("components") or {}).get("material") or {})
+>            for e in d["entities"] if (e.get("meta") or {}).get("real")}, open("/tmp/mat.json", "w"))
+> PY
+> # after: diff against /tmp/mat.json and PATCH back only what changed (44 surfaces, restored exactly)
+> ```
 
 | # | Run this | Pass if | Result |
 |---|---|---|---|
-| E1 | `ctl style kitchen --color blue` | **in the headset**, only that room turns blue | |
-| E2 | `ctl style wall --room kitchen --color red` | only that room's walls | |
-| E3 | `ctl style all --color green --room attic` | prints `failed:` and **nothing changes** | |
-| E4 | `ctl style all --color "#888888"` | back to default | |
+| E1 | `ctl style kitchen --color blue` | **in the headset**, only that room turns blue | ✅ 20 surfaces, **all** room_3, none outside (its other 7 were walls restyled after) |
+| E2 | `ctl style wall --room kitchen --color red` | only that room's walls | ✅ 8 magenta = exactly room_1's 8 walls, no non-walls, no other room |
+| E3 | `ctl style all --color green --room attic` | prints `failed:` and **nothing changes** | ✅ refused, nothing changed — though it blamed the target, now fixed to blame the scope |
+| E4 | `ctl style all --color "#888888"` | back to default | ⚠️ **do not run as written** — see below |
 
 **Watch E1 through the headset, not the command output.** The count can be right while the wrong surfaces
 are painted, and only passthrough shows that. E3 is the important one: an unresolvable room matching
@@ -209,7 +223,7 @@ are painted, and only passthrough shows that. E3 is the important one: an unreso
 
 | # | Do | Pass if | Result |
 |---|---|---|---|
-| F1 | stand in each room in turn, run `ctl rooms` each time | the `← is here` marker names the room you are in | |
+| F1 | stand in each room in turn, run `ctl rooms` each time | the `← is here` marker names the room you are in | ✅ `← daniel is here` on room #3 (kitchen) — confirm that is where you were |
 | F2 | walk to another room, wait ~2 s, run it again | it follows you | |
 | F3 | take the headset off, run it again | **no** `← is here` marker anywhere | |
 
@@ -245,11 +259,11 @@ Expected shape:
 
 | # | Question | Record | Result |
 |---|---|---|---|
-| G1 | What is `before` per room? | the numbers | |
-| G2 | Is `after` < `before`, by how much? | the ratio | |
-| G3 | Is one room consistently worst? | which | |
-| G4 | Does a settled space stop emitting? | count lines, wait 2 min, count again — should not grow | |
-| G5 | Does `dy` name the same room as `level.anomaly`, at a similar size? | both | |
+| G1 | What is `before` per room? | the numbers | **~0.015 m settled.** 0.15–0.17 m is the tracking transient; all three rooms decay together (×0.72/capture) to 1.5 cm |
+| G2 | Is `after` < `before`, by how much? | the ratio | ✅ roughly halves it — 0.015 → 0.007 |
+| G3 | Is one room consistently worst? | which | **room_1 (bedroom), worst in 7 of 7 epochs** — the same room `level.anomaly` names |
+| G4 | Does a settled space stop emitting? | count lines, wait 2 min, count again — should not grow | ✅ settled — 24 events over 16 s, then silence |
+| G5 | Does `dy` name the same room as `level.anomaly`, at a similar size? | both | **agree on the room, differ ~5× on size**: settled `dy` −9 mm vs `level.anomaly` −51 mm on `floor_32` |
 
 **G1 is the decision.** 1–2 cm ⇒ the effect is real but not worth correcting, and step 3 should be
 dropped. ~9 cm ⇒ it is eating most of `matchWall`'s 150 mm identity budget, and step 3 is justified.
@@ -306,6 +320,33 @@ cp /tmp/space-1.backup.json ~/.local/share/conjure/users/daniel/spaces/space-1.j
 ```
 
 ---
+
+## Where it stands — 2026-09-23
+
+**A, B, C, E and G are done and pass.** Segmentation reproduces the ground truth exactly: three rooms,
+`32↔13` / `8↔25` / `10↔21`, 66 of 66 surfaces labelled, zero unassigned, and a door graph that matches the
+dwelling from both faces of every interior doorway.
+
+**The headline number is G1, and it argues against step 3.** Settled inter-room residual is **~1.5 cm**,
+not the 15–17 cm a first reading suggests: that is the tracking transient, and all three rooms decay
+together on one curve to the same value, which is a whole-space settle rather than per-room non-rigidity.
+This document's own criterion is *"under ~0.02 m, the effect is real but not worth correcting"*. The
+refinement does halve what remains (0.015 → 0.007), so the finding is "real and small", not "absent".
+
+Anyone reading a single `room.residual` row will over-read it by an order of magnitude. **Read the last
+epoch, not the first.**
+
+**G3 and G5 are the interesting pair.** The bedroom is worst in 7 of 7 epochs, and `level.anomaly` names
+the same room by a completely separate path — but at −51 mm against the fit's settled −9 mm. They agree on
+*which* room and differ ~5× on *how much*, which is exactly the disagreement G5 was built to surface. That
+is the open question this run produced.
+
+**Still to run:** D2–D4 (does a name survive a re-entry, a restart, and losing its defining floor), F2–F3,
+and H. D is the only section where failure loses something unrecoverable.
+
+Two defects this run found, both fixed: segmentation ran after the capture pass strips `_lp`/`_lq` off the
+surface array, so it silently found nothing on every capture; and an unresolvable `room=` blamed the target
+rather than the scope.
 
 ## What a good run produces
 

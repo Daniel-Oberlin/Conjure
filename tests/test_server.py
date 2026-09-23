@@ -4995,6 +4995,9 @@ def test_an_unknown_room_filter_matches_NOTHING_rather_than_everything(srv, clie
     client.post("/space/capture", json=_two_room_capture())
     out = client.post("/style_surface", json={"target": "all", "color": "red", "room": "attic"}).json()
     assert out["ok"] is False, "refused, not applied space-wide"
+    # And it must blame the SCOPE, not the target. On device the message read "no real surface matches
+    # 'all'", which points the reader at the one half of the request that was fine.
+    assert "attic" in out["error"] and "all" not in out["error"], out["error"]
     ents = {e["id"]: e for e in _entities(client)}
     assert ents["real_wall_2"]["components"]["material"].get("color") != "red"
 
