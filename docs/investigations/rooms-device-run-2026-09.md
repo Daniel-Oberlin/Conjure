@@ -230,7 +230,12 @@ are painted, and only passthrough shows that. E3 is the important one: an unreso
 ## F — which room am I in
 
 ```bash
+# F1/F3 — a single reading
 .venv/bin/python -m conjure.ctl rooms      # the room you are in shows "← daniel is here"
+
+# F2 — you cannot type while wearing the headset, and taking it off ends what is being measured.
+# So start this FIRST, walk the house, then come back and read it.
+.venv/bin/python scripts/watch_room.py     # one line a second, marks every change
 ```
 
 | # | Do | Pass if | Result |
