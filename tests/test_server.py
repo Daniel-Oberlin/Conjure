@@ -5795,3 +5795,17 @@ def test_the_flag_clears_on_the_first_vote_and_pruning_resumes(srv, client):
     assert not srv._merge_until_voted, "a vote re-enables pruning"
     client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)[:8]})
     assert len([e for e in _entities(client) if e["id"].startswith("real_")]) == 8
+
+
+def test_the_unvoted_guard_stands_down_rather_than_disabling_pruning_for_ever(srv, client):
+    """A capture source that never votes — the CLI, a desktop client, a headset whose selection never
+    completes — must not disable pruning permanently. That would rot the seed with no symptom until
+    someone noticed stale geometry, which is the failure mode this whole investigation keeps hitting.
+    Same deadlock escape as the client's load gate (`forced`, spec §4.0a)."""
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)})
+    srv._unclaim()
+    for _ in range(srv._MERGE_PATIENCE):
+        client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)[:2]})
+    assert len([e for e in _entities(client) if e["id"].startswith("real_")]) == 10, "held so far"
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)[:2]})
+    assert not srv._merge_until_voted, "patience ran out; the guard stood down"

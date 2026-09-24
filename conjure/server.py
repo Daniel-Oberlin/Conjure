@@ -467,9 +467,13 @@ def _init_state() -> None:
     All filesystem-mutating — so it runs on server startup, not at import. Idempotent enough to re-run.
     Back up library.db to protect curation: a lost catalog is NOT rebuilt from the cache files."""
     global library, worlds, sessions, spaces, store, active_scope, active_world, active_space, active_space_owner
-    global _selected_cids, _space_holders
+    global _selected_cids, _space_holders, _merge_until_voted, _merge_waited
     _selected_cids = set()                           # a fresh session: every AR client re-selects (step 4/7)
     _space_holders = set()                           # nobody holds the space yet → provisional boot (D1)
+    # Nobody has voted yet either, so the same logic as _unclaim applies: the first headset in has not
+    # aligned to the stored space, and a capture from it may add but not remove until it votes.
+    _merge_until_voted = True
+    _merge_waited = 0
     # User-home migration FIRST (docs/specs/config.md §7): relocate the in-project .cache into the
     # resolved home BEFORE anything opens a path under it (catalog, repositories, asset cache). Also
     # ensures the settings.json template exists. Idempotent (breadcrumb-guarded).
@@ -821,10 +825,17 @@ _autosave_task: asyncio.Task | None = None
 #                     run. Per-CLIENT (not one global flag) so a SECOND, co-located AR user can still vote.
 _space_holders: "set[WebSocket]" = set()
 _selected_cids: set[str] = set()
-#: Set when the last AR holder leaves, cleared on the next /space/select commit. While set, /space/capture
-#: is treated as a MERGE: new surfaces are added, none are removed. Guards the window in which a returning
-#: client is capture authority but has not yet aligned to the stored space (see _unclaim).
+#: Set when the last AR holder leaves (and on boot), cleared on the next /space/select commit. While set,
+#: /space/capture is treated as a MERGE: new surfaces are added, none are removed. Guards the window in
+#: which a client is capture authority but has not yet aligned to the stored space (see _unclaim).
 _merge_until_voted: bool = False
+#: …but not for ever. A capture source that never votes — the CLI, a desktop client, a headset whose
+#: selection never completes — would otherwise disable pruning permanently and let the seed rot, with no
+#: symptom until someone noticed stale geometry. Same deadlock escape as the client's load gate
+#: (`WM.loadGate` → `forced`, spec §4.0a): after this many accepted captures the guard stands down and
+#: says so. The window only has to outlast selection, which takes seconds.
+_MERGE_PATIENCE = 10
+_merge_waited: int = 0
 
 # A world's space reference has THREE states, not two. `VOID` ("<void>") means *deliberately* space-less —
 # an outdoor world, or one whose agent declares `world.outdoor`. `UNSET` means *not decided yet*: a world
@@ -924,7 +935,7 @@ def _unclaim() -> None:
     (possibly different) space from wherever they are (D6 — unlock when empty). The active world keeps
     rendering as a provisional placeholder; only re-selection is re-opened (clear the per-client commit
     guard). No-op while anyone still holds the space."""
-    global _selected_cids, _merge_until_voted
+    global _selected_cids, _merge_until_voted, _merge_waited
     if _occupied():
         return
     if _selected_cids:
@@ -939,6 +950,7 @@ def _unclaim() -> None:
     # but may not REMOVE. Nothing is lost, the capture still lands, and the flag clears on the first
     # /space/select commit.
     _merge_until_voted = True
+    _merge_waited = 0
 
 
 def _save_active() -> None:
@@ -2359,7 +2371,7 @@ async def select_space(req: SpaceSelect) -> dict:
 
     A client commits ONCE per claim epoch (idempotent by `cid`) so GPS jitter / repeated votes can't thrash
     the choice. On admit/establish the client declares `hold` over /ws → it becomes a `_space_holder`."""
-    global _selected_cids, _merge_until_voted
+    global _selected_cids, _merge_until_voted, _merge_waited
     if spaces is None or worlds is None:
         return {"ok": False, "error": "no space store"}
     cid = _cid(req)
@@ -2368,6 +2380,7 @@ async def select_space(req: SpaceSelect) -> dict:
     if _merge_until_voted:
         _slog("select", "a client voted — captures may prune again")
         _merge_until_voted = False
+        _merge_waited = 0
     _apply_forced_geo(req)                                  # test-only geolocation override (--force-geo)
     who = req.user or active_scope.split("/", 1)[0]        # the connecting user (owns anything minted)
     geo = {"lat": req.lat, "lon": req.lon} if req.lat is not None and req.lon is not None else None
@@ -3610,7 +3623,7 @@ async def ingest_capture(req: CaptureUpdate) -> dict:
     (`anchored`) are never pruned. Those geometry ops are applied to the store but NOT broadcast. Only what
     clients actually consume is broadcast: room-activation env + on-surface image re-anchors. An idle
     authority is taken over after `_AUTH_TTL` (a reconnecting owner isn't locked out)."""
-    global _authority_ts
+    global _authority_ts, _merge_until_voted, _merge_waited
     env = store.doc["environment"]
     pres = env.get("spacePresentation", {})
     authority = env.get("captureAuthority")
@@ -3637,8 +3650,15 @@ async def ingest_capture(req: CaptureUpdate) -> dict:
     veto = None
     if req.replace and _merge_until_voted:
         # The capturer has not voted since the space was unclaimed, so it may not yet be aligned to the
-        # stored geometry. Add, never remove, until it has.
-        veto = "capturer has not voted since the space was unclaimed"
+        # stored geometry. Add, never remove, until it has — or until patience runs out, so a capture
+        # source that never votes cannot disable pruning for ever.
+        _merge_waited += 1
+        if _merge_waited > _MERGE_PATIENCE:
+            _merge_until_voted = False
+            _slog("seed", f"no vote after {_MERGE_PATIENCE} captures — prune guard stands down (forced)")
+            _glog("seed.merge_forced", {"after": _MERGE_PATIENCE})
+        else:
+            veto = "capturer has not voted since the space was unclaimed"
     elif req.replace and len(existing) >= _PRUNE_GUARD_MIN and len(doomed) > len(existing) / 2:
         # A post that deletes more than half an ESTABLISHED space is likelier a bug — an unaligned frame, a
         # partial capture, a client mid-relocalization — than a room that genuinely lost half its surfaces.

@@ -130,6 +130,10 @@ def srv(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "active_space_owner", "daniel")   # owner of the active space (D3-aware)
     monkeypatch.setattr(server, "_selected_cids", set())  # fresh session: every AR client re-selects (step 4/7)
     monkeypatch.setattr(server, "_space_holders", set())  # nobody holds the space yet (unclaimed / provisional)
+    # Module-level capture-guard state, reset per test like the two above. A test that calls _unclaim()
+    # would otherwise leave pruning disabled for every test after it, which is how this was found.
+    monkeypatch.setattr(server, "_merge_until_voted", False)
+    monkeypatch.setattr(server, "_merge_waited", 0)
     monkeypatch.setattr(
         server, "store",
         WorldStore({"id": TEST_WORLD_ID, "name": "default", "rev": 0,
