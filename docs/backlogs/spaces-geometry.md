@@ -63,6 +63,51 @@ that is indifferent to *why* the id churned, which now includes at least three d
 **One thing worked.** `real_wall_art_130` was pruned client-side with `anchored: true` and the server kept
 it, so the photo pinned to it did not orphan. The anchored protection held.
 
+#### What is actually at stake — the inventory, 2026-09-24
+
+Written down after a narrow "carry the colour across a prune" fix was tried and **reverted** (it lives on
+`fix/styling-survives-prune` with its own notes). The fix was not wrong so much as aimed at the wrong
+thing, and the re-aim is worth keeping even though the code is not.
+
+**First, the symptom is mis-stated above.** A returning surface does not render grey. It renders
+**transparent** — invisible fill, edges and label still there. `_default_surface_material`'s opaque `#888`
+never reaches the screen, because the client builds real surfaces locally from live planes and applies
+`material: surfaceStyles[s.id]` (`conjure-client.js:1855`). No entry in the map → no material → no explicit
+`material.visible` → `applyRealVisibility` falls back to `presentation.defaultVisible`, which is **`false`**
+(`:313`, `:347`). So the fill is simply switched off. Anyone chasing "why is it grey" is looking for a
+colour bug that does not exist; the visible loss is a *visibility* loss.
+
+**Second, the surfaces are not really going away.** Geometry is local-first and re-derived every capture,
+so the wall is back the moment the Quest sees it. What breaks is the **association** between the returning
+wall and the user's data. Identity is the product here, not styling.
+
+**Third, a surface entity mixes three lifetimes in one record**, which is why a geometry prune does
+collateral damage:
+
+| | examples | on a prune |
+|---|---|---|
+| **geometry** | pose, extent, holes | re-derived every capture — safe to lose |
+| **derived labels** | `semantic`, `room`, `host_wall`, `leads_to`, `along`/`vertical` | recomputed — safe to lose |
+| **user data** | `components.material`, `meta.image_id`, `meta.friendly_id`, pinned content | **unrecreatable** |
+
+So: **a geometry operation must never destroy user data.** Beyond the colour, two items are exposed and
+neither is covered by anything today:
+
+- **`meta.image_id`** — which library image is mapped onto the surface. It lives on `meta`, outside
+  `surfaceStyles`, so it is lost outright. The `src` url survives; the link to the asset does not.
+- **`meta.friendly_id`** — the number the user *says* ("make 12 blue"). It is **derived from the id's
+  trailing digits**, so a re-mint silently renumbers it. Worse than a lost colour: a stale number makes the
+  director act confidently on the *wrong* surface.
+
+**They do not belong in the same place.** `material` and `image_id` are **per-world** — two worlds styling
+one space differently is the entire point of `surfaceStyles`. The spoken number is a fact about the
+physical wall, so it is **per-space**: you say "12" whichever world you are in. Any storage fix is two
+records, not one.
+
+**Open question this raises:** making `friendly_id` survive means storing it rather than deriving it, which
+breaks the id↔number alignment [`worlds-surfaces.md`](../specs/worlds-surfaces.md) §1.1 calls deliberate.
+The alternative is making the **ids** stable — which is the re-association problem, not a storage problem.
+
 ### The original report, for the record
 
 **Status:** open · noticed 2026-08-30, intermittently, since the smoothing work landed
