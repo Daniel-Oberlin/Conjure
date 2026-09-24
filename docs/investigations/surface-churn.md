@@ -253,9 +253,35 @@ Doors dominate `claimed` (47, against 16 wall art and 14 wall), which suggested 
 on `host_wall` + slot, so a wall that re-mints should invalidate every door in it. **Both halves of that are
 wrong.**
 
-*The cascade is refuted.* Bucketing every churn event by capture (client clock, 2 s buckets): **33 of the 47
-door events occur in a capture with no wall or wall-art churn at all**, against 14 that co-occur. Doors
-churn on their own.
+*The cascade is unproven, and a better explanation is available.* A first pass bucketed churn events by
+capture (2 s) and found 33 of 47 door events with no wall churn alongside — but that test is invalid: a wall
+re-mints **once**, and its doors then miss for many captures afterwards, which no same-capture bucket can
+see. Session-scoped, **45 of 47** door events are preceded by wall churn in the same session. That is a weak
+result in the other direction, since wall churn is common enough to precede almost anything, so causation is
+not established either way.
+
+*What the trace actually shows is a pair oscillating.* **A physical doorway is captured as two door planes,
+one from each room**, and they sit a wall's thickness apart — 2–40 mm in this log:
+
+```
+ct=18739  miss door_86  dist=0.004
+ct=20769  miss door_43            regain door_86
+ct=77463  miss door_86  dist=0.002
+ct=79473  miss door_43            regain door_86
+```
+
+`real_door_86` misses while `real_door_43` holds; then 86 regains as 43 begins missing. The two faces of one
+doorway are **trading a single observation between captures**, and the loser reports `claimed` each time.
+
+This matters because it is not the same fault as the walls, and **global assignment cannot fix it**: if the
+Quest emits one plane for a doorway and two refs want it, no assignment is correct — one ref loses every
+time. The pair has to be recognised *as* a pair.
+
+Note the configuration is precisely the one `matchRef`'s flip rule exists to **merge**: near-coincident
+(`dFlip = 0.15`) and antiparallel, built so wall art facing off its wall keeps its id. For a doorway the two
+antiparallel near-coincident faces are genuinely **distinct surfaces**, so that rule is actively wrong here.
+The disambiguator now exists — the two faces belong to **different rooms**, which the rooms work records,
+with `leads_to` as the other half.
 
 *And their diagnosis is invalid.* `_logChurn` (`conjure-client.js:2046`) calls `explainNoMatch` for **every**
 unmatched ref, and `explainNoMatch` routes anything vertical through **`matchWall`'s** gate model. A door is
