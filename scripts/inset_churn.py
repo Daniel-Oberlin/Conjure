@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Read the day's INSET churn out of the geometry event log, and settle two open questions.
+"""Read the day's surface churn out of the geometry event log, and say whether the fixes are working.
+
+(Still named for insets, which is where it started and where most churn lives. It now also reports the
+wall assignment and the server-side prune guards, so it is the whole picture for one day.)
 
     python scripts/inset_churn.py              # today
     python scripts/inset_churn.py 2026-09-25   # a given day
@@ -20,8 +23,17 @@ before (`docs/investigations/surface-churn.md`):
       drags the along-slot with it, which would cause churn with no competition involved at all. `rw`/`cw`
       (ref width, candidate width) make that visible.
 
+Three fixes landed 2026-09-24, and each leaves its own trace here:
+
+  churn.pair_held         a door face's absence was excused because its twin was visible — the doorway
+                          guard doing its job. Every one of these is a surface that would have been pruned.
+  churn.assign_contested  two planes wanted one reference and the cheaper took it. Not an error; it is the
+                          audit trail for a wrong match, which emits nothing else.
+  seed.prune_refused      the server declined a destructive post (unvoted capturer, or >50% of a space).
+  seed.merge_forced       the unvoted guard stood down after _MERGE_PATIENCE captures without a vote.
+
 A settled space emits nothing at all, so an empty report is also what "no churn today" looks like — check
-the STALE CLIENT warning below before concluding the fix works.
+the CLIENT BUILD line before concluding anything.
 """
 
 from __future__ import annotations
@@ -75,7 +87,7 @@ def main() -> int:
     insets = [e for e in events if e.get("sem") in INSET_SEMS]
     others = [e for e in events if e.get("sem") not in INSET_SEMS]
 
-    print(f"=== inset churn — {day} ===")
+    print(f"=== surface churn — {day} ===")
     print(f"  {len(churn)} churn events, {len(events)} with a verdict; "
           f"{len(insets)} inset, {len(others)} wall/horizontal")
 
@@ -145,6 +157,35 @@ def main() -> int:
         print()
     elif insets and not any(e.get("gate") in INSET_GATES or e.get("why") == "device" for e in insets):
         print("\n  (no recognised inset gate — check the client is current)")
+
+    # --- what the fixes actually did ---------------------------------------------------------------
+    held = [e for e in churn if e.get("ev") == "churn.pair_held"]
+    contested = [e for e in churn if e.get("ev") == "churn.assign_contested"]
+    refused = [e for e in rows if e.get("ev") == "seed.prune_refused"]
+    forced = [e for e in rows if e.get("ev") == "seed.merge_forced"]
+    if held or contested or refused or forced:
+        print("\n=== what the guards did ===")
+    if held:
+        pairs = collections.Counter((e.get("id"), e.get("twin")) for e in held)
+        print(f"  doorway guard: {len(held)} face(s) spared — each would have been pruned before")
+        for (a, b), n in pairs.most_common(6):
+            print(f"      {a} held while {b} was visible" + (f" (x{n})" if n > 1 else ""))
+    if refused:
+        print(f"  prune refused: {len(refused)} destructive post(s) declined")
+        for e in refused:
+            print(f"      {e.get('why')} — {e.get('kept')} of {e.get('have')} surfaces kept")
+    if forced:
+        print(f"  *** the unvoted guard STOOD DOWN {len(forced)} time(s) after "
+              f"{forced[0].get('after')} captures without a vote.")
+        print("      Expected for a CLI or desktop capture source. From a headset it means selection")
+        print("      never completed, which is worth understanding — that is the 2026-09-09 window.")
+    if contested:
+        print(f"  assignment: {len(contested)} plane(s) did not get their first-choice reference")
+        for e in contested[:6]:
+            print(f"      {e.get('sem')}: wanted {e.get('wanted')}, got {e.get('got') or 'a new id'}")
+        print("      Not an error — two planes wanted one reference and the cheaper took it. Worth a look")
+        print("      only if the same pair contests every capture, which would mean the geometry is")
+        print("      genuinely ambiguous rather than the order being unlucky.")
 
     if not insets:
         print("\n  No inset churn today. That is the goal state — but it is also what an unexercised")

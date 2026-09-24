@@ -407,8 +407,16 @@ A narrow "carry the colour across a prune" change was built and **reverted** on 
 
 ### Reading the next run
 
-`scripts/inset_churn.py [YYYY-MM-DD]` (default today). It reports the inset gates, and is built to answer
-the two questions above rather than to dump events:
+`scripts/inset_churn.py [YYYY-MM-DD]` (default today) — the whole day's churn, not only insets despite the
+name. It answers the two questions above rather than dumping events, and reports what each fix did:
+
+- **What the guards did.** `churn.pair_held` (a door face spared by the doorway guard — each one is a
+  surface that would have been pruned), `seed.prune_refused`, `seed.merge_forced`, and
+  `churn.assign_contested` (two planes wanted one reference). A contested pair is not an error; it is the
+  audit trail for a wrong match, which emits nothing else. It is worth a look only if the *same* pair
+  contests every capture, which would mean the geometry is genuinely ambiguous rather than the order
+  unlucky. `merge_forced` from a headset means selection never completed — the 2026-09-09 window.
+
 
 - **Q1 — cascade or competition?** `nohost` counts against `outbid`/`taken`. The two lead to different
   repairs (fix the wall assignment, or recognise the doorway pair), so the script says which dominates
