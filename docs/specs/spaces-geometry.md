@@ -796,6 +796,7 @@ it now confirms a measurement rather than an argument.
 | `churn.mint` / `.hide` / `.prune` | a fresh id is minted; the element is removed after 3 misses; the id leaves the POST set |
 | `churn.restyle_lost` | an id that used to render with a material now renders bare |
 | `churn.pair_held` | a door face's absence was excused because the other face of the same doorway was visible this capture (`sameDoorway`) — logged once per episode |
+| `churn.assign_contested` | a plane did not get its own cheapest reference because another plane wanted it more (`assignRefs`) — the audit trail for a wrong match, which emits nothing else |
 | `seed.prune_refused` / `.merge_forced` | the server declined a destructive post (unvoted capturer, or >50% of an established space); or stood the unvoted guard down after `_MERGE_PATIENCE` |
 | `level.census` / `.anomaly` | a floor/ceiling height moved >2 cm; a height moved relative to the rest of the space |
 | `track.reset` / `.lock` | reference-space recenter (boundary trip); lock lost or regained |

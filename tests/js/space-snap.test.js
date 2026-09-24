@@ -1635,3 +1635,125 @@ test("sameDoorway rejects faces stacked vertically (a door under a transom)", ()
   const b = { ...doorFace("d_b", 0, 0.15, 180, 0.8), pos: new THREE.Vector3(0, 2.4, 0.15) };
   assert.strictEqual(RS.sameDoorway(a, b), false);
 });
+
+// --- assignRefs: assign every plane to a reference AT ONCE. Emission-order greedy is not merely
+// suboptimal — the order dependence IS the swap mechanism, and it is what pruned real_wall_148 from 7 cm
+// for losing a race (investigations/surface-churn.md). ---
+
+const wallRef = (id, x, z, yawDeg, w) => ({
+  id, sem: "wall", orient: "vertical", ext: [w, 2.4],
+  pos: new THREE.Vector3(x, 1.2, z), nyaw: yawDeg * D2R,
+});
+const wallCand = (x, z, yawDeg, w) => ({
+  sem: "wall", orient: "vertical", ext: [w, 2.4],
+  pos: new THREE.Vector3(x, 1.2, z), nyaw: yawDeg * D2R,
+});
+
+// Every ordering of the same input must give the same answer. This is the property the old code lacked,
+// and the reason two identical captures could disagree about which wall was which.
+function permutations(xs) {
+  if (xs.length <= 1) return [xs];
+  return xs.flatMap((x, i) =>
+    permutations([...xs.slice(0, i), ...xs.slice(i + 1)]).map((p) => [x, ...p]));
+}
+
+test("assignRefs is INVARIANT to the order planes arrive in — the swap mechanism, removed", () => {
+  // Two parallel walls close enough that each plane is a legal match for either reference.
+  const refs = [wallRef("rA", 0, 0, 0, 3), wallRef("rB", 0, 0.12, 0, 3)];
+  const cands = [wallCand(0, 0.01, 0, 3), wallCand(0, 0.11, 0, 3)];
+  const baseline = RS.assignRefs(cands, refs).assigned.map((r) => r && r.id);
+  assert.deepStrictEqual(baseline, ["rA", "rB"], "each plane takes its own nearer reference");
+  for (const order of permutations([0, 1])) {
+    const permuted = order.map((i) => cands[i]);
+    const got = RS.assignRefs(permuted, refs).assigned.map((r) => r && r.id);
+    assert.deepStrictEqual(order.map((i) => baseline[i]), got, `order ${order} disagreed`);
+  }
+});
+
+test("assignRefs is invariant across ALL orderings of four planes", () => {
+  const refs = [wallRef("r0", 0, 0, 0, 2), wallRef("r1", 0, 0.1, 0, 2),
+                wallRef("r2", 5, 0, 180, 2), wallRef("r3", 5, 0.1, 180, 2)];
+  const cands = [wallCand(0, 0.005, 0, 2), wallCand(0, 0.105, 0, 2),
+                 wallCand(5, 0.005, 180, 2), wallCand(5, 0.105, 180, 2)];
+  const baseline = RS.assignRefs(cands, refs).assigned.map((r) => r && r.id);
+  for (const order of permutations([0, 1, 2, 3])) {
+    const got = RS.assignRefs(order.map((i) => cands[i]), refs).assigned.map((r) => r && r.id);
+    assert.deepStrictEqual(order.map((i) => baseline[i]), got, `order ${order} disagreed`);
+  }
+});
+
+test("the emission order that misassigned ids under the OLD matcher no longer does", () => {
+  // Two planes whose nearest reference is the SAME one. planeA is 0.040 from rA, planeB 0.045 — so
+  // whichever the Quest emits first takes rA and the other is pushed onto rB. Same geometry, same
+  // tolerances, different identities, decided by an order `detectedPlanes` does not guarantee.
+  const refs = [wallRef("rA", 0, 0, 0, 4), wallRef("rB", 0, 0.10, 0, 4)];
+  const planeA = wallCand(0, 0.040, 0, 4);
+  const planeB = wallCand(0, 0.045, 0, 4);
+
+  const bFirst = new Set();
+  assert.strictEqual(RS.matchWall(planeB, refs, bFirst).id, "rA", "old greedy, B first: B takes rA");
+  bFirst.add(refs[0]);
+  assert.strictEqual(RS.matchWall(planeA, refs, bFirst).id, "rB", "…and A is pushed onto rB");
+  const aFirst = new Set();
+  assert.strictEqual(RS.matchWall(planeA, refs, aFirst).id, "rA", "A first: A takes rA — the opposite");
+
+  // Best-first settles it the same way regardless: the globally cheapest pair (A→rA at 0.040) is taken
+  // first, and B gets what is left.
+  for (const order of [[planeA, planeB], [planeB, planeA]]) {
+    const got = RS.assignRefs(order, refs).assigned.map((r) => r && r.id);
+    const want = order[0] === planeA ? ["rA", "rB"] : ["rB", "rA"];
+    assert.deepStrictEqual(got, want, "each plane keeps its own nearest, whatever the order");
+  }
+});
+
+test("assignRefs keeps a surface the old code pruned for losing a race (real_wall_148)", () => {
+  // 2026-09-22: real_wall_148 missed three captures at dist 0.085 / 0.072 / 0.073 and was pruned. It
+  // failed no gate — another plane had taken its reference first.
+  const refs = [wallRef("real_wall_148", 0, 0, 0, 3), wallRef("real_wall_141", 0, 0.08, 0, 3)];
+  const mine = wallCand(0, 0.005, 0, 3);
+  const rival = wallCand(0, 0.075, 0, 3);
+  const got = RS.assignRefs([rival, mine], refs).assigned.map((r) => r && r.id);
+  assert.deepStrictEqual(got, ["real_wall_141", "real_wall_148"], "both keep their own id");
+});
+
+test("assignRefs prefers ONE good pair over two mediocre ones — no cardinality swap", () => {
+  // The trap a minimum-total or maximum-matches solver falls into: planeA fits rA at 0.01 and rB at 0.14;
+  // planeB fits rA at 0.02 and cannot reach rB at all. Optimising the total prefers A→rB + B→rA (two
+  // matches) over A→rA alone. Best-first refuses to trade: A keeps rA and B mints.
+  const refs = [wallRef("rA", 0, 0, 0, 3), wallRef("rB", 0, 0.14, 0, 3)];
+  const planeA = wallCand(0, 0.01, 0, 3);
+  const planeB = wallCand(0, 0.02, 0, 3.0);
+  const out = RS.assignRefs([planeA, planeB], refs);
+  assert.strictEqual(out.assigned[0].id, "rA", "the best pair is taken first and never traded away");
+  assert.notStrictEqual(out.assigned[1] && out.assigned[1].id, "rA");
+});
+
+test("assignRefs reports a contested pair so a wrong match is auditable", () => {
+  // A wrong match emits nothing today — churn.* fires only on a mint, miss or prune — so a swap is
+  // invisible by construction. `contested` is the audit trail.
+  const refs = [wallRef("rA", 0, 0, 0, 3)];
+  const near = wallCand(0, 0.01, 0, 3);
+  const far = wallCand(0, 0.06, 0, 3);
+  const out = RS.assignRefs([near, far], refs);
+  assert.strictEqual(out.assigned[0].id, "rA");
+  assert.strictEqual(out.assigned[1], null, "the loser mints rather than stealing");
+  assert.deepStrictEqual(out.contested, [{ i: 1, got: null, wanted: "rA" }]);
+});
+
+test("assignRefs never assigns one reference twice, and respects the gates", () => {
+  const refs = [wallRef("rA", 0, 0, 0, 3)];
+  const out = RS.assignRefs([wallCand(0, 0.01, 0, 3), wallCand(0, 0.02, 0, 3)], refs);
+  assert.strictEqual(out.assigned.filter((r) => r && r.id === "rA").length, 1);
+  // Out of tolerance entirely → nobody is assigned.
+  const farOut = RS.assignRefs([wallCand(0, 9, 0, 3)], refs);
+  assert.strictEqual(farOut.assigned[0], null);
+});
+
+test("assignRefs matches horizontals by matchRef's rule, not matchWall's", () => {
+  const floor = { id: "rF", sem: "floor", orient: "horizontal", ext: [4, 4],
+                  pos: new THREE.Vector3(0, 0, 0), nyaw: 0 };
+  const near = { sem: "floor", orient: "horizontal", ext: [4, 4], pos: new THREE.Vector3(0.1, 0, 0), nyaw: 0 };
+  const far = { sem: "floor", orient: "horizontal", ext: [4, 4], pos: new THREE.Vector3(0.9, 0, 0), nyaw: 0 };
+  assert.strictEqual(RS.assignRefs([near], [floor]).assigned[0].id, "rF");
+  assert.strictEqual(RS.assignRefs([far], [floor]).assigned[0], null, "past the 0.5 m radius");
+});

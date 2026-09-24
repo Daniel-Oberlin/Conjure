@@ -3078,15 +3078,33 @@
         // Pass B1 — WALLS + floor/ceiling first (insets need resolved wall ids). Walls get identity by
         // PLANE (matchWall, §5.3/§10) — invariant to the centroid sliding along a differently-captured wall;
         // horizontals keep matchRef (centroid+semantic is right for a floor/ceiling).
+        // Pose every non-inset candidate FIRST, then assign them all at once. Assigning as we walk means
+        // the answer depends on the order `detectedPlanes` handed them over, and that order dependence is
+        // itself the swap mechanism — see SpaceSnap.assignRefs. It is also what prunes a wall sitting 7 cm
+        // from a perfectly good partner, for losing a race it never knew it was in.
+        var b1 = [];
         cur.forEach(function (c) {
           if (INSET_SEMS[c.sem]) return;
           var rp = refPose(c), cyaw = self._yawOf(UP.clone().applyQuaternion(rp.lq));
           var probe = { pos: rp.lp, nyaw: cyaw, sem: c.sem, orient: c.orient, ext: c.ext };
           curRef.push(probe);
-          var best = c.orient === "vertical"
-            ? RS.matchWall(probe, self._ref, claimed, window.CONJURE_WALL)
-            : RS.matchRef(probe, self._ref, claimed);
-          pushSurface(c, resolveRef(c, rp.lp, cyaw, best, probe), rp.lp, rp.lq, null);
+          b1.push({ c: c, rp: rp, cyaw: cyaw, probe: probe });
+        });
+        var asg = RS.assignRefs(b1.map(function (x) { return x.probe; }), self._ref, window.CONJURE_WALL);
+        // A candidate that did not get its own cheapest reference. Under emission-order greedy this was
+        // invisible — a wrong match emits nothing, since churn.* only fires on a mint, miss or prune — so
+        // this is the first time the assignment can be audited at all. Logged, not refused: best-first
+        // never trades a good pair for two poor ones, so a contested pair means two candidates genuinely
+        // wanted one reference and the cheaper of them took it.
+        if (asg.contested.length) {
+          asg.contested.forEach(function (x) {
+            var cc = b1[x.i];
+            self._churn("assign_contested", { sem: cc && cc.c.sem, got: x.got, wanted: x.wanted });
+          });
+        }
+        b1.forEach(function (x, i) {
+          var best = asg.assigned[i];                                  // resolveRef claims it, or mints
+          pushSurface(x.c, resolveRef(x.c, x.rp.lp, x.cyaw, best, x.probe), x.rp.lp, x.rp.lq, null);
         });
         // Pass B2 — INSETS. IDENTITY re-inherits against the PERSISTENT reference constellation `_ref` (the
         // SAME immediate source walls use), matched CORNER-RELATIVELY (§5.3). Each _ref inset carries its

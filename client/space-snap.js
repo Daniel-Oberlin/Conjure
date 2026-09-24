@@ -342,34 +342,14 @@
    * @returns {RefSurface|null}
    */
   function matchWall(cand, refs, claimed, opts) {
-    opts = opts || {};
-    var PERP_TOL = opts.perpTol != null ? opts.perpTol : 0.15;
-    var YAW_TOL = opts.yawTol != null ? opts.yawTol : Math.PI / 6;   // 30°
-    var OVERLAP_SLOP = opts.overlapSlop != null ? opts.overlapSlop : 0.3;
+    // The gates themselves live in matchCost, which assignRefs also reads — one definition, so a tolerance
+    // cannot mean one thing here and another to the assignment. This keeps the per-candidate form for
+    // callers that still want it (and for the tests that pin each gate).
     if (cand.orient !== "vertical") return null;                     // walls are vertical
-    // Candidate's plane basis from its own normal (n = outward, t = along the wall, both in plan view).
-    var cnx = Math.sin(cand.nyaw), cnz = Math.cos(cand.nyaw);        // yawOf(n) = atan2(n.x, n.z)
-    var cHw = ((cand.ext && cand.ext[0]) || 0) / 2;
     var best = /** @type {RefSurface|null} */ (null), bestScore = Infinity;
-    refs.forEach(function (r) {
-      if (r.sem !== cand.sem || r.orient !== "vertical" || (claimed && claimed.has(r))) return;
-      // 1. same-facing / near-parallel — a wall's outward normal is physically fixed, so demand a tight
-      //    agreement (keeps the two anti-parallel faces of a partition distinct, like matchRef's gate).
-      var dyaw = Math.abs(Math.atan2(Math.sin(cand.nyaw - r.nyaw), Math.cos(cand.nyaw - r.nyaw)));
-      if (dyaw > YAW_TOL) return;
-      // 2. coincident plane — project BOTH centres onto the ref's normal; their offsets must nearly match
-      //    (perpendicular gap). Invariant to sliding either centre ALONG the wall (that's the whole point).
-      var rnx = Math.sin(r.nyaw), rnz = Math.cos(r.nyaw);
-      var perp = Math.abs((cand.pos.x - r.pos.x) * rnx + (cand.pos.z - r.pos.z) * rnz);
-      if (perp > PERP_TOL) return;
-      // 3. along-line overlap guard — spans on the width axis t=(n.z,-n.x) must overlap (gap < slop), else
-      //    these are two colinear-but-separate walls, not one wall captured differently.
-      var tx = rnz, tz = -rnx;
-      var ca = cand.pos.x * tx + cand.pos.z * tz, ra = r.pos.x * tx + r.pos.z * tz;
-      var rHw = ((r.ext && r.ext[0]) || 0) / 2;
-      var gap = Math.abs(ca - ra) - (cHw + rHw);                     // <0 ⇒ spans overlap
-      if (gap > OVERLAP_SLOP) return;
-      var score = perp + Math.max(0, gap);                           // both in metres; prefer the tightest plane
+    (refs || []).forEach(function (r) {
+      if (claimed && claimed.has(r)) return;
+      var score = matchCost(cand, r, opts);                          // Infinity ⇒ a gate rejected it
       if (score < bestScore) { bestScore = score; best = r; }
     });
     return best;
@@ -1134,6 +1114,107 @@
     return Object.assign(out, { gate: "outbid", id: best.chose || undefined });
   }
 
+  // The cost of pairing one detected plane with one reference, in metres, or Infinity if a gate rejects
+  // it outright. One function so the gates have a single definition: matchWall and assignRefs both read
+  // it, and a tolerance can no longer mean one thing to the matcher and another to the assignment.
+  /**
+   * @param {{pos: Vec3, nyaw: number, sem: string, orient: string, ext?: number[]}} cand
+   * @param {RefSurface} ref
+   * @param {WallOpts} [opts]
+   * @returns {number}  metres; Infinity ⇒ not a candidate at all
+   */
+  function matchCost(cand, ref, opts) {
+    opts = opts || {};
+    if (!ref || ref.sem !== cand.sem) return Infinity;
+    if (cand.orient !== "vertical") {
+      // Horizontals and furniture keep matchRef's rule: same semantic, nearest centroid inside a radius.
+      var d = cand.pos.distanceTo(ref.pos);
+      return d < 0.5 ? d : Infinity;
+    }
+    if (ref.orient !== "vertical") return Infinity;
+    var PERP_TOL = opts.perpTol != null ? opts.perpTol : 0.15;
+    var YAW_TOL = opts.yawTol != null ? opts.yawTol : Math.PI / 6;
+    var OVERLAP_SLOP = opts.overlapSlop != null ? opts.overlapSlop : 0.3;
+    var dyaw = Math.abs(Math.atan2(Math.sin(cand.nyaw - ref.nyaw), Math.cos(cand.nyaw - ref.nyaw)));
+    if (dyaw > YAW_TOL) return Infinity;
+    var rnx = Math.sin(ref.nyaw), rnz = Math.cos(ref.nyaw);
+    var perp = Math.abs((cand.pos.x - ref.pos.x) * rnx + (cand.pos.z - ref.pos.z) * rnz);
+    if (perp > PERP_TOL) return Infinity;
+    var tx = rnz, tz = -rnx;
+    var ca = cand.pos.x * tx + cand.pos.z * tz, ra = ref.pos.x * tx + ref.pos.z * tz;
+    var cHw = ((cand.ext && cand.ext[0]) || 0) / 2, rHw = ((ref.ext && ref.ext[0]) || 0) / 2;
+    var gap = Math.abs(ca - ra) - (cHw + rHw);
+    if (gap > OVERLAP_SLOP) return Infinity;
+    return perp + Math.max(0, gap);
+  }
+
+  // Assign every detected plane to a reference AT ONCE, instead of letting each take the nearest free one
+  // in the order the Quest happened to emit them.
+  //
+  // Emission-order greedy is not merely suboptimal, it decides identity by an order nothing guarantees.
+  // Two planes whose nearest reference is the same one — say planeA 0.040 from rA and planeB 0.045 —
+  // resolve differently depending only on which the Quest emitted first: whichever arrives first takes rA
+  // and the other is pushed onto rB. Same geometry, same tolerances, different ids. It is also how a
+  // surface 6-9 cm from a perfectly good partner gets pruned for losing a race: `real_wall_148` died at
+  // 7 cm on 2026-09-22, having failed no gate at all (investigations/surface-churn.md).
+  //
+  // BEST-FIRST, not minimum-total. Taking the globally cheapest pair, then the cheapest of what remains,
+  // is deliberately NOT the optimal assignment — and that is the point. A solver minimising total cost (or
+  // maximising matches) will trade one excellent pairing for two mediocre ones, which is precisely a swap:
+  //     planeA: rA 0.01, rB 0.14      planeB: rA 0.02, rB unreachable
+  // minimum-total prefers A→rB + B→rA (two matches) over A→rA alone (one match and a mint). Best-first
+  // takes A→rA and lets B mint, which is the right answer — a mint is recoverable, a swap puts content on
+  // the wrong wall (§10). Best-first never trades, so it needs no mint penalty to be tuned.
+  /**
+   * @param {{pos: Vec3, nyaw: number, sem: string, orient: string, ext?: number[]}[]} cands
+   * @param {RefSurface[]} refs
+   * @param {WallOpts} [opts]
+   * @returns {{assigned: (RefSurface|null)[], contested: {i: number, got: string|null, wanted: string}[]}}
+   *   `assigned[i]` is the ref for cands[i], or null ⇒ mint. `contested` names every candidate that did
+   *   not get its own cheapest ref, which is the audit trail for anything a swap-shaped result would do.
+   */
+  function assignRefs(cands, refs, opts) {
+    cands = cands || [];
+    refs = refs || [];
+    // A stable key per candidate so ties break the same way whatever order they arrived in — using the
+    // array index here would quietly reintroduce the order dependence this function exists to remove.
+    var keys = cands.map(function (c) {
+      return c.pos.x.toFixed(4) + "|" + c.pos.y.toFixed(4) + "|" + c.pos.z.toFixed(4) + "|" + c.sem;
+    });
+    var pairs = /** @type {{i: number, r: RefSurface, cost: number}[]} */ ([]);
+    var wanted = /** @type {(RefSurface|undefined)[]} */ ([]);
+    cands.forEach(function (c, i) {
+      var bestCost = Infinity;
+      refs.forEach(function (r) {
+        var cost = matchCost(c, r, opts);
+        if (!(cost < Infinity)) return;
+        pairs.push({ i: i, r: r, cost: cost });
+        if (cost < bestCost) { bestCost = cost; wanted[i] = r; }
+      });
+    });
+    pairs.sort(function (a, b) {
+      if (a.cost !== b.cost) return a.cost - b.cost;
+      if (keys[a.i] !== keys[b.i]) return keys[a.i] < keys[b.i] ? -1 : 1;
+      var ai = a.r.id || "", bi = b.r.id || "";
+      return ai < bi ? -1 : ai > bi ? 1 : 0;
+    });
+    var assigned = /** @type {(RefSurface|null)[]} */ (cands.map(function () { return null; }));
+    var takenRef = new Set(), takenCand = /** @type {Object<number, number>} */ ({});
+    pairs.forEach(function (p) {
+      if (takenCand[p.i] || takenRef.has(p.r)) return;
+      takenCand[p.i] = 1; takenRef.add(p.r); assigned[p.i] = p.r;
+    });
+    var contested = /** @type {{i: number, got: string|null, wanted: string}[]} */ ([]);
+    cands.forEach(function (c, i) {
+      var w = wanted[i];
+      if (w && w.id && assigned[i] !== w) {
+        var got = assigned[i];
+        contested.push({ i: i, got: (got && got.id) || null, wanted: w.id });
+      }
+    });
+    return { assigned: assigned, contested: contested };
+  }
+
   // Is `a` the OTHER FACE of the same physical doorway as `b`? A doorway is captured as two planes, one
   // per room, and the Quest may emit only one of them on a given capture — so the face that missed out is
   // not gone, it is simply the side nobody was looking through. Pruning it costs its styling for nothing.
@@ -1522,7 +1603,7 @@
   }
 
   return { eulerYXZ: eulerYXZ, yawOf: yawOf, register: register,
-           heightCensus: heightCensus, explainNoMatch: explainNoMatch, explainInsetNoMatch: explainInsetNoMatch, explainInsetMint: explainInsetMint, sameDoorway: sameDoorway, floorUnder: floorUnder, segmentRooms: segmentRooms, roomLinks: roomLinks, roomResiduals: roomResiduals,
+           heightCensus: heightCensus, explainNoMatch: explainNoMatch, explainInsetNoMatch: explainInsetNoMatch, explainInsetMint: explainInsetMint, sameDoorway: sameDoorway, matchCost: matchCost, assignRefs: assignRefs, floorUnder: floorUnder, segmentRooms: segmentRooms, roomLinks: roomLinks, roomResiduals: roomResiduals,
            polyFit: polyFit, planeCorners: planeCorners,
            canonicalFrame: canonicalFrame, surfaceToRef: surfaceToRef, selectSpace: selectSpace,
            matchRef: matchRef, matchWall: matchWall, matchInset: matchInset, dupInsetIds: dupInsetIds,
