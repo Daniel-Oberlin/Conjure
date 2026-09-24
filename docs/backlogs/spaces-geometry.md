@@ -64,6 +64,69 @@ that is indifferent to *why* the id churned, which now includes at least three d
 now outlives its surface. `_decompose` builds on the persisted map instead of rebuilding from the live
 entities, so a prune no longer destroys the override, and the colour returns on its own when the id does.
 
+#### What the shipped half actually covers — and why it is not the whole fix
+
+Recorded 2026-09-24 before the analysis is lost. **The shipped change is narrower than "styling survives a
+prune" suggests**, and the framing in this backlog was itself too narrow: it is not only about colour.
+
+A real-surface entity mixes three kinds of thing in one record with one lifetime:
+
+| | examples | on a prune |
+|---|---|---|
+| **geometry** | pose, extent, holes | re-derived every capture — safe to lose |
+| **derived labels** | `semantic`, `room`, `host_wall`, `leads_to`, `along`/`vertical` | recomputed — safe to lose |
+| **user data** | `components.material`, `meta.image_id`, `meta.friendly_id`, pinned content | **cannot be recreated** |
+
+So the principle is **a geometry operation must never destroy user data**, and the shipped change applies
+it to exactly one field. Still exposed:
+
+- **`meta.image_id`** — which library image is mapped onto the surface. It lives on `meta`, outside
+  `surfaceStyles`, so it is destroyed as before. The `src` url survives; the link to the asset does not.
+- **`meta.friendly_id`** — the number the user *says* ("make 12 blue"). It is **derived from the id's
+  trailing digits**, so a re-mint silently renumbers it. Arguably worse than losing a colour: a stale
+  number means the director confidently acts on the wrong surface.
+
+**Where each belongs is not the same place**, which is why this is a design question and not a patch:
+`material` and `image_id` are **per-world** (two worlds style one space differently — the whole point of
+`surfaceStyles`), while the spoken number is **per-space** (it is a fact about the physical wall; you say
+"12" whichever world you are in). A complete A is therefore two records, not one.
+
+**The mechanism shipped is also weak.** The carry is held in a module-level global (`_style_carry`), which
+is correct only because `_switch_to` saves the outgoing world before composing the incoming one — verified,
+but it would fail silently by writing one world's colours into another if a call site were added.
+`_save_active` should pass the prior map explicitly instead.
+
+**And the field data says the shipped half is the half you do not notice.** Six surfaces were pruned across
+2026-09-22/24 and exactly one id came back — and that one was saved by the `anchored` guard, not by this.
+An orphaned style reattaches when its id returns, and ids mostly do not return.
+
+#### The three options, for whoever picks this up
+
+- **A — separate user data from the entity.** An id-keyed record geometry ops never touch, covering
+  material, `image_id`, and a stable number. No guessing. **Does not help a re-mint**, because a new id has
+  no entry, so the user still sees grey.
+- **B — succession.** A mint that is a matcher miss records `meta.replaces: <near id>` — `explainNoMatch`
+  already computes that candidate and logs it — and the user data follows. **This is the half that fixes
+  what was actually observed**, since all five mints on 2026-09-24 carried a `near`. The risk is that the
+  same evidence cannot separate *"the matcher missed this wall"* from *"that furniture was replaced"*, and
+  inheriting a colour onto genuinely new furniture is a visibly wrong answer where grey is only a
+  disappointing one.
+- **C — churn less.** Stickier identity. Does nothing for the ones that still churn, and a 3 mm miss says
+  no plausible tolerance widening survives.
+
+**A and B are complements, not alternatives**: A makes the data survive, B makes it reattach. A alone is
+what shipped.
+
+**Two questions to settle before building more**, neither of which is a code question:
+
+1. **How bad is a wrong inheritance?** If B occasionally paints an old colour onto new furniture, is that
+   worse than today's guaranteed grey? It depends how often furniture actually moves in the spaces being
+   used.
+2. **Should `friendly_id` become stable?** Making it survive means storing it rather than deriving it,
+   which breaks the alignment [`worlds-surfaces.md` §1.1](../specs/worlds-surfaces.md) calls deliberate —
+   *"the label, `query_space`, the entity id and the user's reference all agree on it"*. The alternative is
+   making the **ids** stable, which is option B by another name.
+
 **The other half is not built:** a *re-minted* surface with a NEW id still gets the per-semantic default.
 The link exists at the moment of the miss — `explainNoMatch` already computes the nearest candidate and
 logs it as `near`, which is the id whose styling the replacement should inherit — so a mint could record
