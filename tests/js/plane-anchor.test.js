@@ -214,3 +214,46 @@ test("grab commit: committing the RAW local pose instead makes it jump by the re
   assert.ok(back.position.distanceTo(dropped.position) > 0.2,
     "expected a visible jump, got " + back.position.distanceTo(dropped.position));
 });
+
+test("authorAnchor: the floor is the one under the content, not the last in the array", () => {
+  // It used to be `floorP = p` inside a forEach — whichever floor came last — while the walls are sorted
+  // by distance to the entity two lines below. Invisible with one floor; on a real three-room capture it
+  // bound every anchor in the dwelling, living room included, to the kitchen floor.
+  const P = (id, kind, n, pt) => ({ id, kind, normal: new THREE.Vector3(...n).normalize(),
+                                    point: new THREE.Vector3(...pt) });
+  const planes = [
+    P("floor_here", "floor", [0, 1, 0], [0, 0, 0]),
+    P("w1", "wall", [1, 0, 0], [3, 1.2, 0]),
+    P("w2", "wall", [0, 0, 1], [0, 1.2, 3]),
+    P("w3", "wall", [-1, 0, 0], [-3, 1.2, 0]),
+    P("floor_next_door", "floor", [0, 1, 0], [20, 0, 0]),   // another room, LAST in the array
+  ];
+  const entity = { position: new THREE.Vector3(0.5, 0.9, 1.2),
+                   quaternion: new THREE.Quaternion(), mode: "grounded" };
+
+  const a = PA.authorAnchor(THREE, entity, planes);
+  assert.equal(a.floor.id, "floor_here", "nearest centre, not the last one seen");
+
+  // A caller that can do the real footprint test overrides it — `SpaceSnap.floorUnder` knows about
+  // extents, which a Plane does not carry.
+  const b = PA.authorAnchor(THREE, entity, planes, { floorId: "floor_next_door" });
+  assert.equal(b.floor.id, "floor_next_door", "the caller's answer wins");
+});
+
+test("authorAnchor picks the same floor as the Python port, on the same input", () => {
+  // The two used to disagree by construction — JS kept the LAST floor, Python took the FIRST — and the
+  // golden vectors could not see it because they contain one floor. This pins the tie-break too.
+  const P = (id, kind, n, pt) => ({ id, kind, normal: new THREE.Vector3(...n).normalize(),
+                                    point: new THREE.Vector3(...pt) });
+  const planes = [
+    P("floor_b", "floor", [0, 1, 0], [6, 0, 0]),
+    P("floor_a", "floor", [0, 1, 0], [-6, 0, 0]),           // equidistant from the entity
+    P("w1", "wall", [1, 0, 0], [3, 1.2, 0]),
+    P("w2", "wall", [0, 0, 1], [0, 1.2, 3]),
+    P("w3", "wall", [-1, 0, 0], [-3, 1.2, 0]),
+  ];
+  const entity = { position: new THREE.Vector3(0, 0.9, 0),
+                   quaternion: new THREE.Quaternion(), mode: "grounded" };
+  const a = PA.authorAnchor(THREE, entity, planes);
+  assert.equal(a.floor.id, "floor_a", "an exact tie breaks on the id, so both ports agree");
+});

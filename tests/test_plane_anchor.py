@@ -185,3 +185,48 @@ def test_surface_offset_round_trips():
     qi = server._euler_yxz_quat(irot)
     assert math.dist(p_img2, ipos) < 1e-4, p_img2
     assert abs(sum(q_img2[i] * qi[i] for i in range(4))) > 1 - 1e-6, "orientation reconstructs (up to sign)"
+
+
+def _p(pid, kind, n, pt):
+    return {"id": pid, "kind": kind, "normal": list(n), "point": list(pt)}
+
+
+_MULTI_FLOOR = [
+    _p("floor_here", "floor", (0, 1, 0), (0, 0, 0)),
+    _p("w1", "wall", (1, 0, 0), (3, 1.2, 0)),
+    _p("w2", "wall", (0, 0, 1), (0, 1.2, 3)),
+    _p("w3", "wall", (-1, 0, 0), (-3, 1.2, 0)),
+    _p("floor_next_door", "floor", (0, 1, 0), (20, 0, 0)),
+]
+_ENTITY = {"position": [0.5, 0.9, 1.2], "quaternion": [0, 0, 0, 1], "mode": "grounded"}
+
+
+def test_the_floor_is_the_one_under_the_content():
+    """This port took the FIRST floor while the JS took the LAST — a parity break the shared golden
+    vectors cannot see, because they contain a single floor. Both now take the nearest centre."""
+    from conjure.plane_anchor import author_anchor
+    a = author_anchor(_ENTITY, _MULTI_FLOOR)
+    assert a["floor"]["id"] == "floor_here"
+
+
+def test_a_caller_that_can_do_the_footprint_test_overrides_the_heuristic():
+    """Nearest-centre is orientation-free and needs nothing a Plane lacks, but it is still a heuristic and
+    wrong for very unequal adjoining rooms. A caller holding the extents passes the answer instead."""
+    from conjure.plane_anchor import author_anchor
+    a = author_anchor(_ENTITY, _MULTI_FLOOR, {"floorId": "floor_next_door"})
+    assert a["floor"]["id"] == "floor_next_door"
+    a = author_anchor(_ENTITY, _MULTI_FLOOR, {"floorId": "no_such_floor"})
+    assert a["floor"]["id"] == "floor_here", "an id naming nothing falls back rather than losing the floor"
+
+
+def test_an_exact_tie_breaks_on_the_id_so_both_ports_agree():
+    from conjure.plane_anchor import author_anchor
+    planes = [
+        _p("floor_b", "floor", (0, 1, 0), (6, 0, 0)),
+        _p("floor_a", "floor", (0, 1, 0), (-6, 0, 0)),
+        _p("w1", "wall", (1, 0, 0), (3, 1.2, 0)),
+        _p("w2", "wall", (0, 0, 1), (0, 1.2, 3)),
+        _p("w3", "wall", (-1, 0, 0), (-3, 1.2, 0)),
+    ]
+    a = author_anchor({"position": [0, 0.9, 0], "quaternion": [0, 0, 0, 1], "mode": "grounded"}, planes)
+    assert a["floor"]["id"] == "floor_a"

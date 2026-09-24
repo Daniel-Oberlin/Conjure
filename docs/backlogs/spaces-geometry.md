@@ -116,9 +116,9 @@ one of those branches merges `main`.
 Worth thirty seconds if you are about to do sustained work on a pre-rooms branch: run it, then check
 `rooms` and `meta.room` are still in the space file.
 
-### Every anchor binds to the LAST floor in the array, not the floor under the content — **confirmed**
+### Every anchor binds to the LAST floor in the array, not the floor under the content — **fixed 2026-09-24**
 
-**Status:** cause found 2026-09-24, on device and in the code. Not fixed. This is the raised-floor
+**Status:** cause found and fixed 2026-09-24. **Anchors authored before the fix still name the old floor** — see *Re-authoring* at the end. This is the raised-floor
 investigation's untested inference, confirmed and larger than it predicted.
 
 `authorAnchor` (`client/plane-anchor.js`) picks the reference floor like this:
@@ -167,6 +167,35 @@ naming the wrong floor stays wrong until rewritten.
 **Worth pairing with the ground truth**, which makes it checkable: `floor_32` ≡ `floor_8` (one continuous
 floor), `floor_10` +25 mm. After the fix, living-room content should level against `floor_8` and its height
 should move by the 25 mm the kitchen floor was contributing.
+
+#### What the fix does
+
+`authorAnchor` / `author_anchor` take `opts.floorId`, and the client supplies it from
+`SpaceSnap.floorUnder` — the footprint test, run where the extents actually are. A `Plane` carries only a
+normal and a point, so the question cannot be asked inside the anchor module; the client now stashes the
+floor *surfaces* in `framePlanes.localFloors` alongside the planes for exactly this.
+
+Absent a `floorId`, both ports fall back to the **nearest floor centre in plan view** — orientation-free,
+so it needs nothing a `Plane` lacks, and identical in both. It is still a heuristic and can be wrong for
+very unequal adjoining rooms, which is why a caller that can do better should.
+
+**It also closed a parity break.** The JS took the *last* floor and the Python the *first*. The shared
+golden vectors could not see it, because they contain one floor — so the two ports had been choosing
+different rooms on the same input for as long as multi-room spaces have existed. The tie-break is now on
+the id, so an exact tie resolves the same way in both.
+
+#### Re-authoring — not done
+
+`solveAnchor` reads `anchor.floor.id` as stored, so **existing anchors keep the floor they were authored
+with** and stay wrong until rewritten. On the reference space all four still name `real_floor_10`. An
+anchor is re-authored when its entity is grabbed and released, so they will drift right one at a time
+through ordinary use.
+
+A migration would be a pass over each world doc re-running `floorUnder` per anchored entity. Deliberately
+not done here: it is a write to live data whose only benefit is bringing forward something ordinary use
+fixes anyway, and the anchor solve is the subject of an open and not-understood fault
+([`investigations/raised-floor.md`](../investigations/raised-floor.md)) — a good moment to change as little
+as possible.
 
 ### A room's floor floats — **diagnosed, device-side; no fix on main**
 

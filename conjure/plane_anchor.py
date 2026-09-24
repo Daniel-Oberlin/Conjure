@@ -216,7 +216,19 @@ def author_anchor(entity: dict, planes: list, opts: Optional[dict] = None) -> di
     quat = Quat(*entity["quaternion"])
 
     ps = [_to_plane(p) for p in planes]
-    floor_p = next((p for p in ps if p["kind"] == "floor"), None)
+    # WHICH floor — see the long note in client/plane-anchor.js. A space has one floor plane per room, so
+    # this is a choice, and both ports used to make it by iteration order: this one took the FIRST floor
+    # while the JS took the LAST, a parity break the golden vectors cannot see because they have one floor.
+    # `floorId` when the caller can do the footprint test, else the nearest floor centre in plan view —
+    # orientation-free, deterministic, and the same rule in both ports.
+    floors = [p for p in ps if p["kind"] == "floor"]
+    floor_p = None
+    want = (opts or {}).get("floorId")
+    if want:
+        floor_p = next((p for p in floors if p["id"] == want), None)
+    if floor_p is None and floors:
+        ex, ez = pos.x, pos.z
+        floor_p = min(floors, key=lambda p: ((ex - p["point"].x) ** 2 + (ez - p["point"].z) ** 2, p["id"]))
     walls = [p for p in ps if p["kind"] == "wall"]
     up = floor_p["normal"].normalize() if floor_p else Vec3(0.0, 1.0, 0.0)
 

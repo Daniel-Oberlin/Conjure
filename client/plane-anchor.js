@@ -61,6 +61,8 @@
  * @property {number} [floorWeight] weight of the floor constraint in the position solve (default 6)
  * @property {number} [nearBias]    wall weight is 1/(nearBias + |offset|) — nearer walls weigh more (default 0.4)
  * @property {number} [minCond]     min 2×2 XZ conditioning (λmin/λmax) to accept the wall geometry (default 0.05)
+ * @property {string} [floorId]        which floor to reference — the caller's footprint test wins over
+ *                                    this module's nearest-centre fallback (see authorAnchor)
  */
 
 (function (root, factory) {
@@ -187,10 +189,31 @@
     var N = opts.nRefWalls != null ? opts.nRefWalls : 3;
     var minCond = opts.minCond != null ? opts.minCond : 0.05;
     var mode = entity.mode || "grounded";
+    // WHICH floor. A space has one floor plane per room, so this is a choice, and it used to be made by
+    // iteration order — `floorP = p` kept whichever floor came last, while the walls below are carefully
+    // sorted by distance to the entity. Invisible in a one-room space, because the only floor is the right
+    // one. On a real three-room capture it bound every anchor in the dwelling, living room included, to the
+    // kitchen floor (2026-09-24). Worse, the two ports disagreed: JS took the last, Python the first, and
+    // the golden vectors could not see it because they have one floor.
+    //
+    // `opts.floorId` is the answer when the caller can compute it — `SpaceSnap.floorUnder` does the
+    // footprint test properly, and the caller is where the extents live. Absent that, the nearest floor
+    // CENTRE in plan view: orientation-free, so it needs nothing this Plane does not carry, deterministic,
+    // and identical in both ports. It is a heuristic and can be wrong for very unequal adjoining rooms —
+    // which is why a caller that can do better should.
+    /** @type {Plane[]} */ var floors = [];
+    /** @type {Plane[]} */ var walls = [];
+    planes.forEach(function (p) { if (p.kind === "floor") floors.push(p); else if (p.kind === "wall") walls.push(p); });
     var floorP = /** @type {Plane|null} */ (null);
-    /** @type {Plane[]} */
-    var walls = [];
-    planes.forEach(function (p) { if (p.kind === "floor") floorP = p; else if (p.kind === "wall") walls.push(p); });
+    if (opts.floorId) floorP = floors.filter(function (p) { return p.id === opts.floorId; })[0] || null;
+    if (!floorP && floors.length) {
+      var bestD = Infinity;
+      floors.forEach(function (p) {
+        var dx = entity.position.x - p.point.x, dz = entity.position.z - p.point.z;
+        var d = dx * dx + dz * dz;
+        if (d < bestD || (d === bestD && floorP && p.id < floorP.id)) { bestD = d; floorP = p; }
+      });
+    }
     var up = floorP ? floorP.normal.clone().normalize() : new THREE.Vector3(0, 1, 0);
 
     // nearest walls first

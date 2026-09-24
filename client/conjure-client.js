@@ -930,7 +930,7 @@
       // have, the inbound `meta.anchor` re-solved against them (the teleport), and `contentPoseIsLocal`
       // claimed the local solve owned the pose — suppressing the server's correct raw transform in the
       // same patch. Observed 2026-08-28 placing models in a void world entered from a captured space.
-      framePlanes.local = framePlanes.ref = null;
+      framePlanes.local = framePlanes.ref = framePlanes.localFloors = null;
     }
     root().innerHTML = "";
     geoQueue = []; geoPending = {}; surfDumped = false;   // world switch destroyed every surface el → drop stale rebuild entries + re-arm the [surf] dump
@@ -1184,7 +1184,17 @@
   var ORIGIN = null;   // AFRAME.THREE.Vector3(0,0,0), built lazily — AFRAME isn't up at parse time
   // Last capture's plane bases: local walls (F_track) + seed walls (F_ref). Cached by _placeContent so
   // ConjureFrames.toRef can invert its solve for interaction modules.
-  var framePlanes = { local: null, ref: null };
+  var framePlanes = { local: null, ref: null, localFloors: null };
+
+  // Which floor to anchor against. authorAnchor falls back to the nearest floor CENTRE, which is a
+  // heuristic; here the footprint test is available, so use it. Returns undefined when it cannot answer,
+  // which leaves the fallback in charge rather than asserting a wrong floor.
+  function floorOpt(position) {
+    var fl = framePlanes.localFloors;
+    if (!fl || !fl.length || !window.SpaceSnap) return undefined;
+    var f = window.SpaceSnap.floorUnder(AFRAME.THREE, fl, position.x, position.z);
+    return f && f.id ? { floorId: f.id } : undefined;
+  }
 
   // Minimal shared-event bus for dynamic modules (docs/specs/dynamics.md §6, tier B). `emitShared`
   // relays an event to PEERS via the ws (the server fans it to the OTHER clients); on()/off() subscribe;
@@ -1301,13 +1311,13 @@
       // If there is no basis to come back through, there is no basis to author from.
       if (!PA || !WM.hasFrameBasis(framePlanes)) return null;
       return PA.authorAnchor(AFRAME.THREE,
-        { position: position, quaternion: quaternion, mode: mode || "free" }, lp);
+        { position: position, quaternion: quaternion, mode: mode || "free" }, lp, floorOpt(position));
     },
     toRef: function (position, quaternion, mode) {
       var PA = window.PlaneAnchor, lp = framePlanes.local, rp = framePlanes.ref;
       if (!PA || !WM.hasFrameBasis(framePlanes)) return null;   // the same rule both ways — see hasFrameBasis
       var anchor = PA.authorAnchor(AFRAME.THREE,
-        { position: position, quaternion: quaternion, mode: mode || "free" }, lp);
+        { position: position, quaternion: quaternion, mode: mode || "free" }, lp, floorOpt(position));
       var sol = PA.solveAnchor(AFRAME.THREE, anchor, rp);
       return (sol && sol.ok) ? { position: sol.position, quaternion: sol.quaternion } : null;
     }
@@ -1875,6 +1885,9 @@
         var THREE = AFRAME.THREE;
         var localPl = localToPlanes(THREE, localSurfaces), refPl = refToPlanes(THREE, this._ref);
         framePlanes.local = localPl; framePlanes.ref = refPl;   // the basis ConjureFrames.toRef inverts
+        // …and the floor SURFACES, which the planes are not: a Plane carries only a normal and a point, so
+        // "which floor is under this content" cannot be asked of it. `floorUnder` needs the footprint.
+        framePlanes.localFloors = localSurfaces.filter(function (s) { return s.semantic === "floor"; });
         var wr = document.getElementById("world-root"); if (!wr) return;
         var ridden = 0, freed = 0, anchored = 0;
         Array.prototype.forEach.call(wr.children, function (el) {
