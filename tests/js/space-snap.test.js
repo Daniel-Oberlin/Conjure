@@ -1467,3 +1467,293 @@ test("segmentRooms on pose-stripped surfaces finds NOTHING — the trap that cos
   assert.equal(RS.segmentRooms(THREE, stripped).rooms.length, 0,
                "yet no rooms — indistinguishable from a space that has none");
 });
+
+// --- explainInsetNoMatch / explainInsetMint: say why an INSET lost its id, in the terms of the matcher
+// that actually ran. Insets go through matchInset (host wall + along-slot), not matchWall — and until
+// 2026-09-24 the churn log explained them with matchWall's gates, reporting a matcher that never ran and
+// making 69% of all recorded churn unreadable (investigations/surface-churn.md). These tests exist so the
+// two can never drift apart again: every gate below names a DIFFERENT repair, so a wrong verdict here
+// sends the next investigation to the wrong place. ---
+
+const insetRef = (id, sem, host) => ({ id, sem, hostWall: host, anchor: { d: 1 } });
+const insetDiag = (slots, cands, walls) => ({
+  recon: slots, cands, hostWalls: walls === undefined ? ["w1"] : walls,
+});
+
+test("explainInsetNoMatch: no host wall or no anchor is 'nokey' — matchInset could never key it", () => {
+  const d = insetDiag({}, []);
+  assert.strictEqual(RS.explainInsetNoMatch({ id: "d1", sem: "door", hostWall: null, anchor: {} }, d).gate, "nokey");
+  assert.strictEqual(RS.explainInsetNoMatch({ id: "d1", sem: "door", hostWall: "w1", anchor: null }, d).gate, "nokey");
+});
+
+test("explainInsetNoMatch: 'nohost' is the CASCADE test — an inset orphaned by its wall churning", () => {
+  // The host wall is simply not in this capture: it re-minted under a new id, so every inset keyed to it
+  // is unreachable. This is the ONLY gate that says so, and the whole reason door churn could not be
+  // attributed to wall churn before.
+  const why = RS.explainInsetNoMatch(insetRef("d1", "door", "w_gone"), insetDiag({}, [], ["w1", "w2"]));
+  assert.strictEqual(why.gate, "nohost");
+  assert.strictEqual(why.id, "w_gone", "names the wall that went missing, so the cascade is traceable");
+});
+
+test("explainInsetNoMatch: host wall present but the slot could not be rebuilt is 'norecon'", () => {
+  const why = RS.explainInsetNoMatch(insetRef("d1", "door", "w1"), insetDiag({ "door|w1": [] }, []));
+  assert.strictEqual(why.gate, "norecon");
+});
+
+test("explainInsetNoMatch: nothing of that semantic detected on the wall is 'device', not a matcher miss", () => {
+  const d = insetDiag({ "door|w1": [{ id: "d1", along: 1.0 }] },
+                      [{ sem: "window", host: "w1", along: 1.0, chose: null },   // wrong semantic
+                       { sem: "door", host: "w2", along: 1.0, chose: null }]);   // wrong wall
+  assert.strictEqual(RS.explainInsetNoMatch(insetRef("d1", "door", "w1"), d).why, "device");
+});
+
+test("explainInsetNoMatch: a candidate past the 0.4 m slot tolerance is 'along', with the margin", () => {
+  const d = insetDiag({ "door|w1": [{ id: "d1", along: 1.0 }] },
+                      [{ sem: "door", host: "w1", along: 1.55, chose: null }]);
+  const why = RS.explainInsetNoMatch(insetRef("d1", "door", "w1"), d);
+  assert.strictEqual(why.gate, "along");
+  assert.strictEqual(why.val, 0.55);
+  assert.strictEqual(why.tol, 0.4, "reports matchInset's own tolerance, not matchWall's");
+});
+
+test("explainInsetNoMatch: reachable but taken by a nearer slot is 'outbid', naming the rival", () => {
+  // The candidate is 0.1 m from d1 — well inside tolerance — but 0.05 m from d2, so matchInset gave it to
+  // d2 and d1 got nothing. Distinct from 'along': the tolerance is innocent, the assignment is not.
+  const d = insetDiag({ "door|w1": [{ id: "d1", along: 1.0 }, { id: "d2", along: 1.15 }] },
+                      [{ sem: "door", host: "w1", along: 1.1, chose: "d2" }]);
+  const why = RS.explainInsetNoMatch(insetRef("d1", "door", "w1"), d);
+  assert.strictEqual(why.gate, "outbid");
+  assert.strictEqual(why.id, "d2");
+  assert.ok(why.dist < 0.4);
+});
+
+test("explainInsetNoMatch carries the candidate's WIDTH — the architrave test", () => {
+  // A doorway whose frame is sometimes segmented as the door reads ~2x wide on one side (a real case:
+  // 1.36 m against 0.71 m). Comparing the candidate's width against the ref's own across captures is what
+  // separates "the two faces are competing" from "one face's extent is flipping".
+  const d = insetDiag({ "door|w1": [{ id: "d1", along: 1.0 }] },
+                      [{ sem: "door", host: "w1", along: 1.6, ext: [1.36, 2.0], chose: null }]);
+  assert.strictEqual(RS.explainInsetNoMatch(insetRef("d1", "door", "w1"), d).cw, 1.36);
+});
+
+test("explainInsetMint: a detected inset with no stored slot on its wall is genuinely NEW", () => {
+  const why = RS.explainInsetMint({ sem: "door", host: "w1", along: 1.0 }, {}, new Set());
+  assert.strictEqual(why.why, "device", "no reference to lose — not a churn event");
+});
+
+test("explainInsetMint: the slot it wanted was already taken → 'taken', naming it", () => {
+  // Checked against the NEAREST slot, not the nearest FREE one: matchInset skips taken slots silently, so
+  // "the one I wanted was gone" and "the nearest free one was too far" are different facts.
+  const recon = { "door|w1": [{ id: "d1", along: 1.0 }] };
+  const why = RS.explainInsetMint({ sem: "door", host: "w1", along: 1.05 }, recon, new Set(["d1"]));
+  assert.strictEqual(why.gate, "taken");
+  assert.strictEqual(why.id, "d1");
+});
+
+test("the inset and wall gate vocabularies are DISJOINT", () => {
+  // A shared name makes a log line ambiguous about which matcher produced it — exactly the fault these
+  // functions exist to fix, and the reason the mint gate is `taken` and not `claimed`. A reader can then
+  // treat an inset reporting a wall gate as proof of a stale client rather than a real verdict.
+  const insetGates = new Set(["nokey", "nohost", "norecon", "along", "outbid", "taken"]);
+  const wallGates = new Set(["dyaw", "perp", "gap", "claimed"]);
+  for (const g of insetGates) assert.ok(!wallGates.has(g), `gate "${g}" is claimed by both matchers`);
+});
+
+test("explainInsetMint: nearest free slot beyond tolerance → 'along', not 'claimed'", () => {
+  const recon = { "door|w1": [{ id: "d1", along: 1.0 }] };
+  const why = RS.explainInsetMint({ sem: "door", host: "w1", along: 1.6 }, recon, new Set());
+  assert.strictEqual(why.gate, "along");
+  assert.strictEqual(why.val, 0.6);
+});
+
+test("explainInsetMint: no resolved host wall is 'nohost'", () => {
+  assert.strictEqual(RS.explainInsetMint({ sem: "door", host: null, along: null }, {}, new Set()).gate, "nohost");
+});
+
+// --- sameDoorway: the two faces of one physical doorway. A doorway is captured as two planes, one per
+// room, and the Quest emits whichever you are looking through — so the other face vanishing is not a
+// door that went away. The absence debounce uses this to hold its prune while the twin is visible. ---
+
+// Two door faces on a wall running along X at z=0, facing ±Z, `thick` apart through the wall. `off` slides
+// the second face along the wall, which is what a width difference does to a centroid.
+function doorFace(id, x, z, yawDeg, w) {
+  return { id, sem: "door", orient: "vertical", ext: [w, 2.0],
+           pos: new THREE.Vector3(x, 1.0, z), nyaw: yawDeg * D2R };
+}
+
+test("sameDoorway pairs two opposed faces across a wall thickness", () => {
+  const a = doorFace("d_a", 0, 0, 0, 0.8);
+  const b = doorFace("d_b", 0, 0.15, 180, 0.8);
+  assert.ok(RS.sameDoorway(a, b));
+  assert.ok(RS.sameDoorway(b, a), "symmetric");
+});
+
+test("sameDoorway pairs the REAL 1.91x case — one side segments the frame, not the door", () => {
+  // space-1's real_door_45 / real_door_84: 1.36 m against 0.71 m, centroids 0.287 m apart ALONG the wall
+  // and 0.158 m through it. Any test keyed on similar widths, or on centroid distance, rejects this pair —
+  // and it is the pair most in need of the guard.
+  const wide = doorFace("real_door_45", 0, 0, 0, 1.36);
+  const narrow = doorFace("real_door_84", 0.287, 0.158, 180, 0.71);
+  assert.ok(RS.sameDoorway(wide, narrow), "a 1.91x width ratio is a capture artifact, not a different door");
+});
+
+test("sameDoorway rejects two doors near a CORNER — close, but not opposed", () => {
+  // The false positive a proximity test takes: space-1 has such pairs at 0.765 m and 0.997 m, at ~90°.
+  const a = doorFace("d_a", 0, 0, 0, 0.8);
+  const b = doorFace("d_b", 0.5, 0.5, 90, 0.8);
+  assert.strictEqual(RS.sameDoorway(a, b), false);
+});
+
+test("sameDoorway rejects two doors on the SAME side of one wall (both faces inward)", () => {
+  const a = doorFace("d_a", 0, 0, 0, 0.8);
+  const b = doorFace("d_b", 0.4, 0.1, 0, 0.8);
+  assert.strictEqual(RS.sameDoorway(a, b), false, "same facing — two doors, not two faces");
+});
+
+test("sameDoorway rejects opposed faces too far apart to share a wall", () => {
+  const a = doorFace("d_a", 0, 0, 0, 0.8);
+  const b = doorFace("d_b", 0, 1.2, 180, 0.8);   // 1.2 m is a corridor, not a wall thickness
+  assert.strictEqual(RS.sameDoorway(a, b), false);
+});
+
+test("sameDoorway rejects opposed doors whose spans do not overlap along the wall", () => {
+  // Two separate doorways in the same partition, one at each end. Opposed and thin-walled, but distinct.
+  const a = doorFace("d_a", 0, 0, 0, 0.8);
+  const b = doorFace("d_b", 3.0, 0.15, 180, 0.8);
+  assert.strictEqual(RS.sameDoorway(a, b), false);
+});
+
+test("sameDoorway rejects a different semantic and rejects itself", () => {
+  const a = doorFace("d_a", 0, 0, 0, 0.8);
+  const w = { ...doorFace("w_a", 0, 0.15, 180, 0.8), sem: "window" };
+  assert.strictEqual(RS.sameDoorway(a, w), false);
+  assert.strictEqual(RS.sameDoorway(a, a), false);
+});
+
+test("sameDoorway rejects faces stacked vertically (a door under a transom)", () => {
+  const a = doorFace("d_a", 0, 0, 0, 0.8);
+  const b = { ...doorFace("d_b", 0, 0.15, 180, 0.8), pos: new THREE.Vector3(0, 2.4, 0.15) };
+  assert.strictEqual(RS.sameDoorway(a, b), false);
+});
+
+// --- assignRefs: assign every plane to a reference AT ONCE. Emission-order greedy is not merely
+// suboptimal — the order dependence IS the swap mechanism, and it is what pruned real_wall_148 from 7 cm
+// for losing a race (investigations/surface-churn.md). ---
+
+const wallRef = (id, x, z, yawDeg, w) => ({
+  id, sem: "wall", orient: "vertical", ext: [w, 2.4],
+  pos: new THREE.Vector3(x, 1.2, z), nyaw: yawDeg * D2R,
+});
+const wallCand = (x, z, yawDeg, w) => ({
+  sem: "wall", orient: "vertical", ext: [w, 2.4],
+  pos: new THREE.Vector3(x, 1.2, z), nyaw: yawDeg * D2R,
+});
+
+// Every ordering of the same input must give the same answer. This is the property the old code lacked,
+// and the reason two identical captures could disagree about which wall was which.
+function permutations(xs) {
+  if (xs.length <= 1) return [xs];
+  return xs.flatMap((x, i) =>
+    permutations([...xs.slice(0, i), ...xs.slice(i + 1)]).map((p) => [x, ...p]));
+}
+
+test("assignRefs is INVARIANT to the order planes arrive in — the swap mechanism, removed", () => {
+  // Two parallel walls close enough that each plane is a legal match for either reference.
+  const refs = [wallRef("rA", 0, 0, 0, 3), wallRef("rB", 0, 0.12, 0, 3)];
+  const cands = [wallCand(0, 0.01, 0, 3), wallCand(0, 0.11, 0, 3)];
+  const baseline = RS.assignRefs(cands, refs).assigned.map((r) => r && r.id);
+  assert.deepStrictEqual(baseline, ["rA", "rB"], "each plane takes its own nearer reference");
+  for (const order of permutations([0, 1])) {
+    const permuted = order.map((i) => cands[i]);
+    const got = RS.assignRefs(permuted, refs).assigned.map((r) => r && r.id);
+    assert.deepStrictEqual(order.map((i) => baseline[i]), got, `order ${order} disagreed`);
+  }
+});
+
+test("assignRefs is invariant across ALL orderings of four planes", () => {
+  const refs = [wallRef("r0", 0, 0, 0, 2), wallRef("r1", 0, 0.1, 0, 2),
+                wallRef("r2", 5, 0, 180, 2), wallRef("r3", 5, 0.1, 180, 2)];
+  const cands = [wallCand(0, 0.005, 0, 2), wallCand(0, 0.105, 0, 2),
+                 wallCand(5, 0.005, 180, 2), wallCand(5, 0.105, 180, 2)];
+  const baseline = RS.assignRefs(cands, refs).assigned.map((r) => r && r.id);
+  for (const order of permutations([0, 1, 2, 3])) {
+    const got = RS.assignRefs(order.map((i) => cands[i]), refs).assigned.map((r) => r && r.id);
+    assert.deepStrictEqual(order.map((i) => baseline[i]), got, `order ${order} disagreed`);
+  }
+});
+
+test("the emission order that misassigned ids under the OLD matcher no longer does", () => {
+  // Two planes whose nearest reference is the SAME one. planeA is 0.040 from rA, planeB 0.045 — so
+  // whichever the Quest emits first takes rA and the other is pushed onto rB. Same geometry, same
+  // tolerances, different identities, decided by an order `detectedPlanes` does not guarantee.
+  const refs = [wallRef("rA", 0, 0, 0, 4), wallRef("rB", 0, 0.10, 0, 4)];
+  const planeA = wallCand(0, 0.040, 0, 4);
+  const planeB = wallCand(0, 0.045, 0, 4);
+
+  const bFirst = new Set();
+  assert.strictEqual(RS.matchWall(planeB, refs, bFirst).id, "rA", "old greedy, B first: B takes rA");
+  bFirst.add(refs[0]);
+  assert.strictEqual(RS.matchWall(planeA, refs, bFirst).id, "rB", "…and A is pushed onto rB");
+  const aFirst = new Set();
+  assert.strictEqual(RS.matchWall(planeA, refs, aFirst).id, "rA", "A first: A takes rA — the opposite");
+
+  // Best-first settles it the same way regardless: the globally cheapest pair (A→rA at 0.040) is taken
+  // first, and B gets what is left.
+  for (const order of [[planeA, planeB], [planeB, planeA]]) {
+    const got = RS.assignRefs(order, refs).assigned.map((r) => r && r.id);
+    const want = order[0] === planeA ? ["rA", "rB"] : ["rB", "rA"];
+    assert.deepStrictEqual(got, want, "each plane keeps its own nearest, whatever the order");
+  }
+});
+
+test("assignRefs keeps a surface the old code pruned for losing a race (real_wall_148)", () => {
+  // 2026-09-22: real_wall_148 missed three captures at dist 0.085 / 0.072 / 0.073 and was pruned. It
+  // failed no gate — another plane had taken its reference first.
+  const refs = [wallRef("real_wall_148", 0, 0, 0, 3), wallRef("real_wall_141", 0, 0.08, 0, 3)];
+  const mine = wallCand(0, 0.005, 0, 3);
+  const rival = wallCand(0, 0.075, 0, 3);
+  const got = RS.assignRefs([rival, mine], refs).assigned.map((r) => r && r.id);
+  assert.deepStrictEqual(got, ["real_wall_141", "real_wall_148"], "both keep their own id");
+});
+
+test("assignRefs prefers ONE good pair over two mediocre ones — no cardinality swap", () => {
+  // The trap a minimum-total or maximum-matches solver falls into: planeA fits rA at 0.01 and rB at 0.14;
+  // planeB fits rA at 0.02 and cannot reach rB at all. Optimising the total prefers A→rB + B→rA (two
+  // matches) over A→rA alone. Best-first refuses to trade: A keeps rA and B mints.
+  const refs = [wallRef("rA", 0, 0, 0, 3), wallRef("rB", 0, 0.14, 0, 3)];
+  const planeA = wallCand(0, 0.01, 0, 3);
+  const planeB = wallCand(0, 0.02, 0, 3.0);
+  const out = RS.assignRefs([planeA, planeB], refs);
+  assert.strictEqual(out.assigned[0].id, "rA", "the best pair is taken first and never traded away");
+  assert.notStrictEqual(out.assigned[1] && out.assigned[1].id, "rA");
+});
+
+test("assignRefs reports a contested pair so a wrong match is auditable", () => {
+  // A wrong match emits nothing today — churn.* fires only on a mint, miss or prune — so a swap is
+  // invisible by construction. `contested` is the audit trail.
+  const refs = [wallRef("rA", 0, 0, 0, 3)];
+  const near = wallCand(0, 0.01, 0, 3);
+  const far = wallCand(0, 0.06, 0, 3);
+  const out = RS.assignRefs([near, far], refs);
+  assert.strictEqual(out.assigned[0].id, "rA");
+  assert.strictEqual(out.assigned[1], null, "the loser mints rather than stealing");
+  assert.deepStrictEqual(out.contested, [{ i: 1, got: null, wanted: "rA" }]);
+});
+
+test("assignRefs never assigns one reference twice, and respects the gates", () => {
+  const refs = [wallRef("rA", 0, 0, 0, 3)];
+  const out = RS.assignRefs([wallCand(0, 0.01, 0, 3), wallCand(0, 0.02, 0, 3)], refs);
+  assert.strictEqual(out.assigned.filter((r) => r && r.id === "rA").length, 1);
+  // Out of tolerance entirely → nobody is assigned.
+  const farOut = RS.assignRefs([wallCand(0, 9, 0, 3)], refs);
+  assert.strictEqual(farOut.assigned[0], null);
+});
+
+test("assignRefs matches horizontals by matchRef's rule, not matchWall's", () => {
+  const floor = { id: "rF", sem: "floor", orient: "horizontal", ext: [4, 4],
+                  pos: new THREE.Vector3(0, 0, 0), nyaw: 0 };
+  const near = { sem: "floor", orient: "horizontal", ext: [4, 4], pos: new THREE.Vector3(0.1, 0, 0), nyaw: 0 };
+  const far = { sem: "floor", orient: "horizontal", ext: [4, 4], pos: new THREE.Vector3(0.9, 0, 0), nyaw: 0 };
+  assert.strictEqual(RS.assignRefs([near], [floor]).assigned[0].id, "rF");
+  assert.strictEqual(RS.assignRefs([far], [floor]).assigned[0], null, "past the 0.5 m radius");
+});

@@ -190,7 +190,10 @@ Candidate fixes, cheapest first:
   earns its place independently of either of these.
 - **Refuse a wholesale prune** — the first guard proposed under [*An empty capture wipes a space's
   geometry*](../backlogs/spaces.md): a post that would remove >50% of the stored set is far more likely a
-  bug than a fact. Here it would have rejected the 25-surface prune outright.
+  bug than a fact. ~~Here it would have rejected the 25-surface prune outright.~~ **Wrong — corrected
+  2026-09-24 while building it.** The destructive post pruned 25 of the **86** then stored (57 originals
+  plus the 29 freshly minted), about **29%**, so a >50% rule would not have fired. It is a backstop for a
+  different shape of failure; the guard that covers *this* incident is merge-until-voted above.
 - **Make styling survive a prune** — the deeper fix in *Still open* above, and the one that turns this
   class of event from destructive into cosmetic. This recurrence is the second time it has been the
   difference between an annoyance and lost work.
@@ -277,9 +280,27 @@ ct=79473  miss door_43            regain door_86
 `real_door_86` misses while `real_door_43` holds; then 86 regains as 43 begins missing. The two faces of one
 doorway are **trading a single observation between captures**, and the loser reports `claimed` each time.
 
-This matters because it is not the same fault as the walls, and **global assignment cannot fix it**: if the
-Quest emits one plane for a doorway and two refs want it, no assignment is correct — one ref loses every
-time. The pair has to be recognised *as* a pair.
+~~This matters because it is not the same fault as the walls, and **global assignment cannot fix it**: if
+the Quest emits one plane for a doorway and two refs want it, no assignment is correct — one ref loses
+every time. The pair has to be recognised *as* a pair.~~
+
+**Wrong — corrected 2026-09-24 by a device run.** The premise was that the Quest emits only the door face
+you are looking through. It does not. `detectedPlanes` is the **persisted Room Setup delivered wholesale
+every frame**, not gaze-dependent (`memory/quest-detectedplanes-persisted`), so *both* faces are offered on
+every capture regardless of where you stand. A 2.5-minute session walking through every doorway, holding
+66 of 67 planes throughout, produced **zero** churn events and **zero** `churn.pair_held` — the guard built
+for this never fired, because a door face does not go absent when you turn away.
+
+So the two faces are never competing for one *observation*. They are competing for one *assignment*: both
+candidates are present every capture, and under emission-order greedy the first to arrive takes a
+reference, after which the second may find its own reference gated out and mint instead — leaving the
+first's reference unmatched. That is the `outbid`/`claimed` shape, and it is ordinary assignment churn.
+**Global assignment is the fix for doors too**, not a separate pair mechanism.
+
+`sameDoorway` and the absence guard are kept: they cost one lookup, and a `churn.pair_held` event would now
+be genuine news — it would mean `detectedPlanes` had become gaze-dependent, invalidating an assumption a
+good deal of this design rests on. But nothing should depend on the guard firing, and on current firmware
+nothing will.
 
 #### How to recognise the pair — measured, not guessed
 
@@ -401,6 +422,35 @@ are two separate faults still stands.
 A narrow "carry the colour across a prune" change was built and **reverted** on this evidence; it survives on
 `fix/styling-survives-prune`. See the backlog entry for what is keyed to a surface id besides colour —
 `meta.image_id` and the derived `meta.friendly_id` are both exposed, and the latter silently renumbers.
+
+### Reading the next run
+
+`scripts/inset_churn.py [YYYY-MM-DD]` (default today) — the whole day's churn, not only insets despite the
+name. It answers the two questions above rather than dumping events, and reports what each fix did:
+
+- **What the guards did.** `churn.pair_held` (a door face spared by the doorway guard — each one is a
+  surface that would have been pruned), `seed.prune_refused`, `seed.merge_forced`, and
+  `churn.assign_contested` (two planes wanted one reference). A contested pair is not an error; it is the
+  audit trail for a wrong match, which emits nothing else. It is worth a look only if the *same* pair
+  contests every capture, which would mean the geometry is genuinely ambiguous rather than the order
+  unlucky. `merge_forced` from a headset means selection never completed — the 2026-09-09 window.
+
+
+- **Q1 — cascade or competition?** `nohost` counts against `outbid`/`taken`. The two lead to different
+  repairs (fix the wall assignment, or recognise the doorway pair), so the script says which dominates
+  rather than leaving it to eyeball.
+- **Q2 — is an extent flipping?** It prints each inset's candidate width across captures. A width that
+  *changes* is the architrave being segmented as the door on some captures and not others; widths that are
+  merely *different* between the two faces are expected and not the fault.
+
+It also refuses to interpret a run where any inset reports a **wall** gate. The inset and wall gate
+vocabularies are disjoint by design, so that combination cannot occur from current code — it means the
+headset is running a **cached client**, and every verdict in the file is the old invalid kind. Given how
+aggressively the Quest caches, this is the likeliest way to waste a session.
+
+The raw logs behind everything above were archived to `temp/geometry-archive-pre-inset-dispatch/` on
+2026-09-24, so new runs read clean. They are local only — `temp/` is git-ignored — and every conclusion
+drawn from them is recorded here rather than in the data.
 
 ## Fixes shipped
 

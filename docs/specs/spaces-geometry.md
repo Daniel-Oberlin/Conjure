@@ -403,6 +403,15 @@ tolerance-fudging:
   So anything that must agree across devices is defined by distances to intersections.
 - **Wall identity by plane, not centroid.** `matchWall` keys on normal + perpendicular offset with an
   along-line overlap guard. Floors and ceilings keep `matchRef`; insets use `matchInset`.
+- **Identity is assigned globally, not first-come.** All non-inset planes are scored against all
+  references (`matchCost`) and paired best-first (`assignRefs`) — cheapest pair, then cheapest of what
+  remains. Taking the nearest free reference *as each plane arrives* makes identity depend on the order
+  `detectedPlanes` supplies them, which nothing guarantees: two planes whose nearest reference is the same
+  one resolve differently depending only on which came first. That order dependence is how a surface
+  sitting centimetres from a perfectly good partner gets pruned for losing a race (§10.1).
+  Deliberately **best-first rather than minimum-total**: a solver minimising total cost, or maximising the
+  number of matches, will trade one excellent pairing for two mediocre ones, and that trade is exactly the
+  §4.3 swap. Best-first never trades, so it also needs no mint-versus-match penalty to be tuned.
 - **Register-only guests.** A guest re-seeds its reference wholesale from the authoritative broadcast
   each capture and never establishes, lerp-mutates, mints, or posts geometry. Before this, a guest
   evolving its own copy of the shared reference caused a feedback drift that read as "the world drifts
@@ -646,6 +655,29 @@ genuinely gone and the server prunes it at once — no server-side absence count
 Surfaces with content pinned to them (`anchored`) are **never pruned**, so a photo's host id cannot
 orphan.
 
+**Two guards stand between a bad capture and the stored space.** Both only ever *refuse* a deletion, so
+neither can change a match or lose data by firing:
+
+- **Merge until someone has voted.** Set when the last AR holder leaves (and at boot), cleared on the next
+  `/space/select` commit. While set, a capture may add but not remove. `/space/capture` checks *who* is
+  asking but never whether they have established *where they are*, and a returning headset is capture
+  authority before it has aligned to the stored geometry — so its first captures arrive in an unaligned
+  frame, miss everything, mint a parallel set of ids and prune the originals with their materials. That
+  window is not rare: a 2026-09-24 session had a capture accepted **2.2 s before `space.enter`**. On
+  2026-09-09 it cost all 59 surfaces their styling.
+  It stands down after `_MERGE_PATIENCE` captures and logs `seed.merge_forced` — the same deadlock escape
+  as the client's load gate (§4.0a), because a capture source that never votes (the CLI, a desktop client)
+  would otherwise disable pruning for ever and let the seed rot with no symptom.
+- **Refuse a wholesale prune.** A post deleting more than half an *established* space is likelier a bug
+  than a room that lost half its surfaces. The size floor (`_PRUNE_GUARD_MIN`) matters as much as the
+  ratio: a room's structural shell alone is six surfaces, so below that a space is not established and
+  losing most of it is ordinary. A coarse backstop only — it would **not** have caught 2026-09-09, which
+  pruned 25 of 86 (~29%).
+
+Both log `seed.prune_refused`, and only when something was actually refused.
+
+**And when a prune does destroy a user's work, it says so loudly.** A styled surface being pruned writes a `*** LOST STYLING` line naming the id, the colour and where to look next, instead of the routine `[seed] … PRUNED` line every other prune gets. The distinction is `styled` — the material differs from `_default_surface_material`, so it is a director edit, not the default every surface is born with. This is the tripwire the whole event log otherwise lacks: everything else here is silent by design and only found by someone who already suspected something.
+
 There is **no time-based establish-then-freeze**. An earlier design held a ~20 s establishing window and
 then froze static surfaces; it is gone, along with `_ESTABLISH_SECS`, `_STATIC_SEMANTICS` and
 `_static_frozen`. Clients render locally, so there is nothing shared to stabilise.
@@ -791,10 +823,13 @@ it now confirms a measurement rather than an argument.
 
 | Event | Fires when |
 |---|---|
-| `space.enter` | first capture in a world — role, `_ref`/seed sizes, count per semantic |
+| `space.enter` | first capture in a world — role, `_ref`/seed sizes, count per semantic, and `build`: the newest client-script mtime the browser actually loaded, so a log can be checked against the files on disk |
 | `churn.miss` / `.regain` | a known id goes unmatched (n=1..3), or returns before the debounce |
 | `churn.mint` / `.hide` / `.prune` | a fresh id is minted; the element is removed after 3 misses; the id leaves the POST set |
 | `churn.restyle_lost` | an id that used to render with a material now renders bare |
+| `churn.pair_held` | a door face's absence was excused because the other face of the same doorway was visible this capture (`sameDoorway`) — logged once per episode |
+| `churn.assign_contested` | a plane did not get its own cheapest reference because another plane wanted it more (`assignRefs`) — the audit trail for a wrong match, which emits nothing else |
+| `seed.prune_refused` / `.merge_forced` | the server declined a destructive post (unvoted capturer, or >50% of an established space); or stood the unvoted guard down after `_MERGE_PATIENCE` |
 | `level.census` / `.anomaly` | a floor/ceiling height moved >2 cm; a height moved relative to the rest of the space |
 | `track.reset` / `.lock` | reference-space recenter (boundary trip); lock lost or regained |
 | `room.error` | a rooms step threw — segmentation or the residual fit; once per distinct failure |
@@ -819,6 +854,40 @@ Ranking candidates is **plane-relative, not by centroid**, for the same reason `
 centroid slides metres along the wall between captures, so centroid-ranking would report a wall seen from
 the other end as "never detected" — the most misleading thing this could say. Candidates wildly off in
 facing or plane are discarded as *other walls*, not failed matches.
+
+**The explanation must come from the matcher that ran.** Identity dispatches three ways — insets
+(`INSET_SEMS`: door, window, wall art) through `matchInset`, other verticals through `matchWall`,
+horizontals through `matchRef` — so the diagnosis dispatches the same three ways, or it describes a
+comparison that never happened. `explainNoMatch` covers the second and third; **`explainInsetNoMatch` and
+`explainInsetMint` cover the first**, in `matchInset`'s own terms (host wall, reconstructed along-slot,
+0.4 m tolerance) rather than a wall's facing and perpendicular offset.
+
+This is not hypothetical tidiness. Every inset churn line logged before 2026-09-24 was explained with
+`matchWall`'s gates, and insets are **69%** of all recorded churn — so the majority of the evidence read as
+a confident verdict that could not be acted on, and one whole class of fault could not be seen at all
+(`investigations/surface-churn.md`).
+
+The inset gates, each naming a different repair:
+
+| Gate | Meaning |
+|---|---|
+| `nokey` | the ref has no host wall or no anchor — `matchInset` can never key it |
+| `nohost` | **its host wall is not in this capture.** The cascade test: an inset orphaned because its *wall* churned reads `nohost`, and nothing else does |
+| `norecon` | the host wall is here, but the slot could not be reconstructed (corners missing) |
+| `along` | a candidate exists but its slot is past the 0.4 m tolerance, with the margin |
+| `outbid` | a candidate was *within* tolerance and went to a nearer slot — nothing took this ref, this ref lost the candidate |
+| `taken` | (mint side) the slot this inset wanted was already held by another |
+
+The inset and wall vocabularies are deliberately **disjoint** — hence `outbid`/`taken` rather than reusing
+`claimed`. A shared gate name would make a log line ambiguous about which matcher produced it, which is the
+very fault this split exists to fix; kept disjoint, an inset reporting a wall gate is instead positive proof
+of a **stale cached client**, and `scripts/inset_churn.py` says so and refuses to interpret the run.
+
+Inset events also carry `rw` and `cw`, the **ref's and candidate's widths**. A doorway is captured as two
+planes, one per room, and one of them may segment the *frame* rather than the door — about twice as wide
+(1.36 m against 0.71 m, observed). A width that flips between captures drags the along-slot with it, so
+without these two fields "the two faces are competing for one plane" and "one face's extent is unstable"
+produce the same log.
 
 ### 10.2 One room's floor, without anyone noticing
 
@@ -953,9 +1022,10 @@ with a golden test like `plane_anchor`'s.
 **`client/space-snap.js`** — pure geometry, `THREE` passed in, unit-tested:
 
 `register`, `selectSpace`, `canonicalFrame`, `surfaceToRef`, `matchRef`, `matchWall`, `matchInset`,
-`dupInsetIds`, `wallCorners`, `authorInsetAnchor`, `reconstructInset`, `insetAlong`, `hostWallFor`,
-`joinCorners`, `sealWalls`, `snapInsets`, `eulerYXZ`, `yawOf`, `heightCensus`, `explainNoMatch`,
-`floorUnder`, `polyFit`, `planeCorners`.
+`matchCost`, `assignRefs`, `sameDoorway`, `dupInsetIds`, `wallCorners`, `authorInsetAnchor`,
+`reconstructInset`, `insetAlong`, `hostWallFor`, `joinCorners`, `sealWalls`, `snapInsets`, `eulerYXZ`,
+`yawOf`, `heightCensus`, `explainNoMatch`, `explainInsetNoMatch`, `explainInsetMint`, `floorUnder`,
+`segmentRooms`, `roomLinks`, `roomResiduals`, `polyFit`, `planeCorners`.
 
 **`client/surface-overlay.js`** — the three-layer debug overlay (§10.4): `setDevice`, `setSeed`,
 `clearSeed`, `poll`, `hud`. DOM/A-Frame-side, so not in the typechecked set; the geometry claims it rests

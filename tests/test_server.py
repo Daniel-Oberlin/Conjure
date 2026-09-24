@@ -5733,3 +5733,115 @@ def test_hiding_reports_WHICH_CATEGORIES_not_just_mesh_names(srv, client, tmp_pa
     r = client.post("/figure/parts", json={"id": eid, "show": ["hair"]}).json()
     assert "hair" not in r["hidden_by_category"]
     assert sorted(r["hidden_by_category"]) == ["clothing", "shoes"]
+
+
+# --- Prune guards. Both only ever REFUSE a deletion, so neither can change a match or lose data by
+# firing. They exist because a capture is destructive by default (the client hard-codes replace: true)
+# and /space/capture checks WHO is asking but never whether they have established WHERE they are — which
+# on 2026-09-09 cost all 59 surfaces their styling (investigations/surface-churn.md). ---
+
+def _shell(n=10):
+    """A space big enough to be 'established' — past the guard's size floor."""
+    return [{"id": f"real_wall_{i}", "semantic": "wall", "position": [i, 1.0, 0], "extent": [2, 2.4]}
+            for i in range(n)]
+
+
+def test_a_post_that_would_delete_most_of_an_established_space_is_refused(srv, client):
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)})
+    assert len([e for e in _entities(client) if e["id"].startswith("real_")]) == 10
+    # One surface reported: 9 of 10 would go. Far likelier an unaligned frame than a room losing 90%.
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)[:1]})
+    kept = [e for e in _entities(client) if e["id"].startswith("real_")]
+    assert len(kept) == 10, "the capture merges instead of pruning; nothing is lost"
+
+
+def test_the_guard_has_a_size_floor_so_small_spaces_still_prune(srv, client):
+    # A real room's shell alone is six surfaces. Below that, losing most of a space is ordinary — and
+    # without this floor the guard refuses every legitimate small prune, including a one-surface fixture.
+    couch = {"id": "real_couch_1", "semantic": "couch", "position": [0, 0.4, -2], "extent": [2, 0.8]}
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [couch]})
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": []})
+    assert not any(e["id"] == "real_couch_1" for e in _entities(client))
+
+
+def test_a_proportionate_prune_on_an_established_space_still_goes_through(srv, client):
+    # The guard must not become "nothing is ever removed": two of ten is a normal capture.
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)})
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)[:8]})
+    assert len([e for e in _entities(client) if e["id"].startswith("real_")]) == 8
+
+
+def test_an_unvoted_capturer_may_add_but_not_remove(srv, client):
+    """The 2026-09-09 fault. A returning headset is capture authority before it has aligned itself to the
+    stored space, so its first captures arrive in an unaligned frame, miss everything, and prune the
+    originals with their materials. The >50% rule does NOT cover this — that day's post pruned 25 of 86
+    (~29%) — so this is the guard that matters for it."""
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)})
+    srv._unclaim()                                   # last AR holder leaves → re-selection re-opened
+    assert srv._merge_until_voted
+    # An unaligned capture: it sees two of the old surfaces and a parallel set of new ids.
+    fresh = [{"id": f"real_wall_new_{i}", "semantic": "wall", "position": [i, 1.0, 5], "extent": [2, 2.4]}
+             for i in range(3)]
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)[:2] + fresh})
+    ids = {e["id"] for e in _entities(client) if e["id"].startswith("real_")}
+    assert len(ids & {s["id"] for s in _shell(10)}) == 10, "nothing was pruned while unvoted"
+    assert "real_wall_new_0" in ids, "but the capture still landed — merge, not reject"
+
+
+def test_the_flag_clears_on_the_first_vote_and_pruning_resumes(srv, client):
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)})
+    srv._unclaim()
+    client.post("/space/select", json={"cid": "c_1", "matched": False})
+    assert not srv._merge_until_voted, "a vote re-enables pruning"
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)[:8]})
+    assert len([e for e in _entities(client) if e["id"].startswith("real_")]) == 8
+
+
+def test_the_unvoted_guard_stands_down_rather_than_disabling_pruning_for_ever(srv, client):
+    """A capture source that never votes — the CLI, a desktop client, a headset whose selection never
+    completes — must not disable pruning permanently. That would rot the seed with no symptom until
+    someone noticed stale geometry, which is the failure mode this whole investigation keeps hitting.
+    Same deadlock escape as the client's load gate (`forced`, spec §4.0a)."""
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)})
+    srv._unclaim()
+    for _ in range(srv._MERGE_PATIENCE):
+        client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)[:2]})
+    assert len([e for e in _entities(client) if e["id"].startswith("real_")]) == 10, "held so far"
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)[:2]})
+    assert not srv._merge_until_voted, "patience ran out; the guard stood down"
+
+
+def test_a_harmless_capture_under_the_guard_says_nothing(srv, client):
+    """The guard fired on a capture that was deleting nothing, logging an alarming 'destructive post
+    declined' for an ordinary frame — spotted in a real session, 0 of 67 surfaces 'kept'. A diagnostic
+    that cries wolf on the common case is worse than no diagnostic."""
+    seen = []
+    orig = srv._glog
+    srv._glog = lambda ev, fields, **kw: (seen.append(ev), orig(ev, fields, **kw))[1]
+    try:
+        client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)})
+        srv._unclaim()
+        client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)})   # posts everything
+    finally:
+        srv._glog = orig
+    assert "seed.prune_refused" not in seen, "nothing was doomed, so nothing was refused"
+
+
+def test_losing_a_users_styling_is_loud_and_losing_a_default_is_not(srv, client, capsys):
+    """The one prune worth interrupting someone for. Everything else at this level is bookkeeping, so a
+    uniform line means the destructive case scrolls past among dozens of harmless ones and is only found
+    later, by someone who already suspected something."""
+    surf = _shell(10)
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": surf})
+    client.post("/style_surface", json={"target": "real_wall_3", "color": "#4B0082"})
+    capsys.readouterr()
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [s for s in surf if s["id"] != "real_wall_3"]})
+    out = capsys.readouterr().out
+    assert "LOST STYLING" in out and "real_wall_3" in out and "#4B0082" in out
+    assert "inset_churn" in out, "and it says where to look next"
+
+    capsys.readouterr()
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [s for s in surf if s["id"] not in ("real_wall_3", "real_wall_4")]})
+    out2 = capsys.readouterr().out
+    assert "real_wall_4" in out2, "an unstyled prune is still recorded"
+    assert "LOST STYLING" not in out2, "…but quietly — it destroyed nothing a user made"
