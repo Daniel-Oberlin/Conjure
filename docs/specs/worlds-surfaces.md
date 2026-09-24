@@ -98,6 +98,14 @@ The space stores each surface at a **default** material; the world stores only t
 
 - `_compose` overlays `surfaceStyles[<id>]` onto the space's base material on load.
 - `_decompose` writes back only materials that differ from the base.
+- **A style outlives its surface.** `_decompose` builds on the persisted map rather than rebuilding it
+  from the live entities alone, so a surface pruned from the seed — a matcher miss re-minting the id, a
+  device miss past the removal debounce — does not take its colour with it. That rebuild is where a
+  director's styling actually died (three surfaces 2026-08-31, four more 2026-09-24). An orphaned entry is
+  inert, because an override is only ever applied to a surface that exists, and it pays off when the id
+  returns: `_ref` outlives the seed, so a matcher that missed once re-inherits the same id later and the
+  colour comes back with it. A live surface whose material equals the base still drops its override —
+  otherwise "make it default again" would not stick.
 
 So the same physical wall is green in one world and marble in another with one geometry record and two
 small override maps, and switching worlds restyles the space without recapturing it.

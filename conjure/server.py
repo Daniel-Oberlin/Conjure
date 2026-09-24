@@ -3272,6 +3272,11 @@ def _default_surface_material(semantic: str) -> dict:
 # store.doc stays the COMPOSED shape below (so client/patch/director are unchanged); only persistence
 # splits — _compose on load, _decompose on save.
 
+# Per-surface style overrides carried across compose/decompose, so a style outlives its surface being
+# pruned. Re-seeded from the world doc on every load, so it never leaks between worlds.
+_style_carry: "dict[str, dict]" = {}
+
+
 def _compose(world_doc: dict, space: dict) -> dict:
     """Live doc: the world's placed entities + prefs, merged with the space's real-surface geometry —
     each surface's material = the space's base, overridden by world.environment.spacePresentation.surfaceStyles[id].
@@ -3282,6 +3287,11 @@ def _compose(world_doc: dict, space: dict) -> dict:
     doc.pop("space", None)
     pres = env.setdefault("spacePresentation", {})
     styles = pres.pop("surfaceStyles", {}) or {}
+    # Hold the persisted map for `_decompose` to build on. It is popped from the live doc (persistence-only),
+    # so without this the only copy of a style whose surface is no longer live is the one on disk, which the
+    # next save overwrites — see the note in _decompose.
+    global _style_carry
+    _style_carry = dict(styles)
     placed = [e for e in doc.get("entities", []) if not e.get("meta", {}).get("real")]
     reals = []
     for s in space.get("surfaces", []):
@@ -3310,14 +3320,28 @@ def _decompose(composed: dict, space: dict) -> dict:
     """Inverse of _compose for persistence: the world doc to save — placed entities + prefs + the
     `surfaceStyles` overrides (each real surface's material where it differs from the space's base).
     Real-surface GEOMETRY + boundary are the space's job (persisted separately)."""
+    global _style_carry
     doc = copy.deepcopy(composed)
     base = {s["id"]: s.get("components", {}).get("material", {}) for s in space.get("surfaces", [])}
-    overrides, placed = {}, []
+    # Start from what was persisted, rather than rebuilding only from what is LIVE. A surface pruned from
+    # the seed — a matcher miss re-minting the id, a device miss past the removal debounce — leaves the
+    # live doc, and a from-scratch rebuild then drops its entry on the very next save. That is where a
+    # director's colour actually died: three on 2026-08-31, four more on 2026-09-24. The geometry is gone
+    # either way, but the STYLE is user data and costs a few hundred bytes to keep.
+    #
+    # An orphan is inert — `_compose` only applies an override to a surface that exists — and becomes
+    # useful the moment the id comes back, which it does: `_ref` outlives the seed, so a matcher that
+    # missed once re-inherits the same id later and the colour returns with it.
+    overrides, placed = dict(_style_carry), []
     for e in doc.get("entities", []):
         if e.get("meta", {}).get("real"):
             mat = e.get("components", {}).get("material", {})
             if mat and mat != base.get(e.get("id")):
                 overrides[e["id"]] = mat
+            else:
+                # LIVE and matching the base: an explicit reset, so drop any carried override. Only ids
+                # that are absent entirely are carried — otherwise "make it default again" would not stick.
+                overrides.pop(e.get("id"), None)
         else:
             placed.append(e)
     doc["entities"] = placed
@@ -3331,6 +3355,7 @@ def _decompose(composed: dict, space: dict) -> dict:
         pres["surfaceStyles"] = overrides
     else:
         pres.pop("surfaceStyles", None)
+    _style_carry = dict(overrides)
     return doc
 
 

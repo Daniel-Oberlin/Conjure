@@ -60,6 +60,18 @@ no plausible widening survives, since widening `dist` past 0.5 m starts merging 
 re-minted or returning surface inherits it. Four more colours would have survived. It is also the only fix
 that is indifferent to *why* the id churned, which now includes at least three distinct gates.
 
+**Half of it shipped 2026-09-24** ([`specs/worlds-surfaces.md` §2.1](../specs/worlds-surfaces.md)): a style
+now outlives its surface. `_decompose` builds on the persisted map instead of rebuilding from the live
+entities, so a prune no longer destroys the override, and the colour returns on its own when the id does.
+
+**The other half is not built:** a *re-minted* surface with a NEW id still gets the per-semantic default.
+The link exists at the moment of the miss — `explainNoMatch` already computes the nearest candidate and
+logs it as `near`, which is the id whose styling the replacement should inherit — so a mint could record
+`meta.replaces` and the server could carry the style across. Left because it is a guess: the same
+information cannot distinguish "the matcher missed this wall" from "that furniture was removed and
+different furniture put nearby", and inheriting a colour onto genuinely new furniture is a visible wrong
+answer where the current behaviour is only a disappointing one.
+
 **One thing worked.** `real_wall_art_130` was pruned client-side with `anchored: true` and the server kept
 it, so the photo pinned to it did not orphan. The anchored protection held.
 

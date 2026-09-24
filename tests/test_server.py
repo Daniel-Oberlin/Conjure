@@ -5733,3 +5733,78 @@ def test_hiding_reports_WHICH_CATEGORIES_not_just_mesh_names(srv, client, tmp_pa
     r = client.post("/figure/parts", json={"id": eid, "show": ["hair"]}).json()
     assert "hair" not in r["hidden_by_category"]
     assert sorted(r["hidden_by_category"]) == ["clothing", "shoes"]
+
+
+# --- a director's styling outlives its surface -----------------------------------------------------
+
+def test_a_pruned_surface_does_not_take_its_styling_with_it(srv, client):
+    """Where a director's colour actually died: three on 2026-08-31, four more on 2026-09-24.
+
+    `_decompose` rebuilt `surfaceStyles` from the LIVE real entities, so a surface pruned from the seed —
+    a matcher miss re-minting the id, or a device miss past the removal debounce — lost its entry on the
+    very next save. The geometry is gone either way; the style is user data."""
+    from conjure import server as S
+    cap = {"client_id": "h1", "surfaces": [
+        {"id": "real_wall_1", "semantic": "wall", "position": [0, 1.2, -2], "extent": [3, 2.4]},
+        {"id": "real_wall_2", "semantic": "wall", "position": [2, 1.2, 0], "extent": [3, 2.4]}]}
+    client.post("/space/capture", json=cap)
+    client.post("/style_surface", json={"target": "real_wall_2", "color": "#4B0082"})
+
+    space = {"surfaces": [{"id": e["id"], "components": {"material": S._default_surface_material("wall")}}
+                          for e in _entities(client) if (e.get("meta") or {}).get("real")]}
+    saved = S._decompose(S.store.doc, space)
+    styles = saved["environment"]["spacePresentation"]["surfaceStyles"]
+    assert styles["real_wall_2"]["color"] == "#4B0082"
+
+    # wall_2 disappears from the capture — the server prunes it and its entity goes
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": cap["surfaces"][:1]})
+    assert not any(e["id"] == "real_wall_2" for e in _entities(client)), "the surface really is gone"
+
+    saved = S._decompose(S.store.doc, space)
+    kept = saved["environment"]["spacePresentation"].get("surfaceStyles") or {}
+    assert kept.get("real_wall_2", {}).get("color") == "#4B0082", \
+        "the colour survives the surface — it is inert until the id returns, and costs a few hundred bytes"
+
+
+def test_the_colour_comes_back_when_the_id_does(srv, client):
+    """Why keeping the orphan is worth anything: `_ref` outlives the seed, so a matcher that missed once
+    re-inherits the same id on a later capture. `_compose` then overlays the carried style onto the
+    re-added surface, and the colour returns without the director doing anything."""
+    from conjure import server as S
+    cap = {"client_id": "h1", "surfaces": [
+        {"id": "real_wall_1", "semantic": "wall", "position": [0, 1.2, -2], "extent": [3, 2.4]},
+        {"id": "real_wall_2", "semantic": "wall", "position": [2, 1.2, 0], "extent": [3, 2.4]}]}
+    client.post("/space/capture", json=cap)
+    client.post("/style_surface", json={"target": "real_wall_2", "color": "#4B0082"})
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": cap["surfaces"][:1]})   # pruned
+
+    space = {"surfaces": [{"id": "real_wall_1",
+                           "components": {"material": S._default_surface_material("wall")},
+                           "meta": {"real": True, "semantic": "wall"}, "transform": {}},
+                          {"id": "real_wall_2",
+                           "components": {"material": S._default_surface_material("wall")},
+                           "meta": {"real": True, "semantic": "wall"}, "transform": {}}]}
+    world = S._decompose(S.store.doc, space)
+    again = S._compose(world, space)
+    w2 = next(e for e in again["entities"] if e["id"] == "real_wall_2")
+    assert w2["components"]["material"]["color"] == "#4B0082", "the id returned and so did its colour"
+
+
+def test_resetting_a_surface_to_the_default_still_sticks(srv, client):
+    """The carry must not resurrect a style the director deliberately cleared. Only ids that are ABSENT
+    are carried; a live surface matching the base drops its override."""
+    from conjure import server as S
+    cap = {"client_id": "h1", "surfaces": [
+        {"id": "real_wall_1", "semantic": "wall", "position": [0, 1.2, -2], "extent": [3, 2.4]}]}
+    client.post("/space/capture", json=cap)
+    client.post("/style_surface", json={"target": "real_wall_1", "color": "#4B0082"})
+    space = {"surfaces": [{"id": "real_wall_1",
+                           "components": {"material": S._default_surface_material("wall")}}]}
+    S._decompose(S.store.doc, space)                      # carry now holds the override
+
+    base = S._default_surface_material("wall")
+    client.post("/patch", json={"origin": "test", "ops": [
+        {"op": "update", "id": "real_wall_1", "set": {"components.material": base}}]})
+    saved = S._decompose(S.store.doc, space)
+    styles = saved["environment"]["spacePresentation"].get("surfaceStyles") or {}
+    assert "real_wall_1" not in styles, "back to the base means no override, not a resurrected one"
