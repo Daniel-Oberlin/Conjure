@@ -191,11 +191,30 @@ with** and stay wrong until rewritten. On the reference space all four still nam
 anchor is re-authored when its entity is grabbed and released, so they will drift right one at a time
 through ordinary use.
 
-A migration would be a pass over each world doc re-running `floorUnder` per anchored entity. Deliberately
-not done here: it is a write to live data whose only benefit is bringing forward something ordinary use
-fixes anyway, and the anchor solve is the subject of an open and not-understood fault
-([`investigations/raised-floor.md`](../investigations/raised-floor.md)) — a good moment to change as little
-as possible.
+`scripts/migrate_anchor_floors.py` does it: re-point each stored anchor at the floor under its content.
+Dry-run by default.
+
+*(An earlier version of this paragraph justified skipping the migration by citing an "open, not-understood
+fault in the anchor solve". There is no such thing — that was this bug, cited as a reason to be careful
+about fixing it. The genuinely open fault is the raised floor, which is device-side surface poses, not the
+solve.)*
+
+**It re-expresses, it does not re-derive.** The obvious implementation — recompute `offset` from
+`transform.position` — is wrong, and by a lot. The transform is the last *solved* pose while the anchor was
+authored earlier, and on the reference space the two disagree by ~0.5 m; recomputing would leave the floor
+constraint inconsistent with the wall constraints, which are untouched, and shift every entity half a metre.
+The anchor's own notion of height is `offset + floor.y`, so only the reference changes:
+
+    new_offset = old_offset + old_floor.y − new_floor.y
+
+On the reference space that is −1.1 mm for the living-room group and −94 mm for the bedroom group, which is
+exactly the difference between the stored floor heights. Nothing moves.
+
+**What does change is what content follows.** Bedroom content now tracks `real_floor_32`, which the seed
+stores 88 mm above `real_floor_8` although the ground truth says they are one continuous floor. That is
+correct — bedroom content should track the bedroom floor — but it means such content will follow the
+raised-floor fault when it is active, where previously it did not. The symptom moves from "content is
+buried while its floor rises" to "content rises with its floor"; only correcting the floor fixes both.
 
 ### A room's floor floats — **diagnosed, device-side; no fix on main**
 
