@@ -277,6 +277,38 @@ This matters because it is not the same fault as the walls, and **global assignm
 Quest emits one plane for a doorway and two refs want it, no assignment is correct — one ref loses every
 time. The pair has to be recognised *as* a pair.
 
+#### How to recognise the pair — measured, not guessed
+
+The two faces are **not** interchangeable, and the obvious tests fail. From the stored geometry of
+`space-1` (the only space captured since the rooms work, so the only one with `meta.room` populated):
+
+| pair | widths | ratio | through the wall | along the wall | centroid apart | rooms |
+|---|---|---|---|---|---|---|
+| `real_door_45` / `real_door_84` | 1.36 / 0.71 m | **1.91×** | 0.158 m | 0.287 m | 0.329 m | room_2 / room_1 |
+| `real_door_48` / `real_door_99` | 0.71 / 0.81 m | 1.13× | 0.077 m | 0.040 m | 0.092 m | room_3 / room_2 |
+
+One face of a doorway can be **nearly twice as wide as the other** and still be the same doorway — a real
+case here, and visible in the headset. So:
+
+- **Do not gate on extent.** A 1.91× width ratio is legitimate.
+- **Do not gate on centroid distance.** Those two faces are 0.329 m apart, and the offset is almost entirely
+  *along* the wall (0.287 m) — which the half-width difference explains exactly (0.326 m). Two faces that
+  share one edge but differ in width have centroids that slide apart in proportion to that difference. This
+  is `matchWall`'s lesson a second time: **the centroid is an artifact; use the plane.**
+- **Do gate on the plane relation:** antiparallel normals, a *through-wall* offset within a wall thickness
+  (0.077 and 0.158 m here), and overlapping along-wall spans.
+
+The through-wall component is the stable one — it is the wall's thickness, and it is small in both cases
+while the along component is not.
+
+**A false positive the naive test would take:** doors near a corner sit close together but at ~90°, not 180°
+— `real_door_53`/`real_door_76` at 0.997 m and `real_door_79`/`real_door_82` at 0.765 m, both `dyaw ≈ 90°`.
+Proximity alone pairs them; the antiparallel requirement excludes them.
+
+**Room membership confirms it**: both true pairs straddle two rooms (room_2/room_1 and room_3/room_2), which
+is what a doorway *is*. That is the check that distinguishes a doorway pair from any other near-coincident
+antiparallel arrangement, and it only became available with the rooms work.
+
 Note the configuration is precisely the one `matchRef`'s flip rule exists to **merge**: near-coincident
 (`dFlip = 0.15`) and antiparallel, built so wall art facing off its wall keeps its id. For a doorway the two
 antiparallel near-coincident faces are genuinely **distinct surfaces**, so that rule is actively wrong here.
