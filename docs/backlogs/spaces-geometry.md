@@ -52,13 +52,19 @@ different gates and at a much finer margin:
 | `claimed` ×2 | — | a gate the first campaign never hit |
 
 The first campaign saw only `perp`, at 14–21 mm. `dist` is `matchRef`'s radius for horizontals and
-furniture, and `claimed` means the candidate had already been taken by another surface this pass. A shelf
-re-minting over **three millimetres** is the sharpest statement yet that the tolerances are not the lever —
-no plausible widening survives, since widening `dist` past 0.5 m starts merging genuinely distinct furniture.
+furniture, and `claimed` means the candidate had already been taken by another surface this pass.
 
-**So the proposed fix is the one this data argues for**, not more tuning: keep styling keyed by id so a
-re-minted or returning surface inherits it. Four more colours would have survived. It is also the only fix
-that is indifferent to *why* the id churned, which now includes at least three distinct gates.
+> **Corrected 2026-09-24.** This entry used to read *"a shelf re-minting over three millimetres is the
+> sharpest statement yet that the tolerances are not the lever"*. Three millimetres is the **margin**
+> (`val: 0.503` against `tol: 0.5`); the shelf was **503 mm** from where it was stored. And it used to
+> conclude that the data argued for keeping styling keyed by id. **It does not.** Counting every gate event
+> in every log — not just this incident — **83% are `claimed`**, a gate that fires only when every
+> tolerance has *passed* and another plane took the partner first. Matching is greedy in plane-emission
+> order, so surfaces 6–9 cm from a good candidate are pruned for losing a race. See
+> [`investigations/surface-churn.md`](../investigations/surface-churn.md) § *The census, 2026-09-24* for the
+> counts, the root cause, and the re-ranking: global assignment first, succession via the already-computed
+> `near` second, styling storage third. A narrow storage fix was built and reverted on this evidence
+> (`fix/styling-survives-prune`).
 
 **One thing worked.** `real_wall_art_130` was pruned client-side with `anchored: true` and the server kept
 it, so the photo pinned to it did not orphan. The anchored protection held.

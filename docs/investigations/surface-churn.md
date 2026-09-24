@@ -97,10 +97,15 @@ server deletes the entity *and its material*. The asymmetry that made a tight to
 
 ## Still open
 
-**Should styling survive a prune?** Keyed by id, so a returning or re-minted surface inherits it. That is
-the deeper fix for "loses its colouring" whatever the reason the id churned, and it would have made this
-symptom cosmetic instead of destructive. The load gate removes the most common *cause* of a missed match; it
-does not change what a miss costs.
+~~**Should styling survive a prune?**~~ **Demoted 2026-09-24 — see the census below.** It is still true
+that a miss costs more than the matcher assumes, but storage is third in line: 83% of churn is the
+`claimed` gate, which no storage fix touches, and the re-association key (`near`) is already computed on
+every mint. A narrow version of this was built and reverted; it sits on `fix/styling-survives-prune`.
+
+**The 2026-09-09 root cause is still open.** None of the four candidate fixes below has shipped: as of
+2026-09-24 `ingest_capture` still gates on `captureAuthority`/`client_id` only, with no check that the
+client has voted, no merge-until-voted flag on `_unclaim`, and no wholesale-prune guard. That incident cost
+every one of 59 surfaces its styling.
 
 ~~**Was this ever observed away from session start?**~~ **Answered 2026-09-09: yes, and the load gate does
 not close it.** See *Recurrence* below — the destructive captures arrived **4 s before `space.enter` and
@@ -195,6 +200,91 @@ every prune, so **37 old ids have a non-default colour on record** (9 pink walls
 black doors, a `#3B1A08` floor, and so on). Re-applying them needs an old-id → new-id pairing, which is
 derivable from semantic plus position since the surfaces are physically unchanged. Whether that beats
 re-styling by voice is a judgement call — the styling was authored conversationally in the first place.
+
+## The census, 2026-09-24 — it is not the tolerances, it is the assignment
+
+Everything above reasons from individual incidents. Counting **every** `churn.mint` and `churn.miss` in
+every geometry log to date changes the conclusion:
+
+| gate | events | dist range (m) | what it means |
+|---|---|---|---|
+| **`claimed`** | **77** | 0.001 – 1.368 | every tolerance passed; another plane took the partner first |
+| `dist` | 8 | 0.502 – 0.605 | horizontal/furniture centroid outside `matchRef`'s 0.5 m radius |
+| `gap` | 4 | 0.880 – 0.885 | along-line overlap |
+| `perp` | 3 | 0.179 – 0.496 | the wall gate the whole 08-31 campaign was about |
+| `dyaw` | 0 | — | never once |
+
+**83% of all churn is `claimed`, and `claimed` is not a tolerance failure.** `explainNoMatch` returns it
+only after every gate has passed, and says so itself: *"this candidate WAS matchable — it must already have
+been claimed by another plane this capture. That is the id-swap shape."* The closest one in the log missed
+by **1 mm**. Meanwhile `perp` — the gate two campaigns and a shipped load gate were spent on — accounts for
+three events, and `dyaw` for none.
+
+### Root cause: matching is greedy in plane-emission order
+
+`conjure-client.js:3042–3067` walks the Quest's planes in whatever order `detectedPlanes` hands them over.
+Each takes the nearest free reference, and the `claimed` Set is mutated as it goes. There is no global
+assignment, so:
+
+1. a plane that happens to arrive early takes a ref that a **later** plane fits better;
+2. the later plane finds it taken → `gate: claimed` → mints a fresh id;
+3. the stolen ref's true partner now has nothing, misses three captures, and is **pruned with its material**.
+
+Step 3 is the damage, and it is visible in the log. On 2026-09-22 `real_wall_148` missed at `dist` 0.085,
+0.072, 0.073 — **7 cm from a perfectly good candidate** — and was pruned. It failed nothing. It lost a race.
+`real_wall_141` (5.8–9.1 cm) and `real_wall_art_149` (5.9–9.3 cm) went the same way in the same session.
+
+This is an assignment problem being solved first-come. The fix is to score all plausible (plane, ref) pairs
+and assign globally rather than letting emission order decide — and **the cost function already exists**:
+`explainNoMatch` computes, per unmatched ref, the best candidate and how far through the gates it got. It is
+computed today only to write a log line.
+
+### Re-association is already computed, and thrown away
+
+**23 mints in the logs. All 23 carry a `near`.** Every time the matcher mints a stranger it has already
+written down which surface it believes the stranger replaces, and the distance to it. That link is logged
+and discarded. Whatever is done about storage, this is the succession key and it costs nothing to keep.
+
+### Doors are 47 of the 77 — a cascade, suspected not confirmed
+
+Doors dominate `claimed` by a wide margin (47, against 16 wall art and 14 wall). Insets are keyed on
+`host_wall` + slot through `matchInset` with its own `claimedInset` Set, so a wall that re-mints should
+invalidate the key of every door in it. That would make most door churn a *consequence* of wall churn rather
+than an independent fault, and would mean fixing the wall assignment fixes the larger number for free.
+**Not verified** — it needs a log pass pairing door mints against host-wall mints in the same capture.
+
+### Two corrections to the record
+
+**The "3 mm shelf" is a misreading.** The backlog reads *"a shelf re-minting over three millimetres is the
+sharpest statement yet that the tolerances are not the lever."* Three millimetres is the **margin**
+(`val: 0.503` against `tol: 0.5`); the shelf was **503 mm** from its stored position. The conclusion happens
+to be right, for an entirely different reason.
+
+**The `dist` values are censored, not clustered.** They look systematic at 0.502–0.605, but nothing below
+0.5 can ever be logged — that is the threshold. Reading a common offset into them is reading the tolerance
+back out of the data. The likelier story is that furniture suffers the **same centroid-slide artifact
+`matchWall` was built to defeat**: a partly-captured bed's bounding-box centre moves by half a bed between
+scans. Walls were given a plane-based identity for exactly this; `matchRef` — still used for horizontals and
+furniture — was never given the equivalent.
+
+### Checked and rejected
+
+**The floating-room fault leaking into identity.** Tempting: `matchRef` measures a 3D centroid distance, so
+a vertically displaced room would break horizontals while leaving walls (matched on a purely horizontal
+`perp`) untouched — which is the observed pattern. Refuted by the log: `level.anomaly` deviations on
+2026-09-22/24 run **5–8 cm**, an order of magnitude short of the ~0.5 m needed. The 08-31 note that these
+are two separate faults still stands.
+
+### Where this leaves the ranking
+
+1. **Global assignment** in place of emission-order greedy — addresses ~83% of churn at source.
+2. **Succession via `near`** — carry identity across the mints that remain, instead of logging the link.
+3. **Styling storage** — with 1 and 2, there is rarely anything left to rescue. It was ranked first on the
+   strength of the 09-24 incident; the census does not support that.
+
+A narrow "carry the colour across a prune" change was built and **reverted** on this evidence; it survives on
+`fix/styling-survives-prune`. See the backlog entry for what is keyed to a surface id besides colour —
+`meta.image_id` and the derived `meta.friendly_id` are both exposed, and the latter silently renumbers.
 
 ## Fixes shipped
 
