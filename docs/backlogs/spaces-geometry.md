@@ -58,8 +58,10 @@ furniture, and `claimed` means the candidate had already been taken by another s
 > sharpest statement yet that the tolerances are not the lever"*. Three millimetres is the **margin**
 > (`val: 0.503` against `tol: 0.5`); the shelf was **503 mm** from where it was stored. And it used to
 > conclude that the data argued for keeping styling keyed by id. **It does not.** Counting every gate event
-> in every log — not just this incident — **83% are `claimed`**, a gate that fires only when every
-> tolerance has *passed* and another plane took the partner first. Matching is greedy in plane-emission
+> in every log — not just this incident — **65% of the validly-diagnosed events are `claimed`**, a gate
+> that fires only when every tolerance has *passed* and another plane took the partner first. (The raw
+> share is 83%, but doors must be discounted: their misses are explained by `matchWall`'s model when they
+> are matched by `matchInset`, so those 47 events say nothing.) Matching is greedy in plane-emission
 > order, so surfaces 6–9 cm from a good candidate are pruned for losing a race. See
 > [`investigations/surface-churn.md`](../investigations/surface-churn.md) § *The census, 2026-09-24* for the
 > counts, the root cause, and the re-ranking: global assignment first, succession via the already-computed

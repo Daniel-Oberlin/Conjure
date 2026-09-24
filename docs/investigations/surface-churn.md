@@ -206,15 +206,17 @@ re-styling by voice is a judgement call — the styling was authored conversatio
 Everything above reasons from individual incidents. Counting **every** `churn.mint` and `churn.miss` in
 every geometry log to date changes the conclusion:
 
-| gate | events | dist range (m) | what it means |
-|---|---|---|---|
-| **`claimed`** | **77** | 0.001 – 1.368 | every tolerance passed; another plane took the partner first |
-| `dist` | 8 | 0.502 – 0.605 | horizontal/furniture centroid outside `matchRef`'s 0.5 m radius |
-| `gap` | 4 | 0.880 – 0.885 | along-line overlap |
-| `perp` | 3 | 0.179 – 0.496 | the wall gate the whole 08-31 campaign was about |
-| `dyaw` | 0 | — | never once |
+| gate | events | of which doors | dist range (m) | what it means |
+|---|---|---|---|---|
+| **`claimed`** | **77** | 47 | 0.001 – 1.368 | every tolerance passed; another plane took the partner first |
+| `dist` | 8 | — | 0.502 – 0.605 | horizontal/furniture centroid outside `matchRef`'s 0.5 m radius |
+| `gap` | 4 | — | 0.880 – 0.885 | along-line overlap |
+| `perp` | 3 | — | 0.179 – 0.496 | the wall gate the whole 08-31 campaign was about |
+| `dyaw` | 0 | — | — | never once |
 
-**83% of all churn is `claimed`, and `claimed` is not a tolerance failure.** `explainNoMatch` returns it
+**Discount the doors** — see *The door events are diagnosed by the wrong model* below; nothing can be
+concluded from them. Of the **46** events whose explanation matches the code path that produced them,
+**30 are `claimed` — 65%** — and `claimed` is not a tolerance failure. `explainNoMatch` returns it
 only after every gate has passed, and says so itself: *"this candidate WAS matchable — it must already have
 been claimed by another plane this capture. That is the id-swap shape."* The closest one in the log missed
 by **1 mm**. Meanwhile `perp` — the gate two campaigns and a shipped load gate were spent on — accounts for
@@ -245,13 +247,31 @@ computed today only to write a log line.
 written down which surface it believes the stranger replaces, and the distance to it. That link is logged
 and discarded. Whatever is done about storage, this is the succession key and it costs nothing to keep.
 
-### Doors are 47 of the 77 — a cascade, suspected not confirmed
+### The door events are diagnosed by the wrong model — and the cascade theory is dead
 
-Doors dominate `claimed` by a wide margin (47, against 16 wall art and 14 wall). Insets are keyed on
-`host_wall` + slot through `matchInset` with its own `claimedInset` Set, so a wall that re-mints should
-invalidate the key of every door in it. That would make most door churn a *consequence* of wall churn rather
-than an independent fault, and would mean fixing the wall assignment fixes the larger number for free.
-**Not verified** — it needs a log pass pairing door mints against host-wall mints in the same capture.
+Doors dominate `claimed` (47, against 16 wall art and 14 wall), which suggested a cascade: insets are keyed
+on `host_wall` + slot, so a wall that re-mints should invalidate every door in it. **Both halves of that are
+wrong.**
+
+*The cascade is refuted.* Bucketing every churn event by capture (client clock, 2 s buckets): **33 of the 47
+door events occur in a capture with no wall or wall-art churn at all**, against 14 that co-occur. Doors
+churn on their own.
+
+*And their diagnosis is invalid.* `_logChurn` (`conjure-client.js:2046`) calls `explainNoMatch` for **every**
+unmatched ref, and `explainNoMatch` routes anything vertical through **`matchWall`'s** gate model. A door is
+vertical, so it is explained in terms of `dyaw`/`perp`/`gap`/`claimed` — but a door is actually matched by
+**`matchInset`**, on `host_wall` + slot with a separate `claimedInset` set. So `gate: "claimed"` on a door
+means only *"it would have passed matchWall's gates"*, which says nothing whatever about why `matchInset`
+rejected it. The horizontal branch does not have this problem: it models `matchRef`, which is what
+horizontals actually use.
+
+**So we have 47 door churn events and no valid explanation for any of them.** That is its own finding, and
+it needs fixing before doors can be reasoned about: `explainNoMatch` should dispatch on the same rule
+`conjure-client.js` uses to choose a matcher, and report `matchInset`'s own gates for an inset.
+
+What the raw numbers do show is that doors sit at **1–40 mm** — `real_door_86` misses repeatedly at 0.001,
+0.002, 0.004 — so whatever is happening to them is a decision between near-identical alternatives, which is
+where an assignment is most ambiguous and a swap most dangerous.
 
 ### Two corrections to the record
 
@@ -277,7 +297,7 @@ are two separate faults still stands.
 
 ### Where this leaves the ranking
 
-1. **Global assignment** in place of emission-order greedy — addresses ~83% of churn at source.
+1. **Global assignment** in place of emission-order greedy — 65% of the validly-diagnosed churn.
 2. **Succession via `near`** — carry identity across the mints that remain, instead of logging the link.
 3. **Styling storage** — with 1 and 2, there is rarely anything left to rescue. It was ranked first on the
    strength of the 09-24 incident; the census does not support that.
