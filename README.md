@@ -294,7 +294,12 @@ scripts/    setup.sh, tunnel.sh (cloudflared + /tunnel redirect), send_patch.py,
             faces.py (what every figure's face can do, and which clips move one;
             --check runs both geometric checks over the corpus),
             hand_bind.py (the 24 bind bone lengths of a hand model; --check is the
-            tripwire on the table client/hands-fit.js compares tracked hands against)
+            tripwire on the table client/hands-fit.js compares tracked hands against),
+            and the geometry diagnostics, which read the change-gated event log a
+            headset session leaves in temp/ — inset_churn.py (the day's surface churn:
+            what the identity guards did, and why anything still churned),
+            room_residuals.py (how far apart the rooms are, per room),
+            watch_room.py, dump_space.py, capture_audit.py
 tests/      pytest suite — fast/free/deterministic (`pip install -e ".[dev]" && pytest`); a
             pre-push hook runs it automatically. Live API canaries: `pytest -m live`
 docs/       vision · spec · architecture · decisions · providers · roadmap · setup · testing/https guides
