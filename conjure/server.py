@@ -821,6 +821,10 @@ _autosave_task: asyncio.Task | None = None
 #                     run. Per-CLIENT (not one global flag) so a SECOND, co-located AR user can still vote.
 _space_holders: "set[WebSocket]" = set()
 _selected_cids: set[str] = set()
+#: Set when the last AR holder leaves, cleared on the next /space/select commit. While set, /space/capture
+#: is treated as a MERGE: new surfaces are added, none are removed. Guards the window in which a returning
+#: client is capture authority but has not yet aligned to the stored space (see _unclaim).
+_merge_until_voted: bool = False
 
 # A world's space reference has THREE states, not two. `VOID` ("<void>") means *deliberately* space-less —
 # an outdoor world, or one whose agent declares `world.outdoor`. `UNSET` means *not decided yet*: a world
@@ -920,12 +924,21 @@ def _unclaim() -> None:
     (possibly different) space from wherever they are (D6 — unlock when empty). The active world keeps
     rendering as a provisional placeholder; only re-selection is re-opened (clear the per-client commit
     guard). No-op while anyone still holds the space."""
-    global _selected_cids
+    global _selected_cids, _merge_until_voted
     if _occupied():
         return
     if _selected_cids:
         _slog("select", "space unclaimed (last AR holder left) — re-selection re-opened")
     _selected_cids = set()
+    # A returning headset has not yet aligned itself to the stored geometry, so its first captures arrive
+    # in an unaligned frame and the matcher misses EVERYTHING — it mints a parallel set of ids and prunes
+    # the originals with their materials. On 2026-09-09 that cost all 59 surfaces their styling, 23 s
+    # before selection even completed (investigations/surface-churn.md). `/space/capture` checks WHO is
+    # asking but never whether they have established WHERE they are, and a capture is destructive by
+    # default (the client hard-codes replace: true). So from here until someone votes, a capture may ADD
+    # but may not REMOVE. Nothing is lost, the capture still lands, and the flag clears on the first
+    # /space/select commit.
+    _merge_until_voted = True
 
 
 def _save_active() -> None:
@@ -2346,12 +2359,15 @@ async def select_space(req: SpaceSelect) -> dict:
 
     A client commits ONCE per claim epoch (idempotent by `cid`) so GPS jitter / repeated votes can't thrash
     the choice. On admit/establish the client declares `hold` over /ws → it becomes a `_space_holder`."""
-    global _selected_cids
+    global _selected_cids, _merge_until_voted
     if spaces is None or worlds is None:
         return {"ok": False, "error": "no space store"}
     cid = _cid(req)
     if cid in _selected_cids:
         return {"ok": True, "selected": False}             # this client already committed this claim epoch
+    if _merge_until_voted:
+        _slog("select", "a client voted — captures may prune again")
+        _merge_until_voted = False
     _apply_forced_geo(req)                                  # test-only geolocation override (--force-geo)
     who = req.user or active_scope.split("/", 1)[0]        # the connecting user (owns anything minted)
     geo = {"lat": req.lat, "lon": req.lon} if req.lat is not None and req.lon is not None else None
@@ -3485,6 +3501,9 @@ def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
 # new capturer then TAKES IT OVER. Safe because /space/capture is already owner-only (middleware), so only the
 # active world's owner ever reaches here — the guard is just against two of their live headsets at once.
 _AUTH_TTL = 6.0                       # seconds (~3 capture cycles) an idle authority holds before takeover
+#: Below this many stored surfaces the >50% prune guard does not apply — a room's structural shell alone is
+#: six (four walls, floor, ceiling), so a smaller space is not established and losing most of it is normal.
+_PRUNE_GUARD_MIN = 8
 _authority_ts: float = 0.0            # server time of the last accepted capture from the current authority
 # NOTE (local-first, docs/specs/spaces-geometry.md §2): the old ESTABLISH-then-FREEZE machinery (a timed
 # window that committed the static shell as a coherent set then froze it) is gone. It existed to stabilize
@@ -3612,26 +3631,50 @@ async def ingest_capture(req: CaptureUpdate) -> dict:
     anchored = {(e.get("meta") or {}).get("on_surface") for e in store.doc["entities"]} - {None}
     geo_ops: list[dict] = []
     changed_ids: set[str] = set()
-    if req.replace:
+    # Two guards stand between a bad capture and the stored space, both of which only ever REFUSE a
+    # deletion — neither can change a match or lose data by firing (investigations/surface-churn.md).
+    doomed = [eid for eid in existing if eid not in new_ids and eid not in anchored]
+    veto = None
+    if req.replace and _merge_until_voted:
+        # The capturer has not voted since the space was unclaimed, so it may not yet be aligned to the
+        # stored geometry. Add, never remove, until it has.
+        veto = "capturer has not voted since the space was unclaimed"
+    elif req.replace and len(existing) >= _PRUNE_GUARD_MIN and len(doomed) > len(existing) / 2:
+        # A post that deletes more than half an ESTABLISHED space is likelier a bug — an unaligned frame, a
+        # partial capture, a client mid-relocalization — than a room that genuinely lost half its surfaces.
+        # The cost of being wrong is asymmetric: refusing leaves stale geometry that the next good capture
+        # removes anyway, while accepting destroys every material at once and cannot be undone.
+        #
+        # The size floor matters as much as the ratio. A real room's structural shell alone is six surfaces
+        # (four walls, floor, ceiling), so below that a space is not established and wholesale change is
+        # ordinary — a one-surface fixture losing its one surface is not a mass deletion. Without the floor
+        # this guard refuses every legitimate small prune.
+        #
+        # This is a BACKSTOP, not the fix for 2026-09-09: that capture pruned 25 of the 86 then stored
+        # (~29%), so this rule would not have fired. `_merge_until_voted` above is the guard for that case.
+        veto = f"post would prune {len(doomed)} of {len(existing)} surfaces (>50%)"
+    if veto:
+        _slog("seed", f"PRUNE REFUSED — {veto}; capture merged instead ({len(doomed)} kept)")
+        _glog("seed.prune_refused", {"why": veto, "kept": len(doomed), "have": len(existing)})
+    if req.replace and not veto:
         # The client posts its CONFIRMED set (it owns the absence debounce, docs §7), so a surface missing
         # from the post is genuinely gone → prune immediately. `anchored` (photo-pinned) ids are kept.
-        for eid in existing:
-            if eid not in new_ids and eid not in anchored:
-                geo_ops.append({"op": "remove", "id": eid})
-                # A prune destroys the surface's MATERIAL along with its geometry, and the client rebuilds
-                # `surfaceStyles` from the snapshot — so this line is the moment a surface's colour is lost
-                # for good. It is the server half of the "drops out and returns uncoloured" symptom; the
-                # client half is `churn.prune`. Named by id because `seed_ops=N` alone can't be chased.
-                meta = (existing[eid].get("meta") or {})
-                mat = (existing[eid].get("components") or {}).get("material") or {}
-                # `styled` means "a DIRECTOR edit is being destroyed", not "a material exists" — every real
-                # surface is created with a per-semantic default (_default_surface_material), so a plain
-                # truthiness check would report True for all of them and say nothing. Compare against that
-                # default instead, and record the colour so the loss is legible in the log.
-                _glog("seed.prune", {"id": eid, "sem": meta.get("semantic"),
-                                     "styled": mat != _default_surface_material(meta.get("semantic") or ""),
-                                     "color": mat.get("color"), "tex": bool(mat.get("src"))})
-                _slog("seed", f"surface {eid} absent from post → PRUNED from seed")
+        for eid in doomed:
+            geo_ops.append({"op": "remove", "id": eid})
+            # A prune destroys the surface's MATERIAL along with its geometry, and the client rebuilds
+            # `surfaceStyles` from the snapshot — so this line is the moment a surface's colour is lost
+            # for good. It is the server half of the "drops out and returns uncoloured" symptom; the
+            # client half is `churn.prune`. Named by id because `seed_ops=N` alone can't be chased.
+            meta = (existing[eid].get("meta") or {})
+            mat = (existing[eid].get("components") or {}).get("material") or {}
+            # `styled` means "a DIRECTOR edit is being destroyed", not "a material exists" — every real
+            # surface is created with a per-semantic default (_default_surface_material), so a plain
+            # truthiness check would report True for all of them and say nothing. Compare against that
+            # default instead, and record the colour so the loss is legible in the log.
+            _glog("seed.prune", {"id": eid, "sem": meta.get("semantic"),
+                                 "styled": mat != _default_surface_material(meta.get("semantic") or ""),
+                                 "color": mat.get("color"), "tex": bool(mat.get("src"))})
+            _slog("seed", f"surface {eid} absent from post → PRUNED from seed")
     for s in req.surfaces:                                    # add new / update STRUCTURALLY-changed (§7.4)
         if s.id in existing:
             aspects = _surface_changes(existing[s.id], s)

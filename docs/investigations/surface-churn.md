@@ -190,7 +190,10 @@ Candidate fixes, cheapest first:
   earns its place independently of either of these.
 - **Refuse a wholesale prune** — the first guard proposed under [*An empty capture wipes a space's
   geometry*](../backlogs/spaces.md): a post that would remove >50% of the stored set is far more likely a
-  bug than a fact. Here it would have rejected the 25-surface prune outright.
+  bug than a fact. ~~Here it would have rejected the 25-surface prune outright.~~ **Wrong — corrected
+  2026-09-24 while building it.** The destructive post pruned 25 of the **86** then stored (57 originals
+  plus the 29 freshly minted), about **29%**, so a >50% rule would not have fired. It is a backstop for a
+  different shape of failure; the guard that covers *this* incident is merge-until-voted above.
 - **Make styling survive a prune** — the deeper fix in *Still open* above, and the one that turns this
   class of event from destructive into cosmetic. This recurrence is the second time it has been the
   difference between an annoyance and lost work.
