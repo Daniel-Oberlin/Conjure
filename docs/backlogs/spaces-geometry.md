@@ -31,6 +31,38 @@ absent, the debounce prunes it, and the server deletes the entity **and its mate
 styling should survive a prune (keyed by id, so a returning or re-minted surface inherits it), which is the
 deeper fix for "loses its colouring" whatever the reason the id churned.
 
+#### It recurred 2026-09-24, with the load gate working — and on gates this campaign never saw
+
+A second sighting, on the three-room space, costing four director-set colours: `real_wall_91` (`#666666`),
+`real_wall_127` (`#777777`), `real_table_149` (`yellow`), `real_bed_151` (`red`).
+
+**The load gate is not the whole answer.** That fix holds identity until 60% of the seed is present, and it
+did: the log shows `space.loaded — 66/66 planes` *before* the churn. So this is a second path to the same
+symptom, with the 2026-08-31 cause excluded.
+
+**All five mints logged `why: matcher` again** — the Quest emitted the plane, our gate rejected it — but on
+different gates and at a much finer margin:
+
+| gate | value / tolerance | over by |
+|---|---|---|
+| `dist` (table) | 0.519 / 0.500 | 19 mm |
+| `dist` (bed) | 0.514 / 0.500 | 14 mm |
+| `dist` (shelf) | 0.503 / 0.500 | **3 mm** |
+| `perp` (wall) | 0.170 / 0.150 | 20 mm |
+| `claimed` ×2 | — | a gate the first campaign never hit |
+
+The first campaign saw only `perp`, at 14–21 mm. `dist` is `matchRef`'s radius for horizontals and
+furniture, and `claimed` means the candidate had already been taken by another surface this pass. A shelf
+re-minting over **three millimetres** is the sharpest statement yet that the tolerances are not the lever —
+no plausible widening survives, since widening `dist` past 0.5 m starts merging genuinely distinct furniture.
+
+**So the proposed fix is the one this data argues for**, not more tuning: keep styling keyed by id so a
+re-minted or returning surface inherits it. Four more colours would have survived. It is also the only fix
+that is indifferent to *why* the id churned, which now includes at least three distinct gates.
+
+**One thing worked.** `real_wall_art_130` was pruned client-side with `anchored: true` and the server kept
+it, so the photo pinned to it did not orphan. The anchored protection held.
+
 ### The original report, for the record
 
 **Status:** open · noticed 2026-08-30, intermittently, since the smoothing work landed
@@ -65,43 +97,57 @@ Instrumented by [the geometry event log](#instrumentation--the-geometry-event-lo
 probe is unexercised; nothing is confirmed about which of the three causes fires, because none of them did.
 Worth noting the sessions were short and stationary-ish — the symptom is occasional by report.
 
-### Placed content moved ROOMS when one floor left the render set — observed, cause not established
+### Every anchor binds to the LAST floor in the array, not the floor under the content — **confirmed**
 
-**Status:** observed once on device 2026-09-23. Nothing persisted. Cause **not** established, and there is
-a confound named below.
+**Status:** cause found 2026-09-24, on device and in the code. Not fixed. This is the raised-floor
+investigation's untested inference, confirmed and larger than it predicted.
 
-Running with `--drop-surface real_floor_10` (the kitchen floor), two anchor-backed models standing in the
-**living room** — a `grounded` beagle and a `free` spaceship — visibly relocated into the **kitchen**.
+`authorAnchor` (`client/plane-anchor.js`) picks the reference floor like this:
 
-**Nothing was written.** Both entities' stored positions were unchanged, last touched by a grab commit the
-previous day, and both still resolve over `real_floor_8` by footprint. So this is the render-time anchor
-solve, not the record. A reload put them back.
+```js
+planes.forEach(function (p) { if (p.kind === "floor") floorP = p; else if (p.kind === "wall") walls.push(p); });
+```
 
-**Why it is worth keeping.** [`raised-floor.md`](../investigations/raised-floor.md) carries this as an
-inference nobody had tested:
+`floorP = p` is a plain assignment inside the loop, so it keeps whichever floor is **last in the array**.
+There is no proximity test and no footprint test. Two lines later the *walls* are explicitly sorted by
+distance to the entity — so the design chooses the nearest walls carefully and then takes an arbitrary
+floor.
 
-> *"all three floors enter the anchor solve as separate floor planes, so an anchor resolving against the
-> wrong floor lands ~190 mm out. Worth confirming — it would be a bug on main independent of any
-> correction… probably the highest-value next step here."*
+**In a one-room space this cannot be observed**: the only floor is the right floor. It became visible only
+once rooms were modelled and it was possible to ask which room a thing is in.
 
-A room-crossing displacement is metres, not 190 mm. And a client failing to see a floor is not artificial:
-§6's recovery exists precisely because it happens.
+**Measured on the real three-room space.** Every anchor in the dwelling — a beagle and a spaceship standing
+in the *living room*, and two images — stores `floor: real_floor_10`, the **kitchen** floor.
 
-**What does not add up, and is the reason this is not filed as confirmed.** The beagle is `grounded`, whose
-XZ comes from multilateration against **walls** — the floor contributes height only (§5.3). A missing floor
-should move it vertically, not into another room. That it moved horizontally says either the wall set or
-the solve's conditioning changed too, or something other than the missing floor is responsible.
+**What it costs, in increasing severity:**
 
-**The confound:** the server was restarted and AR re-entered in the same step, and this session logged
-seven `track.reset` events. A relocalization on re-entry moves content on its own, and would look identical
-from inside the headset.
+1. **A systematic height error per room.** Living-room content is levelled against the kitchen floor, which
+   the ground truth puts +25 mm above it. Silent, because everything in one room is wrong by the same
+   amount.
+2. **One floating floor moves the whole house.** If the floor that happens to be last is the displaced one
+   (the raised-floor fault), *every* anchored entity in the space moves, not just that room's. That is a
+   different and much worse failure than the one
+   [`investigations/raised-floor.md`](../investigations/raised-floor.md) predicted:
 
-**How to separate them,** and it is cheap: enter AR normally, confirm the models are in the living room,
-then restart with `--drop-surface` on the kitchen floor **without leaving the play area**, and watch whether
-they move at the moment the flag takes effect rather than at re-entry. If they hold still, this is the
-relocalization and the entry closes. If they cross the boundary, the anchor solve is far more floor-
-sensitive than §5.1 claims and the raised-floor inference is confirmed with a much larger number than it
-predicted.
+   > *"an anchor resolving against the wrong floor lands ~190 mm out"*
+
+   It is not that an anchor *sometimes* resolves against the wrong floor. Every anchor resolves against a
+   floor chosen without reference to where the content is.
+3. **A client that misses that one floor loses every anchor.** `solveAnchor` refuses outright for `free`
+   mode (`"free: floor missing"`) and proceeds degraded for `grounded`. Reproduced on device 2026-09-23 as
+   an A/B/A: with `--drop-surface real_floor_10` the living-room models moved into the kitchen, and back
+   again when the flag was removed. Nothing was persisted — the stored positions never changed — so it is
+   the render-time solve, but it is a metre-scale visible fault from one absent surface.
+
+**The fix is now available and was not before.** `SpaceSnap.floorUnder(THREE, floors, x, z)` answers "which
+floor is under this point", and every surface carries `meta.room`. The floor should be the one under the
+entity, falling back to the current behaviour only when nothing covers it. That is a small change in
+`authorAnchor`, plus a re-author of existing anchors — or the solve can tolerate it, since a stored anchor
+naming the wrong floor stays wrong until rewritten.
+
+**Worth pairing with the ground truth**, which makes it checkable: `floor_32` ≡ `floor_8` (one continuous
+floor), `floor_10` +25 mm. After the fix, living-room content should level against `floor_8` and its height
+should move by the 25 mm the kitchen floor was contributing.
 
 ### A room's floor floats — **diagnosed, device-side; no fix on main**
 
@@ -304,9 +350,10 @@ Neither of these blocks anything; both need time or a recurrence rather than wor
   forth every few days", so the untested case is a *smaller* recurrence — and the one to watch hardest is
   the room returning to normal, where `level.correct` must switch **off** rather than keep correcting a room
   that no longer needs it. The threshold has ~30 mm of headroom below today's 70 mm.
-- **The churn half has never fired.** Zero `churn.*` events in any session, so the device-vs-matcher
-  discriminator has never run on a real miss. Tested, unproven — and the `track.reset` bursts are the most
-  likely thing to eventually exercise it.
+- ~~**The churn half has never fired.**~~ **Stale — it has, twice.** 2026-08-31 (three walls, `perp`) and
+  2026-09-24 (five surfaces, `dist` / `perp` / `claimed`). The device-vs-matcher discriminator has now run
+  on real misses and said `matcher` every time. See the recurrence under *"A surface drops out and returns
+  uncoloured"* above.
 - **A `track.reset` burst nobody has explained.** Twelve between 07:09 and 07:24 on 2026-08-31 — including
   **three inside one second** at 07:11:09, and pairs at 07:11:47, 07:17:21 and 07:24. Each is a recenter or
   a guardian re-entry, and each re-registers. Walking between three rooms across a boundary drawn round one
