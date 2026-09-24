@@ -89,7 +89,10 @@ def main() -> int:
         print(f"  {len(stale)} inset events report a WALL gate ({sorted({e.get('gate') for e in stale})}).")
         print("  Insets are matched by matchInset and cannot fail a matchWall gate, so the headset is")
         print("  running a cached client from before the dispatch fix. Nothing below is trustworthy.")
-        print("  Force-reload in the headset (or restart the browser) and capture again.")
+        print("  A plain reload does NOT clear it — the Quest serves cached /static JS and even no-store")
+        print("  HTML across reloads. The ritual that works (docs/running.md Part 3):")
+        print("      restart the server  →  restart the Quest browser  →  reload the page")
+        print("  Then capture again.")
         print()
     elif insets and not any(e.get("gate") in INSET_GATES or e.get("why") == "device" for e in insets):
         print("\n  (no recognised inset gate — check the client is current)")
