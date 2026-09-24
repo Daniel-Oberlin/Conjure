@@ -403,6 +403,15 @@ tolerance-fudging:
   So anything that must agree across devices is defined by distances to intersections.
 - **Wall identity by plane, not centroid.** `matchWall` keys on normal + perpendicular offset with an
   along-line overlap guard. Floors and ceilings keep `matchRef`; insets use `matchInset`.
+- **Identity is assigned globally, not first-come.** All non-inset planes are scored against all
+  references (`matchCost`) and paired best-first (`assignRefs`) — cheapest pair, then cheapest of what
+  remains. Taking the nearest free reference *as each plane arrives* makes identity depend on the order
+  `detectedPlanes` supplies them, which nothing guarantees: two planes whose nearest reference is the same
+  one resolve differently depending only on which came first. That order dependence is how a surface
+  sitting centimetres from a perfectly good partner gets pruned for losing a race (§10.1).
+  Deliberately **best-first rather than minimum-total**: a solver minimising total cost, or maximising the
+  number of matches, will trade one excellent pairing for two mediocre ones, and that trade is exactly the
+  §4.3 swap. Best-first never trades, so it also needs no mint-versus-match penalty to be tuned.
 - **Register-only guests.** A guest re-seeds its reference wholesale from the authoritative broadcast
   each capture and never establishes, lerp-mutates, mints, or posts geometry. Before this, a guest
   evolving its own copy of the shared reference caused a feedback drift that read as "the world drifts
@@ -645,6 +654,27 @@ genuinely gone and the server prunes it at once — no server-side absence count
 
 Surfaces with content pinned to them (`anchored`) are **never pruned**, so a photo's host id cannot
 orphan.
+
+**Two guards stand between a bad capture and the stored space.** Both only ever *refuse* a deletion, so
+neither can change a match or lose data by firing:
+
+- **Merge until someone has voted.** Set when the last AR holder leaves (and at boot), cleared on the next
+  `/space/select` commit. While set, a capture may add but not remove. `/space/capture` checks *who* is
+  asking but never whether they have established *where they are*, and a returning headset is capture
+  authority before it has aligned to the stored geometry — so its first captures arrive in an unaligned
+  frame, miss everything, mint a parallel set of ids and prune the originals with their materials. That
+  window is not rare: a 2026-09-24 session had a capture accepted **2.2 s before `space.enter`**. On
+  2026-09-09 it cost all 59 surfaces their styling.
+  It stands down after `_MERGE_PATIENCE` captures and logs `seed.merge_forced` — the same deadlock escape
+  as the client's load gate (§4.0a), because a capture source that never votes (the CLI, a desktop client)
+  would otherwise disable pruning for ever and let the seed rot with no symptom.
+- **Refuse a wholesale prune.** A post deleting more than half an *established* space is likelier a bug
+  than a room that lost half its surfaces. The size floor (`_PRUNE_GUARD_MIN`) matters as much as the
+  ratio: a room's structural shell alone is six surfaces, so below that a space is not established and
+  losing most of it is ordinary. A coarse backstop only — it would **not** have caught 2026-09-09, which
+  pruned 25 of 86 (~29%).
+
+Both log `seed.prune_refused`, and only when something was actually refused.
 
 There is **no time-based establish-then-freeze**. An earlier design held a ~20 s establishing window and
 then froze static surfaces; it is gone, along with `_ESTABLISH_SECS`, `_STATIC_SEMANTICS` and
@@ -990,9 +1020,10 @@ with a golden test like `plane_anchor`'s.
 **`client/space-snap.js`** — pure geometry, `THREE` passed in, unit-tested:
 
 `register`, `selectSpace`, `canonicalFrame`, `surfaceToRef`, `matchRef`, `matchWall`, `matchInset`,
-`dupInsetIds`, `wallCorners`, `authorInsetAnchor`, `reconstructInset`, `insetAlong`, `hostWallFor`,
-`joinCorners`, `sealWalls`, `snapInsets`, `eulerYXZ`, `yawOf`, `heightCensus`, `explainNoMatch`,
-`floorUnder`, `polyFit`, `planeCorners`.
+`matchCost`, `assignRefs`, `sameDoorway`, `dupInsetIds`, `wallCorners`, `authorInsetAnchor`,
+`reconstructInset`, `insetAlong`, `hostWallFor`, `joinCorners`, `sealWalls`, `snapInsets`, `eulerYXZ`,
+`yawOf`, `heightCensus`, `explainNoMatch`, `explainInsetNoMatch`, `explainInsetMint`, `floorUnder`,
+`segmentRooms`, `roomLinks`, `roomResiduals`, `polyFit`, `planeCorners`.
 
 **`client/surface-overlay.js`** — the three-layer debug overlay (§10.4): `setDevice`, `setSeed`,
 `clearSeed`, `poll`, `hud`. DOM/A-Frame-side, so not in the typechecked set; the geometry claims it rests

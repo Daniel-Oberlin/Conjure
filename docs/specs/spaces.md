@@ -426,6 +426,14 @@ Two different gates, often confused:
 `environment.captureAuthority` records which headset is live, and an idle authority is taken over after `_AUTH_TTL`
 so a reconnecting owner is not locked out (`server.py:2921`).
 
+**Authority is not alignment**, and the two were conflated. Owning the space says nothing about whether
+this headset has worked out *where it is* — a returning client is capture authority the moment it posts,
+which may be seconds before it has selected a space and registered against the stored geometry. A capture
+from that window is destructive by default (the client sends `replace: true`), so it prunes everything it
+failed to recognise. Until a client has voted, therefore, a capture may **add but not remove**; see
+[`spaces-geometry.md` §7.4](./spaces-geometry.md) for that guard and the wholesale-prune backstop beside
+it.
+
 **Scene edit rights — the world owner.** Every scene-mutating endpoint requires the caller to be the
 active world's owner. Enforced by middleware (`server.py:609`): the MCP client attaches
 `X-Conjure-User` on every request, and a non-owner gets 403. A *missing* header is treated as the owner
