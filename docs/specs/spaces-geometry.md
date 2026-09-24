@@ -820,6 +820,34 @@ centroid slides metres along the wall between captures, so centroid-ranking woul
 the other end as "never detected" — the most misleading thing this could say. Candidates wildly off in
 facing or plane are discarded as *other walls*, not failed matches.
 
+**The explanation must come from the matcher that ran.** Identity dispatches three ways — insets
+(`INSET_SEMS`: door, window, wall art) through `matchInset`, other verticals through `matchWall`,
+horizontals through `matchRef` — so the diagnosis dispatches the same three ways, or it describes a
+comparison that never happened. `explainNoMatch` covers the second and third; **`explainInsetNoMatch` and
+`explainInsetMint` cover the first**, in `matchInset`'s own terms (host wall, reconstructed along-slot,
+0.4 m tolerance) rather than a wall's facing and perpendicular offset.
+
+This is not hypothetical tidiness. Every inset churn line logged before 2026-09-24 was explained with
+`matchWall`'s gates, and insets are **69%** of all recorded churn — so the majority of the evidence read as
+a confident verdict that could not be acted on, and one whole class of fault could not be seen at all
+(`investigations/surface-churn.md`).
+
+The inset gates, each naming a different repair:
+
+| Gate | Meaning |
+|---|---|
+| `nokey` | the ref has no host wall or no anchor — `matchInset` can never key it |
+| `nohost` | **its host wall is not in this capture.** The cascade test: an inset orphaned because its *wall* churned reads `nohost`, and nothing else does |
+| `norecon` | the host wall is here, but the slot could not be reconstructed (corners missing) |
+| `along` | a candidate exists but its slot is past the 0.4 m tolerance, with the margin |
+| `outbid` | a candidate was *within* tolerance and went to a nearer slot. The inset's `claimed`, named differently because the direction is reversed — nothing took this ref, this ref lost the candidate |
+
+Inset events also carry `rw` and `cw`, the **ref's and candidate's widths**. A doorway is captured as two
+planes, one per room, and one of them may segment the *frame* rather than the door — about twice as wide
+(1.36 m against 0.71 m, observed). A width that flips between captures drags the along-slot with it, so
+without these two fields "the two faces are competing for one plane" and "one face's extent is unstable"
+produce the same log.
+
 ### 10.2 One room's floor, without anyone noticing
 
 `heightCensus` (pure, in `space-snap.js`, called **before** `sealWalls` — sealing rewrites the very gap being

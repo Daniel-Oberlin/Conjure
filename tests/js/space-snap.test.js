@@ -1467,3 +1467,96 @@ test("segmentRooms on pose-stripped surfaces finds NOTHING — the trap that cos
   assert.equal(RS.segmentRooms(THREE, stripped).rooms.length, 0,
                "yet no rooms — indistinguishable from a space that has none");
 });
+
+// --- explainInsetNoMatch / explainInsetMint: say why an INSET lost its id, in the terms of the matcher
+// that actually ran. Insets go through matchInset (host wall + along-slot), not matchWall — and until
+// 2026-09-24 the churn log explained them with matchWall's gates, reporting a matcher that never ran and
+// making 69% of all recorded churn unreadable (investigations/surface-churn.md). These tests exist so the
+// two can never drift apart again: every gate below names a DIFFERENT repair, so a wrong verdict here
+// sends the next investigation to the wrong place. ---
+
+const insetRef = (id, sem, host) => ({ id, sem, hostWall: host, anchor: { d: 1 } });
+const insetDiag = (slots, cands, walls) => ({
+  recon: slots, cands, hostWalls: walls === undefined ? ["w1"] : walls,
+});
+
+test("explainInsetNoMatch: no host wall or no anchor is 'nokey' — matchInset could never key it", () => {
+  const d = insetDiag({}, []);
+  assert.strictEqual(RS.explainInsetNoMatch({ id: "d1", sem: "door", hostWall: null, anchor: {} }, d).gate, "nokey");
+  assert.strictEqual(RS.explainInsetNoMatch({ id: "d1", sem: "door", hostWall: "w1", anchor: null }, d).gate, "nokey");
+});
+
+test("explainInsetNoMatch: 'nohost' is the CASCADE test — an inset orphaned by its wall churning", () => {
+  // The host wall is simply not in this capture: it re-minted under a new id, so every inset keyed to it
+  // is unreachable. This is the ONLY gate that says so, and the whole reason door churn could not be
+  // attributed to wall churn before.
+  const why = RS.explainInsetNoMatch(insetRef("d1", "door", "w_gone"), insetDiag({}, [], ["w1", "w2"]));
+  assert.strictEqual(why.gate, "nohost");
+  assert.strictEqual(why.id, "w_gone", "names the wall that went missing, so the cascade is traceable");
+});
+
+test("explainInsetNoMatch: host wall present but the slot could not be rebuilt is 'norecon'", () => {
+  const why = RS.explainInsetNoMatch(insetRef("d1", "door", "w1"), insetDiag({ "door|w1": [] }, []));
+  assert.strictEqual(why.gate, "norecon");
+});
+
+test("explainInsetNoMatch: nothing of that semantic detected on the wall is 'device', not a matcher miss", () => {
+  const d = insetDiag({ "door|w1": [{ id: "d1", along: 1.0 }] },
+                      [{ sem: "window", host: "w1", along: 1.0, chose: null },   // wrong semantic
+                       { sem: "door", host: "w2", along: 1.0, chose: null }]);   // wrong wall
+  assert.strictEqual(RS.explainInsetNoMatch(insetRef("d1", "door", "w1"), d).why, "device");
+});
+
+test("explainInsetNoMatch: a candidate past the 0.4 m slot tolerance is 'along', with the margin", () => {
+  const d = insetDiag({ "door|w1": [{ id: "d1", along: 1.0 }] },
+                      [{ sem: "door", host: "w1", along: 1.55, chose: null }]);
+  const why = RS.explainInsetNoMatch(insetRef("d1", "door", "w1"), d);
+  assert.strictEqual(why.gate, "along");
+  assert.strictEqual(why.val, 0.55);
+  assert.strictEqual(why.tol, 0.4, "reports matchInset's own tolerance, not matchWall's");
+});
+
+test("explainInsetNoMatch: reachable but taken by a nearer slot is 'outbid', naming the rival", () => {
+  // The candidate is 0.1 m from d1 — well inside tolerance — but 0.05 m from d2, so matchInset gave it to
+  // d2 and d1 got nothing. Distinct from 'along': the tolerance is innocent, the assignment is not.
+  const d = insetDiag({ "door|w1": [{ id: "d1", along: 1.0 }, { id: "d2", along: 1.15 }] },
+                      [{ sem: "door", host: "w1", along: 1.1, chose: "d2" }]);
+  const why = RS.explainInsetNoMatch(insetRef("d1", "door", "w1"), d);
+  assert.strictEqual(why.gate, "outbid");
+  assert.strictEqual(why.id, "d2");
+  assert.ok(why.dist < 0.4);
+});
+
+test("explainInsetNoMatch carries the candidate's WIDTH — the architrave test", () => {
+  // A doorway whose frame is sometimes segmented as the door reads ~2x wide on one side (a real case:
+  // 1.36 m against 0.71 m). Comparing the candidate's width against the ref's own across captures is what
+  // separates "the two faces are competing" from "one face's extent is flipping".
+  const d = insetDiag({ "door|w1": [{ id: "d1", along: 1.0 }] },
+                      [{ sem: "door", host: "w1", along: 1.6, ext: [1.36, 2.0], chose: null }]);
+  assert.strictEqual(RS.explainInsetNoMatch(insetRef("d1", "door", "w1"), d).cw, 1.36);
+});
+
+test("explainInsetMint: a detected inset with no stored slot on its wall is genuinely NEW", () => {
+  const why = RS.explainInsetMint({ sem: "door", host: "w1", along: 1.0 }, {}, new Set());
+  assert.strictEqual(why.why, "device", "no reference to lose — not a churn event");
+});
+
+test("explainInsetMint: the slot it wanted was already taken → 'claimed', naming it", () => {
+  // Checked against the NEAREST slot, not the nearest FREE one: matchInset skips taken slots silently, so
+  // "the one I wanted was gone" and "the nearest free one was too far" are different facts.
+  const recon = { "door|w1": [{ id: "d1", along: 1.0 }] };
+  const why = RS.explainInsetMint({ sem: "door", host: "w1", along: 1.05 }, recon, new Set(["d1"]));
+  assert.strictEqual(why.gate, "claimed");
+  assert.strictEqual(why.id, "d1");
+});
+
+test("explainInsetMint: nearest free slot beyond tolerance → 'along', not 'claimed'", () => {
+  const recon = { "door|w1": [{ id: "d1", along: 1.0 }] };
+  const why = RS.explainInsetMint({ sem: "door", host: "w1", along: 1.6 }, recon, new Set());
+  assert.strictEqual(why.gate, "along");
+  assert.strictEqual(why.val, 0.6);
+});
+
+test("explainInsetMint: no resolved host wall is 'nohost'", () => {
+  assert.strictEqual(RS.explainInsetMint({ sem: "door", host: null, along: null }, {}, new Set()).gate, "nohost");
+});

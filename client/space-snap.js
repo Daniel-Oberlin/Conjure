@@ -1074,6 +1074,103 @@
     return Object.assign(out, { gate: "claimed" });
   }
 
+  // Why an INSET failed to re-inherit its id — the companion to explainNoMatch, and a separate function
+  // because insets are matched by a separate algorithm. `explainNoMatch` reasons in matchWall's terms
+  // (facing, perpendicular offset, along-line overlap); a door or a picture never goes near any of those.
+  // It is matched by matchInset: reconstruct the ref's expected along-position on its host wall, then take
+  // the nearest unclaimed slot within `tol`. Explaining an inset with matchWall's gates reports a matcher
+  // that did not run — which is what every inset churn line in the log before 2026-09-24 did, hiding 69%
+  // of all churn behind a verdict that could not be acted on (investigations/surface-churn.md).
+  //
+  // The gates, in the order identity can fail:
+  //   nokey   — the ref carries no host wall or no anchor, so matchInset can never key it at all
+  //   nohost  — its host wall is not in this capture. THE CASCADE TEST: an inset dying because its wall
+  //             churned reads `nohost`, and nothing else does
+  //   norecon — the host wall is here but the slot could not be reconstructed (corners missing)
+  //   device  — the wall is here and the slot resolved, but nothing of that semantic was detected on it
+  //   along   — a candidate exists, but its slot is beyond `tol` from where this one should be
+  //   outbid  — a candidate was within `tol` and chose a NEARER ref slot instead. The inset analogue of
+  //             matchWall's `claimed`, named differently because the direction is reversed: nothing took
+  //             *this* ref, this ref lost the candidate
+  /**
+   * @param {{id: string, sem: string, hostWall?: string|null, anchor?: *}} ref  the unmatched _ref inset
+   * @param {{recon: Object<string, {id: string, along: number}[]>,
+   *          cands: {sem: string, host: string|null, along: number|null, chose: string|null}[],
+   *          hostWalls: string[]}} diag  what pass B2 actually compared against, this capture
+   * @param {{tol?: number}} [opts]
+   * @returns {{why: "device"|"matcher", gate?: string, val?: number, tol?: number,
+   *            id?: string, dist?: number}}
+   */
+  function explainInsetNoMatch(ref, diag, opts) {
+    opts = opts || {};
+    var TOL = opts.tol != null ? opts.tol : 0.4;
+    diag = diag || { recon: {}, cands: [], hostWalls: [] };
+    if (!ref.hostWall || !ref.anchor) return { why: "matcher", gate: "nokey" };
+    if ((diag.hostWalls || []).indexOf(ref.hostWall) < 0)
+      return { why: "matcher", gate: "nohost", id: ref.hostWall };
+    var mine = /** @type {{id: string, along: number}|null} */ (null);
+    ((diag.recon || {})[ref.sem + "|" + ref.hostWall] || []).forEach(function (s) {
+      if (s.id === ref.id) mine = s;
+    });
+    if (!mine) return { why: "matcher", gate: "norecon", id: ref.hostWall };
+    // Candidates of this semantic detected on this same host wall, ranked by slot distance.
+    var mineAlong = mine.along;
+    var best = /** @type {{ext?: number[], chose: string|null}|null} */ (null);
+    var bestD = Infinity;
+    (diag.cands || []).forEach(function (c) {
+      if (c.sem !== ref.sem || c.host !== ref.hostWall || c.along == null) return;
+      var d = Math.abs(c.along - mineAlong);
+      if (d < bestD) { bestD = d; best = c; }
+    });
+    if (!best) return { why: "device", id: ref.hostWall };
+    // `cw` — the candidate's width. Carried so a caller can compare it against the ref's own: a doorway
+    // whose architrave is sometimes segmented as the door reads about twice as wide on one side, and a
+    // width that flips between captures drags the along-slot with it.
+    var out = { why: /** @type {"matcher"} */ ("matcher"), dist: +bestD.toFixed(3),
+                val: +bestD.toFixed(3), tol: TOL,
+                cw: best.ext && best.ext[0] != null ? +best.ext[0].toFixed(3) : undefined };
+    if (bestD >= TOL) return Object.assign(out, { gate: "along" });
+    // Within tolerance, so it was reachable — it simply went to a slot nearer than this one.
+    return Object.assign(out, { gate: "outbid", id: best.chose || undefined });
+  }
+
+  // The MINT side of the same question, and a separate function because the direction is reversed.
+  // explainInsetNoMatch asks "this stored inset went unclaimed — what was offered to it?"; this asks "this
+  // detected inset took no stored id — what did it pass up?". matchInset walks the ref slots for one
+  // candidate, so this mirrors that walk: nearest slot on the same host wall, and whether it was already
+  // taken. `why: "device"` keeps explainNoMatch's meaning — the reference had nothing of this semantic on
+  // this wall, so the inset is genuinely new rather than a lost identity.
+  /**
+   * @param {{sem: string, host: string|null, along: number|null}} cand  the detected inset that minted
+   * @param {Object<string, {id: string, along: number}[]>} recon  reconstructed ref slots, by sem|hostWall
+   * @param {Set<string>} [claimedInset]  ref ids already taken this pass
+   * @param {{tol?: number}} [opts]
+   * @returns {{why: "device"|"matcher", gate?: string, val?: number, tol?: number,
+   *            id?: string, dist?: number}}
+   */
+  function explainInsetMint(cand, recon, claimedInset, opts) {
+    opts = opts || {};
+    var TOL = opts.tol != null ? opts.tol : 0.4;
+    if (!cand.host || cand.along == null) return { why: "matcher", gate: "nohost" };
+    var slots = (recon || {})[cand.sem + "|" + cand.host] || [];
+    if (!slots.length) return { why: "device", id: cand.host };
+    var candAlong = cand.along;
+    var best = /** @type {{id: string, along: number}|null} */ (null);
+    var bestD = Infinity;
+    slots.forEach(function (s) {
+      var d = Math.abs(candAlong - s.along);
+      if (d < bestD) { bestD = d; best = s; }
+    });
+    if (!best) return { why: "device", id: cand.host };
+    var out = { why: /** @type {"matcher"} */ ("matcher"), id: best.id,
+                dist: +bestD.toFixed(3), val: +bestD.toFixed(3), tol: TOL };
+    // Claimed is checked against the NEAREST slot, not the nearest free one: matchInset skips taken slots
+    // silently, so "the one I wanted was gone" and "the nearest free one was too far" are different facts
+    // and only the first names a rival.
+    if (claimedInset && claimedInset.has(best.id)) return Object.assign(out, { gate: "claimed" });
+    return Object.assign(out, { gate: "along" });
+  }
+
   // Which floor is the plan point (x,z) standing over? The same footprint test sealWalls and heightCensus
   // use, exposed so the marker probe can attribute a measured error to a ROOM. Nearest-by-height would be
   // wrong in precisely the case the marker exists for: when one room's floor is rendered 13 cm high and you
@@ -1378,7 +1475,7 @@
   }
 
   return { eulerYXZ: eulerYXZ, yawOf: yawOf, register: register,
-           heightCensus: heightCensus, explainNoMatch: explainNoMatch, floorUnder: floorUnder, segmentRooms: segmentRooms, roomLinks: roomLinks, roomResiduals: roomResiduals,
+           heightCensus: heightCensus, explainNoMatch: explainNoMatch, explainInsetNoMatch: explainInsetNoMatch, explainInsetMint: explainInsetMint, floorUnder: floorUnder, segmentRooms: segmentRooms, roomLinks: roomLinks, roomResiduals: roomResiduals,
            polyFit: polyFit, planeCorners: planeCorners,
            canonicalFrame: canonicalFrame, surfaceToRef: surfaceToRef, selectSpace: selectSpace,
            matchRef: matchRef, matchWall: matchWall, matchInset: matchInset, dupInsetIds: dupInsetIds,

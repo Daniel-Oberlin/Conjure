@@ -308,6 +308,12 @@
     });
   }
 
+  // Semantics matched by matchInset (host wall + along-slot) rather than matchWall/matchRef. Module-level
+  // because identity, reconstruction AND churn diagnosis all have to agree on the list: a copy that drifts
+  // sends an inset through one matcher and explains it with another, which is exactly the fault that hid
+  // 69% of surface churn (investigations/surface-churn.md).
+  var INSET_SEMS = { "door": 1, "window": 1, "wall art": 1 };
+
   // ----------------------------------------------------------------- immersion / room state
   // Two axes (docs/specs/worlds-surfaces.md §3): passthrough (real space visible) × surface visibility.
   var presentation = { active: false, passthrough: false, defaultVisible: false,
@@ -1930,7 +1936,6 @@
         // and floor/ceiling edge heights, against which a missing inset's stored distances are solved.
         var localCorners = RS.wallCorners(THREE, localSurfaces), floorYL = null, ceilYL = null;
         localSurfaces.forEach(function (s) { if (s.semantic === "floor") floorYL = s._lp.y; else if (s.semantic === "ceiling") ceilYL = s._lp.y; });
-        var INSET_SEMS = { "door": 1, "window": 1, "wall art": 1 };
         // Don't reconstruct a DUPLICATE seed inset (a shadow id) — its canonical twin is what renders (§5.3).
         var insetShadows = RS.dupInsetIds(docSurfaces.filter(function (e) { return INSET_SEMS[(e.meta || {}).semantic]; })
           .map(function (e) { var p = (e.transform || {}).position || [0, 0, 0];
@@ -2042,9 +2047,18 @@
           if (!self._everClaimed[r.id]) return;           // never matched in this session — not a "loss"
           var n = self._miss[r.id] = (self._miss[r.id] || 0) + 1;
           if (n > 3) return;                              // already reported through the debounce; stay quiet
-          var why = RS.explainNoMatch(AFRAME.THREE, r, curRef, window.CONJURE_WALL);
+          // Explain it with the matcher that actually ran. An inset goes through matchInset (host wall +
+          // along-slot); everything else through matchWall/matchRef, which is what explainNoMatch models.
+          var inset = !!INSET_SEMS[r.sem];
+          var why = inset ? RS.explainInsetNoMatch(r, self._insetDiag)
+                          : RS.explainNoMatch(AFRAME.THREE, r, curRef, window.CONJURE_WALL);
+          // WIDTHS, for insets only. A doorway whose frame is sometimes segmented as the door reads ~2x
+          // wide on one side, and a width that flips between captures moves the along-slot with it — the
+          // rival explanation for door churn, and undecidable without this field.
           self._churn("miss", { id: r.id, sem: r.sem, n: n, why: why.why, gate: why.gate,
-                                val: why.val, tol: why.tol, near: why.id, dist: why.dist });
+                                val: why.val, tol: why.tol, near: why.id, dist: why.dist,
+                                rw: inset && r.ext ? +r.ext[0].toFixed(3) : undefined,
+                                cw: inset ? why.cw : undefined });
         });
       },
       // The room's HEIGHTS, and whether one of them has moved relative to the rest of the space.
@@ -3004,7 +3018,7 @@
         // Runs for owner AND guest now (unified): everyone renders their own capture; only the owner authors.
         // See docs/specs/spaces-geometry.md §9.1.
         var surfaces = [], localSurfaces = [], floor = null, claimed = new Set();
-        var RS = window.SpaceSnap, INSET_SEMS = { "door": 1, "window": 1, "wall art": 1 };
+        var RS = window.SpaceSnap;
         // TEST (--drop-surface): a comma-separated list of semantics/ids to pretend we didn't capture.
         var dropList = (window.CONJURE_DROP_SURFACE || "").split(",").map(function (s) { return s.trim(); }).filter(Boolean);
         // A cur plane's pose in the shared reference frame (F_ref): T · plane.
@@ -3038,16 +3052,20 @@
         // anything: these are the very objects the matcher was given.
         var curRef = [];
         // Inherit an existing _ref entry's id (and track its slow drift), or mint + remember a new one.
-        function resolveRef(c, lp, cyaw, best, probe) {
+        function resolveRef(c, lp, cyaw, best, probe, insetWhy) {
           if (best) { claimed.add(best); best.pos.lerp(lp, 0.3); best.ext = c.ext.slice(); best.nyaw = cyaw; return best.id; }
           // A mint means this plane matched NOTHING in the reference. Explain it against _ref BEFORE the new
           // entry goes in (it would otherwise be its own nearest candidate at distance 0), naming the best
           // rejected reference and the gate that rejected it — the difference between "a new surface
           // appeared" and "wall_7 was right there and missed by 4 cm of perpendicular offset".
-          if (window.CONJURE_GEOMETRY_LOG && window.SpaceSnap && probe) {
-            var w = window.SpaceSnap.explainNoMatch(THREE, probe, self._ref, window.CONJURE_WALL);
+          // An inset arrives with its explanation already made: only Pass B2 holds the host wall and the
+          // reconstructed slots matchInset compared against, and explainNoMatch would answer in matchWall's
+          // terms — the mismatch that made 69% of churn unreadable (investigations/surface-churn.md).
+          if (window.CONJURE_GEOMETRY_LOG && window.SpaceSnap && (probe || insetWhy)) {
+            var w = insetWhy || window.SpaceSnap.explainNoMatch(THREE, probe, self._ref, window.CONJURE_WALL);
             self._churn("mint", { sem: c.sem, why: w.why, gate: w.gate, val: w.val, tol: w.tol,
-                                  near: w.id, dist: w.dist });
+                                  near: w.id, dist: w.dist,
+                                  rw: insetWhy && c.ext ? +c.ext[0].toFixed(3) : undefined });
           }
           var sid = "real_" + c.sem.replace(/\s+/g, "_") + "_" + (self._refSeq++);
           var r = { id: sid, sem: c.sem, ext: c.ext.slice(), pos: lp.clone(), nyaw: cyaw, orient: c.orient };
@@ -3093,27 +3111,35 @@
           if (!sol) return;
           (refReconByKey[r.sem + "|" + r.hostWall] = refReconByKey[r.sem + "|" + r.hostWall] || []).push({ id: r.id, along: sol.along });
         });
-        var claimedInset = new Set();
+        var claimedInset = new Set(), insetCands = [];
         cur.forEach(function (c) {
           if (!INSET_SEMS[c.sem]) return;
           var rp = refPose(c), cyaw = self._yawOf(UP.clone().applyQuaternion(rp.lq));
           var probe = { pos: rp.lp, nyaw: cyaw, sem: c.sem, orient: c.orient, ext: c.ext };
           curRef.push(probe);
           var hw = RS.hostWallFor(THREE, { _lp: rp.lp, _lq: rp.lq, extent: c.ext }, refWalls);
-          var hostId = hw ? hw.id : null, sid = null;
+          var hostId = hw ? hw.id : null, sid = null, along = null;
           if (hw) {
-            var along = RS.insetAlong(THREE, hw, rp.lp.x, rp.lp.z);
+            along = RS.insetAlong(THREE, hw, rp.lp.x, rp.lp.z);
             sid = RS.matchInset({ along: along }, refReconByKey[c.sem + "|" + hostId], claimedInset);
           }
+          // What this capture actually offered the ref slots, recorded BEFORE the mint fallback so `chose`
+          // means "took this existing slot", not "minted this id". It is the only place the comparison
+          // exists, and explainInsetNoMatch cannot say why a ref went unmatched without it.
+          insetCands.push({ sem: c.sem, host: hostId, along: along, ext: c.ext, chose: sid });
           if (sid) {                                                     // re-inherit + track drift
             claimedInset.add(sid);
             var rr = refInsetById[sid]; if (rr) { rr.pos.lerp(rp.lp, 0.3); rr.ext = c.ext.slice(); rr.nyaw = cyaw; }
           } else {
-            sid = resolveRef(c, rp.lp, cyaw, null, probe);               // no structural match → mint (into _ref too)
+            sid = resolveRef(c, rp.lp, cyaw, null, probe,                // no structural match → mint (into _ref too)
+                             RS.explainInsetMint({ sem: c.sem, host: hostId, along: along },
+                                                 refReconByKey, claimedInset));
           }
           pushSurface(c, sid, rp.lp, rp.lq, hostId);
         });
         if (!surfaces.length) return;
+        self._insetDiag = { recon: refReconByKey, cands: insetCands,
+                            hostWalls: refWalls.map(function (w) { return w.id; }) };
         this._logChurn(claimed, claimedInset, curRef);      // change-gated: a settled room logs nothing
         if (JIT) this._jMark("passB");                      // matchRef: stable ids + F_ref/F_track views
 
