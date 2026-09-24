@@ -5809,3 +5809,19 @@ def test_the_unvoted_guard_stands_down_rather_than_disabling_pruning_for_ever(sr
     assert len([e for e in _entities(client) if e["id"].startswith("real_")]) == 10, "held so far"
     client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)[:2]})
     assert not srv._merge_until_voted, "patience ran out; the guard stood down"
+
+
+def test_a_harmless_capture_under_the_guard_says_nothing(srv, client):
+    """The guard fired on a capture that was deleting nothing, logging an alarming 'destructive post
+    declined' for an ordinary frame — spotted in a real session, 0 of 67 surfaces 'kept'. A diagnostic
+    that cries wolf on the common case is worse than no diagnostic."""
+    seen = []
+    orig = srv._glog
+    srv._glog = lambda ev, fields, **kw: (seen.append(ev), orig(ev, fields, **kw))[1]
+    try:
+        client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)})
+        srv._unclaim()
+        client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)})   # posts everything
+    finally:
+        srv._glog = orig
+    assert "seed.prune_refused" not in seen, "nothing was doomed, so nothing was refused"

@@ -173,7 +173,8 @@ def main() -> int:
     if refused:
         print(f"  prune refused: {len(refused)} destructive post(s) declined")
         for e in refused:
-            print(f"      {e.get('why')} — {e.get('kept')} of {e.get('have')} surfaces kept")
+            print(f"      {e.get('why')}")
+            print(f"      {e.get('spared', e.get('kept'))} of {e.get('have')} surfaces spared")
     if forced:
         print(f"  *** the unvoted guard STOOD DOWN {len(forced)} time(s) after "
               f"{forced[0].get('after')} captures without a vote.")

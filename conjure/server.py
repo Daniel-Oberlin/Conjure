@@ -3647,35 +3647,36 @@ async def ingest_capture(req: CaptureUpdate) -> dict:
     # Two guards stand between a bad capture and the stored space, both of which only ever REFUSE a
     # deletion — neither can change a match or lose data by firing (investigations/surface-churn.md).
     doomed = [eid for eid in existing if eid not in new_ids and eid not in anchored]
-    veto = None
+    # Patience ticks on every capture the flag is up, destructive or not — it measures how long we have
+    # waited for a vote, not how much damage was averted.
     if req.replace and _merge_until_voted:
-        # The capturer has not voted since the space was unclaimed, so it may not yet be aligned to the
-        # stored geometry. Add, never remove, until it has — or until patience runs out, so a capture
-        # source that never votes cannot disable pruning for ever.
         _merge_waited += 1
         if _merge_waited > _MERGE_PATIENCE:
             _merge_until_voted = False
             _slog("seed", f"no vote after {_MERGE_PATIENCE} captures — prune guard stands down (forced)")
             _glog("seed.merge_forced", {"after": _MERGE_PATIENCE})
-        else:
+    veto = None
+    if req.replace and doomed:                   # nothing to refuse ⇒ nothing to say
+        if _merge_until_voted:
+            # The capturer has not voted since the space was unclaimed, so it may not yet be aligned to
+            # the stored geometry. Add, never remove, until it has.
             veto = "capturer has not voted since the space was unclaimed"
-    elif req.replace and len(existing) >= _PRUNE_GUARD_MIN and len(doomed) > len(existing) / 2:
-        # A post that deletes more than half an ESTABLISHED space is likelier a bug — an unaligned frame, a
-        # partial capture, a client mid-relocalization — than a room that genuinely lost half its surfaces.
-        # The cost of being wrong is asymmetric: refusing leaves stale geometry that the next good capture
-        # removes anyway, while accepting destroys every material at once and cannot be undone.
-        #
-        # The size floor matters as much as the ratio. A real room's structural shell alone is six surfaces
-        # (four walls, floor, ceiling), so below that a space is not established and wholesale change is
-        # ordinary — a one-surface fixture losing its one surface is not a mass deletion. Without the floor
-        # this guard refuses every legitimate small prune.
-        #
-        # This is a BACKSTOP, not the fix for 2026-09-09: that capture pruned 25 of the 86 then stored
-        # (~29%), so this rule would not have fired. `_merge_until_voted` above is the guard for that case.
-        veto = f"post would prune {len(doomed)} of {len(existing)} surfaces (>50%)"
+        elif len(existing) >= _PRUNE_GUARD_MIN and len(doomed) > len(existing) / 2:
+            # A post that deletes more than half an ESTABLISHED space is likelier a bug — an unaligned
+            # frame, a partial capture, a client mid-relocalization — than a room that genuinely lost half
+            # its surfaces. The cost of being wrong is asymmetric: refusing leaves stale geometry that the
+            # next good capture removes anyway, while accepting destroys every material at once.
+            #
+            # The size floor matters as much as the ratio. A real room's structural shell alone is six
+            # surfaces (four walls, floor, ceiling), so below that a space is not established and wholesale
+            # change is ordinary — a one-surface fixture losing its one surface is not a mass deletion.
+            #
+            # This is a BACKSTOP, not the fix for 2026-09-09: that capture pruned 25 of the 86 then stored
+            # (~29%), so this rule would not have fired. `_merge_until_voted` is the guard for that case.
+            veto = f"post would prune {len(doomed)} of {len(existing)} surfaces (>50%)"
     if veto:
-        _slog("seed", f"PRUNE REFUSED — {veto}; capture merged instead ({len(doomed)} kept)")
-        _glog("seed.prune_refused", {"why": veto, "kept": len(doomed), "have": len(existing)})
+        _slog("seed", f"PRUNE REFUSED — {veto}; capture merged instead ({len(doomed)} spared)")
+        _glog("seed.prune_refused", {"why": veto, "spared": len(doomed), "have": len(existing)})
     if req.replace and not veto:
         # The client posts its CONFIRMED set (it owns the absence debounce, docs §7), so a surface missing
         # from the post is genuinely gone → prune immediately. `anchored` (photo-pinned) ids are kept.
