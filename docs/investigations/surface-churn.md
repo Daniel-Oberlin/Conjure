@@ -206,17 +206,21 @@ re-styling by voice is a judgement call — the styling was authored conversatio
 Everything above reasons from individual incidents. Counting **every** `churn.mint` and `churn.miss` in
 every geometry log to date changes the conclusion:
 
-| gate | events | of which doors | dist range (m) | what it means |
-|---|---|---|---|---|
-| **`claimed`** | **77** | 47 | 0.001 – 1.368 | every tolerance passed; another plane took the partner first |
-| `dist` | 8 | — | 0.502 – 0.605 | horizontal/furniture centroid outside `matchRef`'s 0.5 m radius |
-| `gap` | 4 | — | 0.880 – 0.885 | along-line overlap |
-| `perp` | 3 | — | 0.179 – 0.496 | the wall gate the whole 08-31 campaign was about |
-| `dyaw` | 0 | — | — | never once |
+**The single most important number here is that 69% of our churn has never been validly diagnosed.**
+`explainNoMatch` explains any vertical surface in terms of `matchWall`'s gates, but **insets — doors,
+windows and wall art — are matched by `matchInset`**, on host wall + along-slot. Their verdicts describe a
+matcher that did not run. Splitting the 93 events on that line:
 
-**Discount the doors** — see *The door events are diagnosed by the wrong model* below; nothing can be
-concluded from them. Of the **46** events whose explanation matches the code path that produced them,
-**30 are `claimed` — 65%** — and `claimed` is not a tolerance failure. `explainNoMatch` returns it
+| | events | share | status |
+|---|---|---|---|
+| **insets** (door 47, wall art 17) | **64** | **69%** | **explained by the wrong matcher — unusable** |
+| walls | 21 | 23% | valid (`claimed` 14, `gap` 4, `perp` 3) |
+| horizontals | 8 | 9% | valid (`dist`, 0.502 – 0.605 m) |
+
+Of the **29** events whose explanation matches the code path that produced them, **14 are `claimed`** — the
+largest single gate, and `claimed` is not a tolerance failure. But that is 14 events, not 77, and the
+honest summary is that the biggest thing this instrumentation has revealed is **its own blind spot**.
+`dyaw` has never fired once. `explainNoMatch` returns it
 only after every gate has passed, and says so itself: *"this candidate WAS matchable — it must already have
 been claimed by another plane this capture. That is the id-swap shape."* The closest one in the log missed
 by **1 mm**. Meanwhile `perp` — the gate two campaigns and a shipped load gate were spent on — accounts for
@@ -247,7 +251,7 @@ computed today only to write a log line.
 written down which surface it believes the stranger replaces, and the distance to it. That link is logged
 and discarded. Whatever is done about storage, this is the succession key and it costs nothing to keep.
 
-### The door events are diagnosed by the wrong model — and the cascade theory is dead
+### Insets are diagnosed by the wrong model — and the cascade theory is dead
 
 Doors dominate `claimed` (47, against 16 wall art and 14 wall), which suggested a cascade: insets are keyed
 on `host_wall` + slot, so a wall that re-mints should invalidate every door in it. **Both halves of that are
@@ -342,17 +346,21 @@ antiparallel near-coincident faces are genuinely **distinct surfaces**, so that 
 The disambiguator now exists — the two faces belong to **different rooms**, which the rooms work records,
 with `leads_to` as the other half.
 
-*And their diagnosis is invalid.* `_logChurn` (`conjure-client.js:2046`) calls `explainNoMatch` for **every**
-unmatched ref, and `explainNoMatch` routes anything vertical through **`matchWall`'s** gate model. A door is
-vertical, so it is explained in terms of `dyaw`/`perp`/`gap`/`claimed` — but a door is actually matched by
-**`matchInset`**, on `host_wall` + slot with a separate `claimedInset` set. So `gate: "claimed"` on a door
-means only *"it would have passed matchWall's gates"*, which says nothing whatever about why `matchInset`
-rejected it. The horizontal branch does not have this problem: it models `matchRef`, which is what
-horizontals actually use.
+*And their diagnosis is invalid — along with all the wall art.* `_logChurn`
+(`conjure-client.js:2046`) calls `explainNoMatch` for **every** unmatched ref, and `explainNoMatch` routes
+anything vertical through **`matchWall`'s** gate model. But the client dispatches on
+`INSET_SEMS = {door, window, "wall art"}` (`:3007`) → `matchInset`, and only then on
+vertical → `matchWall`, else `matchRef`. Every inset is therefore explained by a matcher that did not run:
+`gate: "claimed"` on a door or a picture means only *"it would have passed matchWall's gates"*, which says
+nothing about why `matchInset` rejected it. `matchInset`'s actual gates are a **0.4 m along-slot tolerance**
+and its own `claimedInset` set — neither of which any log line has ever reported.
 
-**So we have 47 door churn events and no valid explanation for any of them.** That is its own finding, and
-it needs fixing before doors can be reasoned about: `explainNoMatch` should dispatch on the same rule
-`conjure-client.js` uses to choose a matcher, and report `matchInset`'s own gates for an inset.
+The horizontal branch is fine: it models `matchRef`, which horizontals really use.
+
+**So 64 of 93 churn events have no valid explanation.** Fixing this is the precondition for reasoning about
+any of it: `explainNoMatch` must dispatch on the same rule the client uses, and report `matchInset`'s gates
+for an inset — `nohost` (no host wall resolved), `norecon` (host wall known but the slot could not be
+reconstructed), `along` (outside the 0.4 m slot tolerance, with the margin), `claimed`.
 
 What the raw numbers do show is that doors sit at **1–40 mm** — `real_door_86` misses repeatedly at 0.001,
 0.002, 0.004 — so whatever is happening to them is a decision between near-identical alternatives, which is
@@ -382,7 +390,10 @@ are two separate faults still stands.
 
 ### Where this leaves the ranking
 
-1. **Global assignment** in place of emission-order greedy — 65% of the validly-diagnosed churn.
+0. **`explainNoMatch` dispatch** — until insets are diagnosed by their own matcher, 69% of churn is
+   invisible and every ranking below is provisional.
+1. **Global assignment** in place of emission-order greedy — 14 wall events, the largest validly-diagnosed
+   gate, but a much smaller prize than first claimed.
 2. **Succession via `near`** — carry identity across the mints that remain, instead of logging the link.
 3. **Styling storage** — with 1 and 2, there is rarely anything left to rescue. It was ranked first on the
    strength of the 09-24 incident; the census does not support that.
