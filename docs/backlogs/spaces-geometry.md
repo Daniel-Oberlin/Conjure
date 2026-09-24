@@ -184,12 +184,16 @@ golden vectors could not see it, because they contain one floor — so the two p
 different rooms on the same input for as long as multi-room spaces have existed. The tie-break is now on
 the id, so an exact tie resolves the same way in both.
 
-#### Re-authoring — not done
+#### Re-authoring — done 2026-09-24
 
-`solveAnchor` reads `anchor.floor.id` as stored, so **existing anchors keep the floor they were authored
-with** and stay wrong until rewritten. On the reference space all four still name `real_floor_10`. An
-anchor is re-authored when its entity is grabbed and released, so they will drift right one at a time
-through ordinary use.
+`solveAnchor` reads `anchor.floor.id` as stored, so existing anchors keep the floor they were authored
+with and stay wrong until rewritten. An anchor is re-authored when its entity is grabbed and released, so
+they drift right through ordinary use — the migration only brings that forward.
+
+**Run on the reference space 2026-09-24: 8 anchors across 2 worlds, all of them `real_floor_10`, now
+4 → `real_floor_8` (living) and 4 → `real_floor_32` (bedroom).** Idempotent — a second run is a no-op.
+One image in that space kept `real_floor_10` because it genuinely is in the kitchen, and a world belonging
+to a different space was skipped on its floor ids not matching.
 
 `scripts/migrate_anchor_floors.py` does it: re-point each stored anchor at the floor under its content.
 Dry-run by default.
