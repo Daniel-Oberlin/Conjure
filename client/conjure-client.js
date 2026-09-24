@@ -3295,8 +3295,15 @@
           // (investigations/surface-churn.md: doors are the largest churn bucket).
           //
           // Gated on the sibling being seen THIS capture, which makes it self-limiting: walk away and
-          // neither face is detected, the counter resumes, and a genuinely removed door still prunes. The
-          // only way to hold indefinitely is to keep looking at the other face, when holding is right.
+          // neither face is detected, the counter resumes, and a genuinely removed door still prunes.
+          //
+          // EXPECT THIS NEVER TO FIRE on current firmware. `detectedPlanes` is the persisted Room Setup
+          // delivered wholesale every frame, not gaze-dependent, so both faces of a doorway are offered
+          // whatever you are looking at and neither goes absent from walking through. Confirmed by a
+          // device run on 2026-09-24: every doorway walked, 66/67 planes held, zero pair_held. Kept as a
+          // cheap net, and because a `churn.pair_held` event would be real news — it would mean
+          // detectedPlanes had become gaze-dependent, which a good deal of this design assumes it is not.
+          // Nothing should depend on it firing.
           var twin = doorPair[id];
           if (twin && curById[twin]) {
             if (!self2._pairHeld[id]) {

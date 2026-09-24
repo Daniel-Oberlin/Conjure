@@ -280,9 +280,27 @@ ct=79473  miss door_43            regain door_86
 `real_door_86` misses while `real_door_43` holds; then 86 regains as 43 begins missing. The two faces of one
 doorway are **trading a single observation between captures**, and the loser reports `claimed` each time.
 
-This matters because it is not the same fault as the walls, and **global assignment cannot fix it**: if the
-Quest emits one plane for a doorway and two refs want it, no assignment is correct — one ref loses every
-time. The pair has to be recognised *as* a pair.
+~~This matters because it is not the same fault as the walls, and **global assignment cannot fix it**: if
+the Quest emits one plane for a doorway and two refs want it, no assignment is correct — one ref loses
+every time. The pair has to be recognised *as* a pair.~~
+
+**Wrong — corrected 2026-09-24 by a device run.** The premise was that the Quest emits only the door face
+you are looking through. It does not. `detectedPlanes` is the **persisted Room Setup delivered wholesale
+every frame**, not gaze-dependent (`memory/quest-detectedplanes-persisted`), so *both* faces are offered on
+every capture regardless of where you stand. A 2.5-minute session walking through every doorway, holding
+66 of 67 planes throughout, produced **zero** churn events and **zero** `churn.pair_held` — the guard built
+for this never fired, because a door face does not go absent when you turn away.
+
+So the two faces are never competing for one *observation*. They are competing for one *assignment*: both
+candidates are present every capture, and under emission-order greedy the first to arrive takes a
+reference, after which the second may find its own reference gated out and mint instead — leaving the
+first's reference unmatched. That is the `outbid`/`claimed` shape, and it is ordinary assignment churn.
+**Global assignment is the fix for doors too**, not a separate pair mechanism.
+
+`sameDoorway` and the absence guard are kept: they cost one lookup, and a `churn.pair_held` event would now
+be genuine news — it would mean `detectedPlanes` had become gaze-dependent, invalidating an assumption a
+good deal of this design rests on. But nothing should depend on the guard firing, and on current firmware
+nothing will.
 
 #### How to recognise the pair — measured, not guessed
 
