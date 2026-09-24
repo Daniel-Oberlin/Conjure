@@ -5825,3 +5825,23 @@ def test_a_harmless_capture_under_the_guard_says_nothing(srv, client):
     finally:
         srv._glog = orig
     assert "seed.prune_refused" not in seen, "nothing was doomed, so nothing was refused"
+
+
+def test_losing_a_users_styling_is_loud_and_losing_a_default_is_not(srv, client, capsys):
+    """The one prune worth interrupting someone for. Everything else at this level is bookkeeping, so a
+    uniform line means the destructive case scrolls past among dozens of harmless ones and is only found
+    later, by someone who already suspected something."""
+    surf = _shell(10)
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": surf})
+    client.post("/style_surface", json={"target": "real_wall_3", "color": "#4B0082"})
+    capsys.readouterr()
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [s for s in surf if s["id"] != "real_wall_3"]})
+    out = capsys.readouterr().out
+    assert "LOST STYLING" in out and "real_wall_3" in out and "#4B0082" in out
+    assert "inset_churn" in out, "and it says where to look next"
+
+    capsys.readouterr()
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [s for s in surf if s["id"] not in ("real_wall_3", "real_wall_4")]})
+    out2 = capsys.readouterr().out
+    assert "real_wall_4" in out2, "an unstyled prune is still recorded"
+    assert "LOST STYLING" not in out2, "…but quietly — it destroyed nothing a user made"

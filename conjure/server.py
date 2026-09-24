@@ -3692,10 +3692,20 @@ async def ingest_capture(req: CaptureUpdate) -> dict:
             # surface is created with a per-semantic default (_default_surface_material), so a plain
             # truthiness check would report True for all of them and say nothing. Compare against that
             # default instead, and record the colour so the loss is legible in the log.
-            _glog("seed.prune", {"id": eid, "sem": meta.get("semantic"),
-                                 "styled": mat != _default_surface_material(meta.get("semantic") or ""),
+            styled = mat != _default_surface_material(meta.get("semantic") or "")
+            _glog("seed.prune", {"id": eid, "sem": meta.get("semantic"), "styled": styled,
                                  "color": mat.get("color"), "tex": bool(mat.get("src"))})
-            _slog("seed", f"surface {eid} absent from post → PRUNED from seed")
+            if styled:
+                # The one prune worth interrupting someone for: work the user did is being destroyed, and
+                # it cannot be recovered from anywhere. Everything else here is routine bookkeeping, so a
+                # uniform line means the destructive case scrolls past among dozens of harmless ones and is
+                # only ever found later, by someone who already suspected something. This is the tripwire:
+                # it lands in the terminal that is already open, without anyone having to go looking.
+                _slog("seed", f"*** LOST STYLING — {eid} ({meta.get('semantic')}) pruned carrying "
+                              f"{mat.get('color')}{' + texture' if mat.get('src') else ''}. "
+                              f"Run scripts/inset_churn.py to see why it churned.")
+            else:
+                _slog("seed", f"surface {eid} absent from post → PRUNED from seed")
     for s in req.surfaces:                                    # add new / update STRUCTURALLY-changed (§7.4)
         if s.id in existing:
             aspects = _surface_changes(existing[s.id], s)

@@ -258,11 +258,25 @@ def main() -> int:
 
     pruned = [e for e in churn if e.get("ev") == "churn.prune"]
     if pruned:
-        styled = [e for e in pruned if e.get("color") and e.get("color") != "#888"]
-        print(f"\n=== cost: {len(pruned)} surfaces pruned, {len(styled)} carrying a non-default colour ===")
+        # A prune the client posted is not automatically a loss: the server refuses to drop an `anchored`
+        # surface, so those cost nothing and recur every session for a surface that has genuinely left Room
+        # Setup. Separating them keeps this section meaningful — a line that is always there is a line
+        # nobody reads.
+        kept = [e for e in pruned if e.get("anchored")]
+        real = [e for e in pruned if not e.get("anchored")]
+        styled = [e for e in real if e.get("color") and e.get("color") != "#888"]
+        print(f"\n=== cost: {len(real)} surfaces actually pruned, {len(styled)} carrying a colour ===")
         for e in styled:
-            print("    %-24s %-10s %s%s" % (e.get("id"), e.get("sem"), e.get("color"),
-                                            "  (anchored — server keeps it)" if e.get("anchored") else ""))
+            print("    LOST  %-24s %-10s %s" % (e.get("id"), e.get("sem"), e.get("color")))
+        for e in real:
+            if e not in styled:
+                print("    ---   %-24s %-10s (default styling — nothing a user made)"
+                      % (e.get("id"), e.get("sem")))
+        if kept:
+            ids = sorted({e.get("id") for e in kept})
+            print(f"  {len(kept)} anchored prune(s) refused by the server — nothing lost: {', '.join(ids)}")
+            print("  A surface that posts this every session has left the Quest's Room Setup but cannot be")
+            print("  removed while content is pinned to it. Harmless, but it will not stop on its own.")
     return 0
 
 

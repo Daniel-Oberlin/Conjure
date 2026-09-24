@@ -676,6 +676,8 @@ neither can change a match or lose data by firing:
 
 Both log `seed.prune_refused`, and only when something was actually refused.
 
+**And when a prune does destroy a user's work, it says so loudly.** A styled surface being pruned writes a `*** LOST STYLING` line naming the id, the colour and where to look next, instead of the routine `[seed] … PRUNED` line every other prune gets. The distinction is `styled` — the material differs from `_default_surface_material`, so it is a director edit, not the default every surface is born with. This is the tripwire the whole event log otherwise lacks: everything else here is silent by design and only found by someone who already suspected something.
+
 There is **no time-based establish-then-freeze**. An earlier design held a ~20 s establishing window and
 then froze static surfaces; it is gone, along with `_ESTABLISH_SECS`, `_STATIC_SEMANTICS` and
 `_static_frozen`. Clients render locally, so there is nothing shared to stabilise.
