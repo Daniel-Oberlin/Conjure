@@ -241,7 +241,7 @@ are painted, and only passthrough shows that. E3 is the important one: an unreso
 | # | Do | Pass if | Result |
 |---|---|---|---|
 | F1 | stand in each room in turn, run `ctl rooms` each time | the `← is here` marker names the room you are in | ✅ `← daniel is here` on room #3 (kitchen) — confirm that is where you were |
-| F2 | walk to another room, wait ~2 s, run it again | it follows you | |
+| F2 | walk to another room, wait ~2 s, run it again | it follows you | ✅ kitchen → living → bedroom → living → kitchen, each within a second or two. Caught a **3 s transit**, so it follows the 10 Hz presence tick rather than the 0.5 Hz capture. **No flicker at any boundary**, despite the ~0.6 m floor-rectangle overlap that broke the door probe. |
 | F3 | take the headset off, run it again | **no** `← is here` marker anywhere | ✅ `whereami standing: {}` with no headset in AR |
 
 F3 is a real assertion: only an AR client reports a floor, so the honest answer for a CLI user is that
@@ -395,8 +395,7 @@ the same room by a completely separate path — but at −51 mm against the fit'
 *which* room and differ ~5× on *how much*, which is exactly the disagreement G5 was built to surface. That
 is the open question this run produced.
 
-**Still to run:** F2 (does the marker follow you between rooms) and the optional H. Neither can lose
-anything.
+**Still to run:** only the optional H. Every other section has passed.
 
 **D4 passed**, and the method had to be corrected twice to get there. `--drop-surface` was the wrong tool:
 it is used at exactly one line, guarding `localSurfaces.push` — it hides a surface from what the headset
