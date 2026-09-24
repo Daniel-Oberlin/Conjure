@@ -1541,13 +1541,22 @@ test("explainInsetMint: a detected inset with no stored slot on its wall is genu
   assert.strictEqual(why.why, "device", "no reference to lose — not a churn event");
 });
 
-test("explainInsetMint: the slot it wanted was already taken → 'claimed', naming it", () => {
+test("explainInsetMint: the slot it wanted was already taken → 'taken', naming it", () => {
   // Checked against the NEAREST slot, not the nearest FREE one: matchInset skips taken slots silently, so
   // "the one I wanted was gone" and "the nearest free one was too far" are different facts.
   const recon = { "door|w1": [{ id: "d1", along: 1.0 }] };
   const why = RS.explainInsetMint({ sem: "door", host: "w1", along: 1.05 }, recon, new Set(["d1"]));
-  assert.strictEqual(why.gate, "claimed");
+  assert.strictEqual(why.gate, "taken");
   assert.strictEqual(why.id, "d1");
+});
+
+test("the inset and wall gate vocabularies are DISJOINT", () => {
+  // A shared name makes a log line ambiguous about which matcher produced it — exactly the fault these
+  // functions exist to fix, and the reason the mint gate is `taken` and not `claimed`. A reader can then
+  // treat an inset reporting a wall gate as proof of a stale client rather than a real verdict.
+  const insetGates = new Set(["nokey", "nohost", "norecon", "along", "outbid", "taken"]);
+  const wallGates = new Set(["dyaw", "perp", "gap", "claimed"]);
+  for (const g of insetGates) assert.ok(!wallGates.has(g), `gate "${g}" is claimed by both matchers`);
 });
 
 test("explainInsetMint: nearest free slot beyond tolerance → 'along', not 'claimed'", () => {

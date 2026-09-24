@@ -840,7 +840,13 @@ The inset gates, each naming a different repair:
 | `nohost` | **its host wall is not in this capture.** The cascade test: an inset orphaned because its *wall* churned reads `nohost`, and nothing else does |
 | `norecon` | the host wall is here, but the slot could not be reconstructed (corners missing) |
 | `along` | a candidate exists but its slot is past the 0.4 m tolerance, with the margin |
-| `outbid` | a candidate was *within* tolerance and went to a nearer slot. The inset's `claimed`, named differently because the direction is reversed — nothing took this ref, this ref lost the candidate |
+| `outbid` | a candidate was *within* tolerance and went to a nearer slot — nothing took this ref, this ref lost the candidate |
+| `taken` | (mint side) the slot this inset wanted was already held by another |
+
+The inset and wall vocabularies are deliberately **disjoint** — hence `outbid`/`taken` rather than reusing
+`claimed`. A shared gate name would make a log line ambiguous about which matcher produced it, which is the
+very fault this split exists to fix; kept disjoint, an inset reporting a wall gate is instead positive proof
+of a **stale cached client**, and `scripts/inset_churn.py` says so and refuses to interpret the run.
 
 Inset events also carry `rw` and `cw`, the **ref's and candidate's widths**. A doorway is captured as two
 planes, one per room, and one of them may segment the *frame* rather than the door — about twice as wide

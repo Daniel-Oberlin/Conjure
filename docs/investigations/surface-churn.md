@@ -402,6 +402,27 @@ A narrow "carry the colour across a prune" change was built and **reverted** on 
 `fix/styling-survives-prune`. See the backlog entry for what is keyed to a surface id besides colour —
 `meta.image_id` and the derived `meta.friendly_id` are both exposed, and the latter silently renumbers.
 
+### Reading the next run
+
+`scripts/inset_churn.py [YYYY-MM-DD]` (default today). It reports the inset gates, and is built to answer
+the two questions above rather than to dump events:
+
+- **Q1 — cascade or competition?** `nohost` counts against `outbid`/`taken`. The two lead to different
+  repairs (fix the wall assignment, or recognise the doorway pair), so the script says which dominates
+  rather than leaving it to eyeball.
+- **Q2 — is an extent flipping?** It prints each inset's candidate width across captures. A width that
+  *changes* is the architrave being segmented as the door on some captures and not others; widths that are
+  merely *different* between the two faces are expected and not the fault.
+
+It also refuses to interpret a run where any inset reports a **wall** gate. The inset and wall gate
+vocabularies are disjoint by design, so that combination cannot occur from current code — it means the
+headset is running a **cached client**, and every verdict in the file is the old invalid kind. Given how
+aggressively the Quest caches, this is the likeliest way to waste a session.
+
+The raw logs behind everything above were archived to `temp/geometry-archive-pre-inset-dispatch/` on
+2026-09-24, so new runs read clean. They are local only — `temp/` is git-ignored — and every conclusion
+drawn from them is recorded here rather than in the data.
+
 ## Fixes shipped
 
 | Symptom | Cause | Fix | Commit |

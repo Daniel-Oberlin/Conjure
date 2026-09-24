@@ -1164,10 +1164,12 @@
     if (!best) return { why: "device", id: cand.host };
     var out = { why: /** @type {"matcher"} */ ("matcher"), id: best.id,
                 dist: +bestD.toFixed(3), val: +bestD.toFixed(3), tol: TOL };
-    // Claimed is checked against the NEAREST slot, not the nearest free one: matchInset skips taken slots
-    // silently, so "the one I wanted was gone" and "the nearest free one was too far" are different facts
-    // and only the first names a rival.
-    if (claimedInset && claimedInset.has(best.id)) return Object.assign(out, { gate: "claimed" });
+    // Checked against the NEAREST slot, not the nearest free one: matchInset skips taken slots silently,
+    // so "the one I wanted was gone" and "the nearest free one was too far" are different facts and only
+    // the first names a rival. Called `taken` rather than `claimed` deliberately — matchWall has a
+    // `claimed` gate, and a gate name shared between two matchers makes a log line ambiguous about which
+    // one produced it, which is the whole fault this pair of functions exists to fix.
+    if (claimedInset && claimedInset.has(best.id)) return Object.assign(out, { gate: "taken" });
     return Object.assign(out, { gate: "along" });
   }
 
