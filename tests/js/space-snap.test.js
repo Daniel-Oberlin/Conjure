@@ -1569,3 +1569,69 @@ test("explainInsetMint: nearest free slot beyond tolerance → 'along', not 'cla
 test("explainInsetMint: no resolved host wall is 'nohost'", () => {
   assert.strictEqual(RS.explainInsetMint({ sem: "door", host: null, along: null }, {}, new Set()).gate, "nohost");
 });
+
+// --- sameDoorway: the two faces of one physical doorway. A doorway is captured as two planes, one per
+// room, and the Quest emits whichever you are looking through — so the other face vanishing is not a
+// door that went away. The absence debounce uses this to hold its prune while the twin is visible. ---
+
+// Two door faces on a wall running along X at z=0, facing ±Z, `thick` apart through the wall. `off` slides
+// the second face along the wall, which is what a width difference does to a centroid.
+function doorFace(id, x, z, yawDeg, w) {
+  return { id, sem: "door", orient: "vertical", ext: [w, 2.0],
+           pos: new THREE.Vector3(x, 1.0, z), nyaw: yawDeg * D2R };
+}
+
+test("sameDoorway pairs two opposed faces across a wall thickness", () => {
+  const a = doorFace("d_a", 0, 0, 0, 0.8);
+  const b = doorFace("d_b", 0, 0.15, 180, 0.8);
+  assert.ok(RS.sameDoorway(a, b));
+  assert.ok(RS.sameDoorway(b, a), "symmetric");
+});
+
+test("sameDoorway pairs the REAL 1.91x case — one side segments the frame, not the door", () => {
+  // space-1's real_door_45 / real_door_84: 1.36 m against 0.71 m, centroids 0.287 m apart ALONG the wall
+  // and 0.158 m through it. Any test keyed on similar widths, or on centroid distance, rejects this pair —
+  // and it is the pair most in need of the guard.
+  const wide = doorFace("real_door_45", 0, 0, 0, 1.36);
+  const narrow = doorFace("real_door_84", 0.287, 0.158, 180, 0.71);
+  assert.ok(RS.sameDoorway(wide, narrow), "a 1.91x width ratio is a capture artifact, not a different door");
+});
+
+test("sameDoorway rejects two doors near a CORNER — close, but not opposed", () => {
+  // The false positive a proximity test takes: space-1 has such pairs at 0.765 m and 0.997 m, at ~90°.
+  const a = doorFace("d_a", 0, 0, 0, 0.8);
+  const b = doorFace("d_b", 0.5, 0.5, 90, 0.8);
+  assert.strictEqual(RS.sameDoorway(a, b), false);
+});
+
+test("sameDoorway rejects two doors on the SAME side of one wall (both faces inward)", () => {
+  const a = doorFace("d_a", 0, 0, 0, 0.8);
+  const b = doorFace("d_b", 0.4, 0.1, 0, 0.8);
+  assert.strictEqual(RS.sameDoorway(a, b), false, "same facing — two doors, not two faces");
+});
+
+test("sameDoorway rejects opposed faces too far apart to share a wall", () => {
+  const a = doorFace("d_a", 0, 0, 0, 0.8);
+  const b = doorFace("d_b", 0, 1.2, 180, 0.8);   // 1.2 m is a corridor, not a wall thickness
+  assert.strictEqual(RS.sameDoorway(a, b), false);
+});
+
+test("sameDoorway rejects opposed doors whose spans do not overlap along the wall", () => {
+  // Two separate doorways in the same partition, one at each end. Opposed and thin-walled, but distinct.
+  const a = doorFace("d_a", 0, 0, 0, 0.8);
+  const b = doorFace("d_b", 3.0, 0.15, 180, 0.8);
+  assert.strictEqual(RS.sameDoorway(a, b), false);
+});
+
+test("sameDoorway rejects a different semantic and rejects itself", () => {
+  const a = doorFace("d_a", 0, 0, 0, 0.8);
+  const w = { ...doorFace("w_a", 0, 0.15, 180, 0.8), sem: "window" };
+  assert.strictEqual(RS.sameDoorway(a, w), false);
+  assert.strictEqual(RS.sameDoorway(a, a), false);
+});
+
+test("sameDoorway rejects faces stacked vertically (a door under a transom)", () => {
+  const a = doorFace("d_a", 0, 0, 0, 0.8);
+  const b = { ...doorFace("d_b", 0, 0.15, 180, 0.8), pos: new THREE.Vector3(0, 2.4, 0.15) };
+  assert.strictEqual(RS.sameDoorway(a, b), false);
+});

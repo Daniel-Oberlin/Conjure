@@ -1134,6 +1134,51 @@
     return Object.assign(out, { gate: "outbid", id: best.chose || undefined });
   }
 
+  // Is `a` the OTHER FACE of the same physical doorway as `b`? A doorway is captured as two planes, one
+  // per room, and the Quest may emit only one of them on a given capture — so the face that missed out is
+  // not gone, it is simply the side nobody was looking through. Pruning it costs its styling for nothing.
+  //
+  // The test is plane-based, and deliberately ignores the two things that look most obvious:
+  //   • NOT extent. One side may segment the door's FRAME rather than the door — 1.36 m against 0.71 m in
+  //     `space-1`, a 1.91x ratio on a real pair. Gating on similar widths rejects exactly the pair that
+  //     needs help most.
+  //   • NOT centroid distance. Two faces that share an edge but differ in width have centroids that slide
+  //     apart in proportion to that difference — 0.287 m ALONG the wall for that same pair, against 0.158 m
+  //     through it. A centroid radius loose enough to catch it is loose enough to pair unrelated doors.
+  // What is stable is the relationship: opposed normals, a gap of one wall thickness THROUGH the wall, and
+  // spans that overlap along it. This is matchWall's lesson in a second place — the centroid is a scan
+  // artifact; use the plane.
+  //
+  // Doors near a corner are the false positive this rejects: they sit close together (0.765 m and 0.997 m
+  // in `space-1`) but at ~90°, not 180°, so the antiparallel requirement excludes them.
+  /**
+   * @param {RefSurface} a  @param {RefSurface} b
+   * @param {{thickness?: number}} [opts]  max through-wall gap (m) for one doorway (default 0.35)
+   * @returns {boolean}
+   */
+  function sameDoorway(a, b, opts) {
+    opts = opts || {};
+    var THICK = opts.thickness != null ? opts.thickness : 0.35;
+    if (!a || !b || a === b || a.id === b.id) return false;
+    if (a.sem !== b.sem || a.orient !== "vertical" || b.orient !== "vertical") return false;
+    if (!a.pos || !b.pos) return false;
+    // 1. opposed normals — the two faces look into different rooms. ~150°+ apart.
+    if (Math.cos(a.nyaw - b.nyaw) > -0.85) return false;
+    // 2. through the wall: project the centre-to-centre offset onto a's normal. One wall thickness.
+    var anx = Math.sin(a.nyaw), anz = Math.cos(a.nyaw);
+    var dx = b.pos.x - a.pos.x, dz = b.pos.z - a.pos.z;
+    if (Math.abs(dx * anx + dz * anz) > THICK) return false;
+    // 3. spans overlap along the wall. This is what the width difference is allowed to move, so it is
+    //    measured as an OVERLAP and not a distance: a 1.36 m face and a 0.71 m face sharing an edge still
+    //    overlap by the whole of the narrower one.
+    var tx = anz, tz = -anx;
+    var aa = a.pos.x * tx + a.pos.z * tz, ba = b.pos.x * tx + b.pos.z * tz;
+    var aHw = ((a.ext && a.ext[0]) || 0) / 2, bHw = ((b.ext && b.ext[0]) || 0) / 2;
+    if (Math.abs(aa - ba) - (aHw + bHw) > 0) return false;
+    // 4. roughly the same height band — a door and a window one above the other are not a pair.
+    return Math.abs(a.pos.y - b.pos.y) <= 0.5;
+  }
+
   // The MINT side of the same question, and a separate function because the direction is reversed.
   // explainInsetNoMatch asks "this stored inset went unclaimed — what was offered to it?"; this asks "this
   // detected inset took no stored id — what did it pass up?". matchInset walks the ref slots for one
@@ -1477,7 +1522,7 @@
   }
 
   return { eulerYXZ: eulerYXZ, yawOf: yawOf, register: register,
-           heightCensus: heightCensus, explainNoMatch: explainNoMatch, explainInsetNoMatch: explainInsetNoMatch, explainInsetMint: explainInsetMint, floorUnder: floorUnder, segmentRooms: segmentRooms, roomLinks: roomLinks, roomResiduals: roomResiduals,
+           heightCensus: heightCensus, explainNoMatch: explainNoMatch, explainInsetNoMatch: explainInsetNoMatch, explainInsetMint: explainInsetMint, sameDoorway: sameDoorway, floorUnder: floorUnder, segmentRooms: segmentRooms, roomLinks: roomLinks, roomResiduals: roomResiduals,
            polyFit: polyFit, planeCorners: planeCorners,
            canonicalFrame: canonicalFrame, surfaceToRef: surfaceToRef, selectSpace: selectSpace,
            matchRef: matchRef, matchWall: matchWall, matchInset: matchInset, dupInsetIds: dupInsetIds,

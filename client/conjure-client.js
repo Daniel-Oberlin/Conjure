@@ -1615,6 +1615,7 @@
         // _absent: id → consecutive miss count (client owns removal-confidence); _posted / _postedBoundary:
         // the set/boundary as of the last POST, for structural diffing.
         this._known = {}; this._absent = {}; this._posted = {}; this._postedBoundary = null;
+        this._pairHeld = {};          // door-face ids whose absence is excused by a visible twin (log-once)
         this._recovered = {};       // seed-surface ids reconstructed via anchor (missing from capture) — for §5.2 logging
         this._localPlanes = null;   // last capture's local wall+floor planes (F_track) — for avatar anchors (§5.1)
         // --- GEOMETRY EVENT LOG (docs/backlogs/spaces-geometry.md — "Instrumentation") ------------------
@@ -1726,6 +1727,7 @@
         this._ref = []; this._Tmat = null; this._haveT = false;
         this._anchorInv = null; this._refSeq = 0; this._rl = WM.relocInit(); this.lastPost = 0;
         this._known = {}; this._absent = {}; this._posted = {}; this._postedBoundary = null;   // fresh post model
+        this._pairHeld = {};
         this._recovered = {};
         // The geometry log's per-world state goes with it: a new world's surface set and heights are a new
         // baseline, so carrying the old one over would report the switch itself as churn and an anomaly.
@@ -3258,8 +3260,33 @@
         }
         this._logRoomResiduals(seg);
         var reasons = [];
+        // The two faces of one doorway, by _ref id — built once per capture so the absence loop below can
+        // ask "is my other face being looked at right now?" without an O(n²) scan per absent surface.
+        var doorPair = {};
+        if (RS && RS.sameDoorway && self2._ref) {
+          var vert = self2._ref.filter(function (r) { return r.orient === "vertical" && r.pos; });
+          vert.forEach(function (a) {
+            vert.forEach(function (b) { if (RS.sameDoorway(a, b)) doorPair[a.id] = b.id; });
+          });
+        }
         Object.keys(self2._known).forEach(function (id) {                 // debounced removals (3 misses)
-          if (curById[id]) return;
+          if (curById[id]) { delete self2._pairHeld[id]; return; }
+          // A doorway is two planes, one per room, and the Quest emits the one you are looking through.
+          // So a door face vanishing WHILE ITS SIBLING IS VISIBLE is not a door that went away — it is the
+          // far side of a door you are standing in front of. Pruning it would cost its styling for nothing
+          // (investigations/surface-churn.md: doors are the largest churn bucket).
+          //
+          // Gated on the sibling being seen THIS capture, which makes it self-limiting: walk away and
+          // neither face is detected, the counter resumes, and a genuinely removed door still prunes. The
+          // only way to hold indefinitely is to keep looking at the other face, when holding is right.
+          var twin = doorPair[id];
+          if (twin && curById[twin]) {
+            if (!self2._pairHeld[id]) {
+              self2._pairHeld[id] = 1;
+              self2._churn("pair_held", { id: id, sem: (self2._known[id] || {}).semantic, twin: twin });
+            }
+            return;
+          }
           self2._absent[id] = (self2._absent[id] || 0) + 1;
           if (self2._absent[id] < 3) return;
           var gone = self2._known[id];
