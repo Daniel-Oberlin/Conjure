@@ -1576,6 +1576,11 @@ async def index() -> HTMLResponse:
     html = html.replace("</head>", f"  <script>window.CONJURE_DEBUG_LOG={flag};"
                         f"window.CONJURE_DEBUG_REGISTRATION={rflag};window.CONJURE_DEBUG_JITTER={jflag};"
                         f"window.CONJURE_GEOMETRY_LOG={gflag};"
+                        # The build the browser is ACTUALLY running, echoed into space.enter so the log can
+                        # be checked against the files on disk. The Quest caches hard enough that a session
+                        # can be spent on stale code, and "no symptom" then reads as "the fix works". Same
+                        # `v` the version badge uses — the newest script mtime.
+                        f"window.CONJURE_BUILD={v};"
                         f"window.CONJURE_DEBUG_SURFACE_OVERLAY={soflag};"
                         f'window.CONJURE_VOID_ORIGIN="{settings.void_origin}";' 
                         f"window.CONJURE_FORCE_GEO={fg};"

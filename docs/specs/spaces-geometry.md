@@ -791,7 +791,7 @@ it now confirms a measurement rather than an argument.
 
 | Event | Fires when |
 |---|---|
-| `space.enter` | first capture in a world — role, `_ref`/seed sizes, count per semantic |
+| `space.enter` | first capture in a world — role, `_ref`/seed sizes, count per semantic, and `build`: the newest client-script mtime the browser actually loaded, so a log can be checked against the files on disk |
 | `churn.miss` / `.regain` | a known id goes unmatched (n=1..3), or returns before the debounce |
 | `churn.mint` / `.hide` / `.prune` | a fresh id is minted; the element is removed after 3 misses; the id leaves the POST set |
 | `churn.restyle_lost` | an id that used to render with a material now renders bare |

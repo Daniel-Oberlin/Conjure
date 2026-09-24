@@ -2815,7 +2815,8 @@
             docSurfaces.forEach(function (e) {
               var sm = (e.meta || {}).semantic || "?"; bySemSeed[sm] = (bySemSeed[sm] || 0) + 1; });
             geoLog("space.enter", { role: amOwner ? "owner" : "guest", ref: self._ref.length,
-                                    seed: docSurfaces.length, sem: bySemSeed, planes: cur.length });
+                                    seed: docSurfaces.length, sem: bySemSeed, planes: cur.length,
+                                    build: window.CONJURE_BUILD });   // which code actually ran (§10.1)
           }
         }
 

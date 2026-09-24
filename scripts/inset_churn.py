@@ -80,8 +80,38 @@ def main() -> int:
           f"{len(insets)} inset, {len(others)} wall/horizontal")
 
     # --- STALE CLIENT ---------------------------------------------------------------------------
-    # The headset caches the client aggressively. An inset reporting a WALL gate means the running
-    # client predates the dispatch fix, and every inset verdict below is the old, invalid kind.
+    # Checked two ways, because the second one only works if churn happened. The FIRST is definitive and
+    # always available: every space.enter carries `build`, the newest client-script mtime the browser
+    # actually loaded, and that can be compared against the files on disk. Absence of a symptom is not
+    # evidence of a current client — a clean session and a stale one both log nothing.
+    builds = {e["build"] for e in rows if e.get("ev") == "space.enter" and e.get("build")}
+    disk = 0
+    cdir = ROOT / "client"
+    if cdir.is_dir():
+        disk = max((int(f.stat().st_mtime) for f in cdir.glob("*.js")), default=0)
+    print()
+    if not builds:
+        entered = any(e.get("ev") == "space.enter" for e in rows)
+        if entered:
+            print("  CLIENT BUILD: not recorded — the headset ran a client from before the build stamp.")
+            print("  That is itself a stale client. Restart server → restart Quest browser → reload.")
+        else:
+            print("  CLIENT BUILD: unknown (no space.enter today — the headset never entered AR).")
+    elif disk and max(builds) < disk:
+        old = _dt.datetime.fromtimestamp(max(builds)).strftime("%H:%M:%S")
+        new = _dt.datetime.fromtimestamp(disk).strftime("%H:%M:%S")
+        print(f"  *** STALE CLIENT — the headset ran a build from {old}, disk has {new} ***")
+        print("  Everything below describes code that is no longer what you are testing.")
+        print("  Restart the server → restart the Quest browser → reload the page.")
+    else:
+        when = _dt.datetime.fromtimestamp(max(builds)).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"  client build: {when} — current with the files on disk. Verdicts below are trustworthy.")
+    if len(builds) > 1:
+        print(f"  (note: {len(builds)} different builds entered today — events may be mixed)")
+
+    # The second check: an inset reporting a WALL gate. Only possible from a client predating the dispatch
+    # fix, since the two vocabularies are disjoint. Redundant when the build stamp is present, and the
+    # only signal when it is not.
     stale = [e for e in insets if e.get("gate") in WALL_GATES]
     if stale:
         print()
@@ -98,8 +128,9 @@ def main() -> int:
         print("\n  (no recognised inset gate — check the client is current)")
 
     if not insets:
-        print("\n  No inset churn today. That is the goal state, but it is also what an unexercised")
-        print("  session looks like — walk between rooms past the doorways before concluding.")
+        print("\n  No inset churn today. That is the goal state — but it is also what an unexercised")
+        print("  session looks like, and what a session on stale code looks like. Read it together with")
+        print("  the CLIENT BUILD line above, then walk between rooms past the doorways before concluding.")
     else:
         # --- Q1: cascade or competition? --------------------------------------------------------
         by_gate = collections.Counter(e.get("gate") or f"({e.get('why')})" for e in insets)
