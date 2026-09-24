@@ -97,6 +97,25 @@ Instrumented by [the geometry event log](#instrumentation--the-geometry-event-lo
 probe is unexercised; nothing is confirmed about which of the three causes fires, because none of them did.
 Worth noting the sessions were short and stationary-ish — the symptom is occasional by report.
 
+### A branch predating the rooms work could strip the room record — untested, and shrinking
+
+Seven unmerged branches predate rooms and share the live data dir, `feat/fix-floating-rooms` among them —
+which is the one anything touching the floor fault would reach for. Running one writes to the same space
+file.
+
+Reading `main`'s write paths says the record survives: `SpaceStore` round-trips the whole dict,
+`_save_active` mutates named keys, `_space_from_world_doc` deep-copies each entity, and
+`_surface_update_set` writes dotted paths. Unknown keys and unknown `meta` fields are preserved by
+construction — but by a property of today's code, not a guarantee.
+
+**Never tested on device, and deliberately dropped** from the 2026-09 run rather than deferred: the cost of
+being wrong is one re-derivation, since `resolve_rooms` tier 2 recovers the rooms from the defining floor on
+the next capture, and tier 1 from surface overlap if even that is gone. The hazard also shrinks every time
+one of those branches merges `main`.
+
+Worth thirty seconds if you are about to do sustained work on a pre-rooms branch: run it, then check
+`rooms` and `meta.room` are still in the space file.
+
 ### Every anchor binds to the LAST floor in the array, not the floor under the content — **confirmed**
 
 **Status:** cause found 2026-09-24, on device and in the code. Not fixed. This is the raised-floor

@@ -225,6 +225,27 @@ Emission is change-gated by `WM.roomResidualGate` — first fit, a move past 1 c
 so a settled space still emits nothing, which is what makes §10's log affordable to leave running for
 weeks.
 
+**`dy` is not a proxy for the floating-room fault, and the cross-check runs one way.** Measured on device
+2026-09-23: at settle every room's `dy` sat within 4 mm of zero while `level.anomaly` was reporting
+`real_ceiling_25` at **+71 mm**. That is not a contradiction — the two probes answer different questions:
+
+| | finds |
+|---|---|
+| `levelDeviation` (§10.2) | **one surface** displaced relative to the rest of the space |
+| `roomResiduals` | a **rigid translation of a whole room** |
+
+One ceiling 71 mm out is, to a rigid fit over that room's twenty-odd surfaces, an outlier to be averaged
+away — correctly, because one surface moving is not the room moving. The two agreed during the opening
+transient only because everything was moving at once.
+
+So a large per-room `dy` **is** evidence of a whole-room displacement and the detector should corroborate
+it; a detector anomaly does **not** imply a `dy`. Reading the implication backwards would dismiss a real
+single-surface fault because the room fit looks clean.
+
+**Read the last epoch, not the first.** A session opens at 150–170 mm and decays to 5–16 mm over ~15 s as
+tracking settles — all rooms together, on one curve. A single `room.residual` row taken early overstates
+the effect by an order of magnitude, which is how the first reading of this data was misjudged.
+
 ### 4.1 The boundary flip
 
 Measured on-device: **leaving the guardian boundary and returning relocalizes the whole tracking frame**

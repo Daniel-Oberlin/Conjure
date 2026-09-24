@@ -241,6 +241,31 @@ have no room and should say so rather than guess.
 | `levelDeviation` per-room instead of one global median | spec §10.2 |
 | the floating-room corrector's input — an estimate, not a threshold | [`investigations/raised-floor.md`](../investigations/raised-floor.md) |
 
+### Validated on device — 2026-09-23/24
+
+The whole of steps 1 and 2 was exercised on the three-room space with written-down ground truth, over
+several sessions. The checklist that drove it has been retired; this is what it found.
+
+| | Result |
+|---|---|
+| Segmentation | **3 rooms**, floor↔ceiling `32↔13` / `8↔25` / `10↔21` — the ground truth exactly. **66 of 66 surfaces labelled, zero unassigned.** Contents corroborate: bed, couch, ten shelves |
+| Connectivity | the full door graph, matching the dwelling, resolving from **both faces** of every interior doorway; exterior doors and windows read `→ outside` |
+| Identity | a name survived a client restart, a **server** restart read back off the space file with no capture to mask it, and **losing its own defining floor** — carried by surface-set overlap alone, with the record self-repairing |
+| Targeting | a room as a target, `room=` ∩ semantic, and an unresolvable room refusing rather than repainting the space |
+| Which room | names the right room, follows you between them within a second (a 3 s transit showed up), and reports nobody with no headset present. **No flicker at any boundary** |
+| Residuals | settled **5–16 mm** per room across two sessions; see step 3 |
+
+**Four defects it found, all fixed**, and every one found by the device rather than by reading the code:
+segmentation ran *after* the capture pass strips `_lp`/`_lq`, so it silently found nothing on every capture;
+a settled space had no POST reason to send its rooms at all; the re-post gate asked what the client had sent
+rather than what the server had, so a lost record could never recover; and an unresolvable `room=` blamed
+the target instead of the scope.
+
+**Two pre-existing bugs it confirmed**, both larger than predicted, both in
+[`backlogs/spaces-geometry.md`](../backlogs/spaces-geometry.md): every anchor binds to the *last* floor in
+the array rather than the one under the content, and the surface-churn fault recurred with the load gate
+working, on gates the first campaign never saw.
+
 ### Staging
 
 1. **Segmentation + room record + names + connectivity + director queries and targeting.** ✅ **Built
@@ -265,8 +290,8 @@ have no room and should say so rather than guess.
    plan set for itself before anything was built. The 150–170 mm each session opens with is a whole-space
    tracking settle, not per-room non-rigidity: all three rooms decay together on one curve. The refinement
    does still halve what remains, so this is "real and small", not "absent" — but it has to argue for
-   itself now, and the argument it was going to make has been measured away. See
-   [`investigations/rooms-device-run-2026-09.md`](../investigations/rooms-device-run-2026-09.md) §G.
+   itself now, and the argument it was going to make has been measured away. See *Validated on device*
+   above; per-room numbers are in the geometry log, readable with `scripts/room_residuals.py`.
 4. **Per-room boundary**, separately: it changes a schema with two consumers and deserves its own increment.
 
 Step 1 is verifiable with no device. `fixtures/golden-space.json` is 45 surfaces across two rooms — a known
