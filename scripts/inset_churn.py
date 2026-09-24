@@ -91,12 +91,31 @@ def main() -> int:
         disk = max((int(f.stat().st_mtime) for f in cdir.glob("*.js")), default=0)
     print()
     if not builds:
-        entered = any(e.get("ev") == "space.enter" for e in rows)
-        if entered:
-            print("  CLIENT BUILD: not recorded — the headset ran a client from before the build stamp.")
-            print("  That is itself a stale client. Restart server → restart Quest browser → reload.")
-        else:
+        # No stamp. That does NOT mean stale: every log written before the stamp itself shipped lacks it.
+        # Fall back to the one comparison that is always valid — when the session ran, against when the
+        # client files were last changed. If the files are newer, the session did not test today's code,
+        # whatever else was true of it.
+        entered = [e for e in rows if e.get("ev") == "space.enter" and e.get("t")]
+        if not entered:
             print("  CLIENT BUILD: unknown (no space.enter today — the headset never entered AR).")
+        else:
+            first = min(e["t"] for e in entered)
+            try:
+                ran = _dt.datetime.fromisoformat(first)
+            except ValueError:
+                ran = None
+            print("  CLIENT BUILD: not stamped — this log predates the build stamp, which is NOT by itself")
+            print("  evidence of a stale client.")
+            if ran and disk:
+                newest = _dt.datetime.fromtimestamp(disk)
+                if newest > ran:
+                    print(f"  But the session ran at {ran:%H:%M:%S} and client/ was last changed at "
+                          f"{newest:%H:%M:%S},")
+                    print("  so it did not exercise the current code. Re-run after a deploy to get a stamped log.")
+                else:
+                    print(f"  The session ran at {ran:%H:%M:%S}, after the last change to client/ "
+                          f"({newest:%H:%M:%S}),")
+                    print("  so it did run code current at the time — assuming the deploy ritual was followed.")
     elif disk and max(builds) < disk:
         old = _dt.datetime.fromtimestamp(max(builds)).strftime("%H:%M:%S")
         new = _dt.datetime.fromtimestamp(disk).strftime("%H:%M:%S")
