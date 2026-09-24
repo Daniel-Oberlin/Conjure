@@ -113,6 +113,14 @@ def srv(tmp_path, monkeypatch):
     from conjure.world import SessionRepository, SpaceStore, WorldRepository, WorldStore
 
     monkeypatch.setattr(server, "ASSET_CACHE", tmp_path)
+    # Both diagnostic logs go to the temp tree, not the live ones the developer reads. Tests exercise
+    # exactly the paths worth alarming about — a styled surface pruned, a destructive post refused — so
+    # without this a test run writes "*** LOST STYLING" and seed.prune_refused into the real conjure.log
+    # and the day's geometry log. Measured: four fake LOST STYLING lines and a phantom refusal, which is
+    # how this was found. A tripwire that fires from pytest is not a tripwire, and a churn report that
+    # counts test events is not evidence.
+    monkeypatch.setattr(server, "LOG_FILE", tmp_path / "conjure.log")
+    monkeypatch.setattr(server, "GEO_LOG_DIR", tmp_path)
     # Isolated user-first tree + session-backed world store + a tmp global pointer, so autosave/reset/
     # switch stay off the real repo (docs/specs/agents.md §7.1).
     users = tmp_path / "users"
