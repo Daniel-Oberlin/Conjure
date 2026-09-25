@@ -658,11 +658,33 @@ def test_library_reindex_clears_stale_model_vectors(srv, client):
         pytest.skip("sqlite-vec not available")
     srv.embedder = FakeEmbedder(dim=8)
     srv.library.upsert("m.glb", kind="model", label="Oak Tree")
-    srv.library.add_embedding("m.glb", [1.0] + [0.0] * 7, "fake")  # a stale text-derived model vector
+    # A stale model-TITLE vector: derived from words, so a different similarity scale, so it dominates
+    # a text query and has to go. Which is a fact about the vector, not about the row it sits on.
+    srv.library.add_embedding("m.glb", [1.0] + [0.0] * 7, "fake", source="text")
     assert srv.library.get("m.glb")["embed_model"] == "fake"
     r = client.post("/library/reindex", json={}).json()
     assert r["cleared"] >= 1
     assert srv.library.get("m.glb")["embed_model"] is None          # purged from the visual index
+
+
+def test_library_reindex_KEEPS_a_figures_rendered_thumbnail_vector(srv, client):
+    """The bug this provenance column exists to end. `describe_figures --embed` renders a figure in
+    Blender and embeds the render — an image vector, on a `model` row. The sweep used to ask the row's
+    KIND, see "model", and delete it, so every reindex silently undid the September backfill and the
+    figures stopped being findable by look until someone ran it again."""
+    from conjure.embeddings import FakeEmbedder
+    if not srv.library.has_vectors:
+        pytest.skip("sqlite-vec not available")
+    srv.embedder = FakeEmbedder(dim=8)
+    srv.library.upsert("jane.glb", kind="model", label="Jane")
+    srv.library.add_embedding("jane.glb", [1.0] + [0.0] * 7, "fake", source="image")
+
+    r = client.post("/library/reindex", json={}).json()
+    assert r["ok"]
+    assert srv.library.get("jane.glb")["embed_model"] == "fake", "a render survives the sweep"
+    assert srv.library.get("jane.glb")["embed_from"] == "image"
+    # ...but reindex still cannot MAKE one: it has pixels for an image asset and none for a model.
+    assert "jane.glb" not in [a["id"] for a in srv.library.assets_missing_embedding()]
 
 
 def test_library_reindex_without_embedder_errors(srv, client):
@@ -3849,6 +3871,22 @@ def test_renaming_a_space_keeps_its_file_key_so_worlds_still_point_at_it(srv, cl
     assert srv.spaces.load("daniel", "space-1")["name"] == "Living Room"
     assert srv.spaces.resolve("daniel", "Living Room") == "space-1"
     assert client.get("/world").json()["environment"].get("space") == before
+
+
+def test_only_the_space_owner_may_rename_a_space(srv, client):
+    """`owner` rides in the body, so it certifies nobody — the caller header is the only identity here.
+    The space record is a user's own, the way its rooms and its visibility are, so it takes the same
+    gate they do rather than the active world's."""
+    _seed_space(srv, "daniel", "space-1")
+    r = client.post("/space/rename", json={"owner": "daniel", "name": "space-1", "new_name": "Bob Was Here"},
+                    headers={"X-Conjure-User": "bob"}).json()
+    assert r["ok"] is False and "daniel owns this space" in r["error"]
+    assert srv.spaces.load("daniel", "space-1").get("name") != "Bob Was Here"
+    # ...and the owner is unaffected, as is the headerless local CLI
+    assert client.post("/space/rename", json={"owner": "daniel", "name": "space-1", "new_name": "Studio"},
+                       headers={"X-Conjure-User": "daniel"}).json()["ok"]
+    assert client.post("/space/rename", json={"owner": "daniel", "name": "space-1",
+                                              "new_name": "Studio 2"}).json()["ok"]
 
 
 def test_cd_and_show_reject_a_world_that_does_not_exist(srv, client):

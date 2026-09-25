@@ -32,7 +32,7 @@ Three properties follow, and they are the whole design:
 
 ## 2. The record
 
-One SQLite file, schema-versioned by `PRAGMA user_version` (**v8** today). Known versions migrate in
+One SQLite file, schema-versioned by `PRAGMA user_version` (**v9** today). Known versions migrate in
 place — ALTER, never DROP, because captions and user curation are not recoverable from the
 content-addressed cache. Only a fresh or unrecognised database is rebuilt from disk.
 
@@ -55,6 +55,8 @@ assets(
   notes TEXT, tags TEXT,           -- user curation, FTS-indexed
   rating INTEGER, favorite INTEGER,
   embed_model TEXT, embed_dim INTEGER,      -- which vector space this row's embedding is in
+  embed_from TEXT,                 -- image | text: what that vector was DERIVED from, not this row's
+                                   --   kind — a rendered model is an image vector (§6)
   superseded_by TEXT,              -- the id that REPLACED this row — a tombstone (§3)
   created_at REAL, last_used REAL, use_count INTEGER DEFAULT 0
 )
@@ -338,12 +340,22 @@ vectors are only ever compared within one space.
 `None` rather than raising, which is what makes `torch` an optional dependency
 (`pip install -e ".[embed]"`) instead of a boot requirement.
 
-**The vector index is visual-only.** Images and skyboxes are embedded from their **pixels**; 3D models
-are deliberately *not* vector-embedded and are found by FTS/exact on their title. The reason is
-measured, not theoretical: SigLIP text↔text similarity sits at a much higher scale than text↔image, so
-text-derived vectors (model titles) dominate every text query and bury the images — observed live at
-distance ~0.69 for model titles against ~1.33 for images. `reindex` actively **clears** any non-visual
-vector that crept in.
+**The vector index holds image-derived vectors only.** The reason is measured, not theoretical: SigLIP
+text↔text similarity sits at a much higher scale than text↔image, so text-derived vectors (model titles)
+dominate every text query and bury the images — observed live at distance ~0.69 for model titles against
+~1.33 for images. `reindex` actively **clears** any text-derived vector that crept in.
+
+**The index asks provenance, not kind** (`embed_from`, v9). Each vector records what it was made *from* —
+`image` or `text` — written by the branch that made it, because that is the only place which knows. The
+rule used to be a kind test, which was the same question while only images had vectors and stopped being
+the same question when `describe_figures --embed` began embedding a figure's **rendered thumbnail**: a
+genuine image vector, at the same scale as the rest, living on a `model` row. Every `reindex` swept it
+away and the figures quietly stopped being findable by look. A v8 row is backfilled with the old kind
+test, so the upgrade itself moves nothing.
+
+So a model *is* embedded when something has rendered it, and is otherwise found by FTS/exact on its
+title. `reindex` cannot make such a vector — it has pixels for an image asset and none for a model — so
+it clears on provenance and embeds on kind, and the asymmetry is deliberate.
 
 `assets_vec` is created lazily at the live embedder's dimension and gated on the `sqlite-vec` extension
 loading; absent either, search silently drops to stages 1–3.
@@ -366,7 +378,7 @@ Five operator passes, all off the request path, via `conjure-ctl` or `POST /libr
 
 | Command | What it does |
 |---|---|
-| `conjure-ctl reindex` | embed cataloged assets that have no vector; clear stray non-visual vectors |
+| `conjure-ctl reindex` | embed cataloged assets that have no vector; clear stray text-derived vectors |
 | `conjure-ctl refresh-models` | re-derive every model's `attributes` and every clip's `rig_sig` from the bytes, after a build that changes what extraction knows; a refresh derives what the SERVER knows, so it warns when the running `FRAME_REV` is older than the code on disk |
 | `conjure-ctl caption` | image→text for assets with **no label** (Gemini by default; `Captioner` is swappable) — makes bare backfilled images readable and FTS-searchable |
 | `conjure-ctl retag-skyboxes` | re-tag wide images (aspect ≥ 1.9 — equirectangular) as `skybox`, fixing the vector's `kind` in place, no re-embed |
