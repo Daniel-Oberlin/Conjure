@@ -269,6 +269,12 @@ the scene still wins. Measured 2026-09-21: 8 figures lifted across the 78 captur
 them has the shape, and 747 of the new set's 755 files byte-identical, the other 8 being the rooms that
 lost their figure.
 
+> **That count predates the memo fix of 2026-09-25 and is worth re-running.** The skin-joint and
+> humanoid memos were keyed on `id(build)` in a module-level dict, and a bulk run frees each build
+> before allocating the next, so a capture could be handed its predecessor's humanoid verdict — which
+> decides this exact question. A borrowed "not humanoid" lifts nobody. The measurement above was taken
+> in one such run over all 78.
+
 **Nothing in it is keyed to any particular model** — every string in the module is a PlayCanvas or glTF
 schema key, and the one heuristic (`--adopt`) matches on render-asset names read from the build. But the
 coverage was shaped by one character, so what it CANNOT carry is listed in `_UNCARRIED` and warned about
