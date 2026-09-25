@@ -37,6 +37,7 @@ $XDG_DATA_HOME/conjure/            (default ~/.local/share/conjure/) ← preciou
 
 $XDG_CACHE_HOME/conjure/           (default ~/.cache/conjure/)       ← genuinely disposable
   tunnel_url                       the current run's public tunnel URL
+  repl-history-<user>              the CLI REPL's arrow-key history
 ```
 
 The shape of the `users/` tree belongs to [`specs/agents.md §7.1`](./agents.md); this spec only says
@@ -64,8 +65,8 @@ If `CONJURE_HOME` is set, all three roots consolidate under it:
 $CONJURE_HOME/config/   $CONJURE_HOME/data/   $CONJURE_HOME/cache/
 ```
 
-This is the portable single-directory install (the `~/.conjure` feel), and the handle a subprocess test
-uses to move an entire home onto a tmpdir in one variable.
+This is the portable single-directory install (the `~/.conjure` feel), and the handle that moves an
+entire home onto a tmpdir in one variable.
 
 ---
 
@@ -115,8 +116,8 @@ constants, which is the form the rest of the app consumes:
 | `CACHE_DIR`, `USERS_DIR`, `SESSION_PTR` | aliases into `DATA_DIR` |
 
 `CACHE_DIR` is a **historical alias for the DATA root**, not for the cache — it predates the split and is
-kept because other modules import it. `CACHE_ROOT` is the disposable one. The names are a trap; the
-comment in `config.py` says so at the definition.
+kept for compatibility. `CACHE_ROOT` is the disposable one. The names are a trap; the comment in
+`config.py` says so at the definition.
 
 They are module-level constants rather than a resolver behind a function specifically so tests can
 monkeypatch them (§6).
@@ -125,9 +126,9 @@ monkeypatch them (§6).
 
 ## 3. `settings.json`
 
-Created from a template on first run by `ensure_settings_file(CONFIG_DIR)`, called at startup — the one
-place this layer writes to a real home. Idempotent: an existing file is never touched, so the template
-can gain keys without disturbing anyone.
+Created from a template on first run by `ensure_settings_file(CONFIG_DIR)`, called at startup — the only
+unprompted write this layer makes to a real home (`save_preference` is the other, and only on `--save`).
+Idempotent: an existing file is never touched, so the template can gain keys without disturbing anyone.
 
 ```json
 { "preferences": {},
@@ -204,6 +205,9 @@ DYNAMICS_PATH = [ <config>/dynamics , <project>/dynamics ]
   arrives with a word nobody listed is an edit rather than a release. A user file **shadows**
   the bundled one rather than merging: a merged rule list has an order nobody can predict from
   either file, and order is what decides a match.
+- The capture **thing rules** — which entity in a captured scene is a thing worth having — resolve and
+  shadow the same way (`playcanvas.load_thing_rules`, [`specs/captures.md`](./captures.md)), but on a
+  fixed `[<config>/captures, <bundled>]`: no env var and no `settings.json` key, so it is absent from §2.
 - Dynamic modules resolve identically (`resolve_dynamics_path`, [`specs/dynamics.md §3`](./dynamics.md)),
   and an agent's declared `dynamics` are validated against that path at load — a module that doesn't
   resolve fails the agent loudly instead of vanishing at runtime.
@@ -246,7 +250,8 @@ Two independent mechanisms, deliberately belt-and-braces:
   `config.AGENTS_PATH`, …) straight to a `tmp_path`. This **bypasses resolution entirely**, so a real
   `settings.json` in the developer's home can never leak in regardless of precedence. This is why §2.1
   exposes constants and not just a resolver.
-- **Subprocess / integration runs set `CONJURE_HOME=<tmpdir>`.** Env beats the file, and it relocates the
+- **`CONJURE_HOME=<tmpdir>` relocates a whole run**, which is what anything running out of process uses
+  (the suite is in-process today, so nothing does yet). Env beats the file, and it relocates the
   *config* root too — so no real `settings.json` is even present there, and the run gets clean defaults
   under the tmpdir.
 
@@ -300,10 +305,11 @@ this layout doesn't yet reach, and are not precluded by it.
 
 ## 9. Runtime settings — what `set` may change
 
-Every one of `Settings`' 61 fields reaches the app through an environment variable (`CONJURE_<FIELD>`,
+Every one of `Settings`' 63 fields reaches the app through an environment variable (`CONJURE_<FIELD>`,
 with six exceptions — the five API keys and `CONJURE_URL` — all of them unsettable anyway). The shell's
 `set` reads and changes them in place, and the useful half of its job is refusing the ones it can't.
-Four tiers, in `config.SETTABLE`:
+Four tiers, decided by `config.tier_of` — `SETTABLE` lists the two settable ones, `SECRET_KEYS` the API
+keys, and every other field is `boot`:
 
 | Tier | Read | `set` |
 |---|---|---|

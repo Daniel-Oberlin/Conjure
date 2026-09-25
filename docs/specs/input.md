@@ -97,8 +97,8 @@ single constant that both the dataclass default and `get_settings()` read — th
 literal separately, and adding an action to one left the running server serving the old scheme):
 
 ```json
-{"select": "trigger", "grab": "grip", "resize": "trigger", "reel": "right.stickY",
- "yaw": "right.stickX", "pitch": "left.stickY", "bank": "left.stickX",
+{"select": ["trigger", "pinch"], "grab": ["grip", "grasp"], "resize": ["trigger", "pinch"],
+ "reel": "right.stickY", "yaw": "right.stickX", "pitch": "left.stickY", "bank": "left.stickX",
  "mark": "b", "surfaces": "a"}
 ```
 
@@ -120,9 +120,8 @@ Which is to say, as shipped:
 | `poke` | **nothing** | — |
 
 `poke` is vocabulary with no consumer yet. It is kept because it is the one gesture that separates
-intent to *touch* from intent to *hold*, which is what the contact query
-([`backlogs/input.md`](../backlogs/input.md)) will want — and because it earns its place already as the
-discriminator the other two borrow.
+intent to *touch* from intent to *hold*, which is what a consumer of the contact query's `speed` (§10)
+will want — and because it earns its place already as the discriminator the other two borrow.
 
 The stick-driven actions (`reel`, `yaw`, `pitch`, `bank`) deliberately gain nothing: a hand has no
 analog axis, and faking one from a wrist angle would be a gesture pretending to be a stick, which feels
@@ -135,15 +134,16 @@ shapes it. Re-binding is a config change, not an edit in every module.
 named hand's pointer whichever pointer you ask, so every pointer reports the same deflection and a
 per-pointer loop over `reel` would apply it twice. The tier-C gestures say so at each site
 ([`dynamics.md` §8, §8b](./dynamics.md)). `started`/`ended` are the exception — they compare
-**own-hand** control values against last frame and ignore the qualifier, because an edge on someone
-else's button is not an edge on yours. A hand that is not present resolves to 0.
+**own-hand** control values against last frame and never follow a qualifier, so a hand-qualified action
+reads 0 in them: an edge on someone else's button is not an edge on yours. A hand that is not present
+resolves to 0.
 
 A module *declares* which actions it consumes in its `module.json` `actions` field. That is a manifest
 key and is specified with the manifest ([`dynamics.md` §4](./dynamics.md)); nothing reads it yet, and
 runtime resolution comes entirely from `window.CONJURE_BINDINGS`.
 
-If injection is absent the file falls back to `{select: trigger, grab: grip, resize: grip, reel:
-stickY}` so a headset stays usable.
+If injection is absent the file falls back to `{select: [trigger, pinch], grab: [grip, grasp], resize:
+[grip, grasp], reel: stickY}` so a headset stays usable.
 
 ---
 
@@ -164,8 +164,8 @@ stickY}` so a headset stays usable.
   against a pointers layer that has not would otherwise throw inside its tick — degrading to
   controllers-only is exactly the previous behaviour.
 
-Both are cached per XRFrame with a 4 ms recency window. The recency check matters: the browser is not
-guaranteed to hand out a fresh `XRFrame` object each frame, and an identity-only cache would never
+All three are cached per XRFrame with a 4 ms recency window. The recency check matters: the browser is
+not guaranteed to hand out a fresh `XRFrame` object each frame, and an identity-only cache would never
 invalidate — every consumer would see the first frame's buttons forever.
 
 **Each pointer** carries pose and resolved controls:
@@ -237,20 +237,20 @@ Everything that reacts to a controller, module or not. This is the list that mot
 
 | Consumer | Reads | For |
 |---|---|---|
-| `client/controller-beams.js` | `controllers()`, `armed()` | the beam — not a module (`dynamics.md` §10) |
-| `client/conjure-client.js` | `controllers()` | the gaze/ray picker |
-| `client/surface-overlay.js` | `controllers()` | the surface debug overlay |
-| `dynamics/grab/grab.js` | `controllers()`, `claim`, `reserve` | tier-C manipulation |
+| `client/controller-beams.js` | `acting()`, `armed()` | the beam — not a module (`dynamics.md` §10) |
+| `client/conjure-client.js` | `acting()`, `started("mark")` | the geometry ground-truth probe |
+| `client/surface-overlay.js` | `acting()`, `started("surfaces")` | the surface debug overlay |
+| `dynamics/grab/grab.js` | `acting()`, `claim`, `reserve` | tier-C manipulation |
 | `dynamics/water/water.js` | `list()`, and `ConjureContact` (§10) for the hand half | ripples |
 | `client/conjure-contact.js` | `acting()`, `joints`, `radii` | the contact query every module asks (§10) |
 
 **One reader of XR input, and `ConjurePointers` now publishes all 25 joints** — so `ConjureContact`
-consumes them rather than reading the frame, which is what the seam was for. Two direct readers of the
-XR frame remain and both are deliberate: `occlusion.js`, which works and has no second reason to change;
-and `hand-rig.js`/`hands-fit.js`, one of which drives a skeleton and the other of which exists to look at
-the raw frame. `ConjurePointers` still reads exactly one joint for `pointer.fingertip`. `client/occlusion.js` builds its own
-25-joint hand mesh straight from `frame.getJointPose` ([`occlusion.md` §4](./occlusion.md)). And
-`client/hands-fit.js` reads all 25 for the debug overlay (§9). None of the three share a read, which is
+consumes them rather than reading the frame, which is what the seam was for. Three direct readers of the
+XR frame remain beside it and all are deliberate: `client/occlusion.js`, which builds its own
+25-joint hand mesh straight from `frame.getJointPose` ([`occlusion.md` §4](./occlusion.md)) and has no
+second reason to change; `client/hand-rig.js`, which reads all 25 to drive a worn skeleton
+([`figures.md` §8f](./figures.md)); and `client/hands-fit.js`, which reads all 25 for the debug overlay
+(§9). None of the four share a read, which is
 the duplication this layer removed for buttons and has not yet removed for joints —
 [`backlogs/input.md`](../backlogs/input.md). The overlay is a deliberate exception: it exists to *look
 at* the raw frame, so routing it through a cache would put the thing under test behind the thing it is

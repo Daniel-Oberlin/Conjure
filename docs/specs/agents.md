@@ -77,7 +77,8 @@ own view**. Reads are its own scope ∪ granted public; writes are its own scope
 Scope is a property of the **catalog entry** — the searchable row and its embedding — not of the bytes.
 Content-addressed bytes still dedupe globally on disk, while visibility, search and curation are
 per-scope, so two agents never see each other's catalog even for byte-identical content. In SQL the
-predicate is `scope = ? OR (public = 1 AND scope GLOB '*/agents/<agent>')` (`library.py:495`).
+predicate is `scope = ? OR (public = 1 AND scope GLOB '*/agents/<agent>') OR EXISTS(a grant row in
+asset_scopes)`, and every scoped read also drops superseded rows (`library.py:139`).
 
 ### 2.1 Visibility is a flag, not a path segment
 
@@ -543,7 +544,7 @@ back and fire it. The first `yes` consumes it, so an echo is inert.
 
 | Path command | Effect | Voice |
 |---|---|:--:|
-| `dir [-l] [path] [--kind K] [--with NAME [--rel TYPE]]` (`ls`) | list **one level** of the namespace; `-l` also shows ids. `--kind` narrows to one asset type (`model`, `animation`, `audio`, `set`); `--with` to assets related to NAME, by one `--rel` type when given (`shipped_with`, `voiced_by`, `ambience`, `part_of`). Both compose with globbing | — |
+| `dir [-l] [path] [--all\|--limit N] [--kind K] [--rel TYPE] [--with NAME] [--out\|--in]` (`ls`) | list **one level** of the namespace; `-l` also shows ids. A listing stops at 200 rows and says so — `--all` lifts the cap, `--limit N` sets it. `--kind` narrows to one asset type (`model`, `animation`, `audio`, `set`); `--rel` adds a COLUMN of each row's links of that type (`shipped_with`, `voiced_by`, `part_of`), `--with` narrows to assets linked to NAME, and `--out`/`--in` pin which way the edge points (both by default). All compose with globbing | — |
 | `show [path]` (`info`) | one entry in detail | — |
 | `disk [path]` (`file`) | where it lives on disk — real files, sizes, an asset's catalog row | — |
 | `cd [path]` | change the working directory (bare: back to your agent) | — |
@@ -615,15 +616,15 @@ A cwd can still name something **deleted**, so a path command whose cwd no longe
 the nearest surviving ancestor and says so — the same self-healing `_mru_first` does for the world
 pointer. It checks the cwd before blaming it, so a genuine typo is still reported as a typo.
 
-All of these hit the world server's `/admin/{tree,show,delete}`, so they act on its live state rather
-than raw files. `_admin_resolve` rejects `.`/`..` outright and then checks every segment against an
-enumerated real set (users, agents, sessions, worlds), so a segment can never name something that
+All of these hit the world server's `/admin/{tree,show,match,file,delete}`, so they act on its live state
+rather than raw files. `namespace.resolve` rejects `.`/`..` outright and then checks every segment against
+an enumerated real set (users, agents, sessions, worlds), so a segment can never name something that
 doesn't exist.
 
 ### 6.5 Names
 
 A display name is also how you *address* the thing, so `world.clean_name` holds both ends to one rule
-(`world.NAME_SEGMENT`, which `server._ADMIN_PART` is built from — they can't drift):
+(`world.NAME_SEGMENT`, which `namespace.SEGMENT` is built from — they can't drift):
 
 - **Double quotes are dropped.** `shlex` consumes them when tokenising a path, so a name carrying its
   own could never be typed back. `rename x '"a" "b"'` stores `a b`, which is what typing it yields
@@ -738,7 +739,7 @@ All go through the world server, which owns the live `(scope, session)`.
 | `POST /session/new` | `session new [title]` | runs the constructor (§7.5), then switches |
 | `POST /session/switch` | `session <name>` / `session <user> <name>` | own, or a cross-user **visit** |
 | `POST /session/rename` | `rename <path> <title>` | retitle only; the id is stable |
-| `POST /session/delete` | `delete <path>` | refuses the live session |
+| `POST /session/delete` | — (`delete <path>` goes via `/admin/delete`) | refuses the live session |
 | `POST /session/visibility` | `public` / `private` | visibility lives on the session; a world inherits it |
 
 A session reference resolves **exact id → exact title → unique loose match** (`_resolve_sid`), so voice
@@ -886,15 +887,9 @@ next reconcile:
 
 **Both hooks gate on the flag being exactly `False`**, so an *absent* flag means "a legacy session — do
 not retro-greet it". That makes writing the flags an obligation of **every** path that mints a session,
-not just `/session/new`: `_ensure_session` (`server.py:283`) marks one fresh too, because it is what an
+not just `/session/new`: `_ensure_session` (`server.py:348`) marks one fresh too, because it is what an
 **agent switch** and the boot fallback mint through. Omitting them there meant a session born of an agent
 switch skipped its constructor permanently — no state seeded, no greeting, with no error anywhere.
-
-**A session minted implicitly still does not run `session.first_world`.** `_first_world_spec` has exactly
-one caller (`/session/new`), so an agent switch into a scope with no session mints a world called
-`default` from `world.on_create` alone — not the declared first-world name, and none of its generative
-steps. Switch to `outdoor` for the first time and you get a bare `default` instead of `home` with its
-sky. Tracked in [`backlogs/agents.md`](../backlogs/agents.md).
 
 The `world.on_exit` block is declared and read by nothing.
 
@@ -1146,8 +1141,8 @@ is told the new state and re-gates its own clients from it.
 `/space/realign`, `/texture_surface`,
 `/style_surface`, `/place_asset`, `/place_cached_asset`, `/place_image`, `/set_skybox`,
 `/set_grounded_skybox`, `/edit_image`, `/outpaint_image`, `/skybox_from_image`, `/module`,
-`/module/dismiss`, `/manipulate`. A missing `X-Conjure-User` header is treated as the owner (interim
-convenience for the direct dev CLI).
+`/module/dismiss`, `/manipulate`, `/world_frame`, `/figure`. A missing `X-Conjure-User` header is treated
+as the owner (interim convenience for the direct dev CLI).
 
 Membership is an **exact string match** on the request path, so renaming a route without updating the
 set silently *ungates* it rather than 404ing — a route-inventory test would not notice. A test pins
@@ -1358,7 +1353,7 @@ with no ordering dance.
 | `POST /session/{new,switch,rename,delete,visibility}` | session verbs | no |
 | `POST /worlds/{list,new,switch,delete,rename,visibility}` | world verbs (session-local) | no |
 | `POST /space/{select,rename,visibility}` · `POST /geolocation` | space selection + admin | no |
-| `POST /admin/{tree,show,delete}` | the shell's namespace view + purge | `delete` is caller-gated |
+| `POST /admin/{tree,show,match,file,delete}` · `POST /admin/{gc,settings}` | the shell's namespace view + purge; `gc` and `set`/`unset` | `delete` is caller-gated |
 | `ws /ws?user=` | render clients **and** the agent server's follower | — |
 
 ### Agent server

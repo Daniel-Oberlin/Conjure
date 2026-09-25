@@ -27,12 +27,12 @@ Three properties follow, and they are the whole design:
   says what it did, so a wrong recall is correctable by the user in the next sentence.
 - **The catalog is precious; the bytes are not.** Bytes are regenerable and content-addressed. Curation
   — your notes, ratings, aliases, rejections — is not, which is why `library.db` lives in the **data**
-  tree (`~/.local/share/conjure/library.db`) beside worlds and spaces, not in the disposable cache, and
-  is backed up before a destructive migration (`server.py:370`).
+  tree (`~/.local/share/conjure/library.db`) beside worlds and spaces, not in the disposable cache.
+  Nothing copies it aside: the protection is the migration rule in §2, not a backup.
 
 ## 2. The record
 
-One SQLite file, schema-versioned by `PRAGMA user_version` (**v7** today). Known versions migrate in
+One SQLite file, schema-versioned by `PRAGMA user_version` (**v8** today). Known versions migrate in
 place — ALTER, never DROP, because captions and user curation are not recoverable from the
 content-addressed cache. Only a fresh or unrecognised database is rebuilt from disk.
 
@@ -55,11 +55,13 @@ assets(
   notes TEXT, tags TEXT,           -- user curation, FTS-indexed
   rating INTEGER, favorite INTEGER,
   embed_model TEXT, embed_dim INTEGER,      -- which vector space this row's embedding is in
+  superseded_by TEXT,              -- the id that REPLACED this row — a tombstone (§3)
   created_at REAL, last_used REAL, use_count INTEGER DEFAULT 0
 )
 
 aliases(alias, asset_id)                    -- "dog" → id: an authoritative reuse override
-relations(from_id, to_id, type)             -- derived_from, reject, … UNIQUE(from,to,type)
+relations(from_id, to_id, type)             -- shipped_with, voiced_by, part_of, reject, …
+                                            --   UNIQUE(from,to,type)
 persons(id, name)                           -- reserved, empty
 faces(id, asset_id, bbox, person_id)        -- reserved, empty
 
@@ -115,9 +117,12 @@ Relations, in the table that was always there:
 ```
 figure  --shipped_with-->  clip      the clips that shipped in the figure's OWN build
 clip    --voiced_by----->  audio     MANY-TO-MANY: `1-4-5-7-10_idle` voices five clips
-env     --ambience------>  audio     room soundtracks
+clip    --retargeted_from->clip      a clip rewritten onto another rig; its `voiced_by` edges copy
 asset   --part_of------->  set       provenance only, never the compatibility test
 ```
+
+Room sound is **not** an edge: `ambience` is a value of the audio row's `role`, beside `voice` and
+`unlinked`, because nothing in a capture says which room a soundtrack belongs to.
 
 ### Seeing them — `show` and `dir`
 
@@ -176,7 +181,7 @@ imported and still searchable; they simply carry no assertion.
 
 ## 3. Ingest — one write-through
 
-Every path that procures bytes catalogs them through the same registry (`register_asset` /
+Every **server** path that procures bytes catalogs them through the same registry (`register_asset` /
 `_catalog_asset` in `server.py`), so there is no path that fills the cache without filling the catalog:
 
 | Path | Enters via |
@@ -184,14 +189,18 @@ Every path that procures bytes catalogs them through the same registry (`registe
 | image / skybox generation | `_store_image` |
 | 3D model fetch | `AssetResolver.resolve` (Poly Pizza) |
 | files from disk | `POST /library/import` ← `conjure-import` CLI, handlers in `importer.py` |
+| a retargeted clip | `register_asset` ← `POST /figure/clip` |
+
+Offline ingest — `scripts/import_capture.py` (§9) — runs without the server and writes the bytes and
+the row itself.
 
 `importer.py` is an extensible handler registry — each handler claims extensions, confirms by magic
-bytes (`sniff`), and extracts catalog metadata (`extract`). Images, stereo pairs and `.glb` models
-today. It has **no dependency on the running server** (stdlib + Pillow, trimesh lazily), so it is
-unit-testable alone and reusable by any future scanner.
+bytes (`sniff`), and extracts catalog metadata (`extract`). Images, stereo pairs, `.glb`/`.vrm` models,
+clips and `.mp3` audio today. It has **no dependency on the running server** (stdlib + Pillow, trimesh
+lazily), so it is unit-testable alone and reusable by any future scanner.
 
 **Visibility is inherited, not chosen.** A new asset takes the live session's `public` flag
-(`_inherit_visibility`, `server.py:872`) and never overwrites a visibility the owner set later.
+(`_inherit_visibility`, `server.py:1350`) and never overwrites a visibility the owner set later.
 
 ### Supersession — what happens when the same thing arrives with new bytes
 
@@ -344,28 +353,30 @@ loading; absent either, search silently drops to stages 1–3.
 Three director-facing tools, all scope-enforced:
 
 - **`query_assets`** — read-only SQL for inspection (`SELECT kind, COUNT(*) FROM assets GROUP BY kind`).
-- **`update_asset`** — the one mutator: `label`/`query`/`tags`/`notes`/`kind`/`rating`/`favorite`, plus
-  `default_for` (writes an alias) and `reject_for` (writes a `reject` relation). Keeps FTS, the vector's
-  `kind`, and aliases consistent.
+- **`update_asset`** — the one mutator: `label`/`query`/`tags`/`notes`/`kind`/`rating`/`favorite`/
+  `public`, plus `default_for` (writes an alias) and `reject_for` (writes a `reject` relation). Keeps
+  FTS, the vector's `kind`, and aliases consistent.
 - **`delete_asset`** — removes the row.
 
 `update_asset` is the consolidation of two earlier tools that overlapped — `annotate_asset` (which only
 *added* curation) and `correct_asset` (which *fixed* or *excluded*). One mutator, because the director
 could not reliably pick between them.
 
-Four operator passes, all off the request path, via `conjure-ctl` or `POST /library/*`:
+Five operator passes, all off the request path, via `conjure-ctl` or `POST /library/*`:
 
 | Command | What it does |
 |---|---|
 | `conjure-ctl reindex` | embed cataloged assets that have no vector; clear stray non-visual vectors |
+| `conjure-ctl refresh-models` | re-derive every model's `attributes` and every clip's `rig_sig` from the bytes, after a build that changes what extraction knows; a refresh derives what the SERVER knows, so it warns when the running `FRAME_REV` is older than the code on disk |
 | `conjure-ctl caption` | image→text for assets with **no label** (Gemini by default; `Captioner` is swappable) — makes bare backfilled images readable and FTS-searchable |
 | `conjure-ctl retag-skyboxes` | re-tag wide images (aspect ≥ 1.9 — equirectangular) as `skybox`, fixing the vector's `kind` in place, no re-embed |
 | `conjure-import` | ingest files from disk through `POST /library/import` |
 
 Captioning exists because embeddings give **visual similarity only** — no readable text. A backfilled
 image with no prompt showed a blank label and matched no keyword search even though vector search found
-it fine. Generated assets now carry their prompt as the label, so this is a backfill tool, not an
-ongoing need.
+it fine. Generated assets now carry their prompt as the label, so this is a backfill tool — the one
+ongoing use is `POST /library/import`, which captions a freshly-imported visual asset that arrived
+without a label.
 
 ## 8. Why SQLite, and where it stops
 
@@ -378,9 +389,10 @@ index specifically, so that swap is the one anticipated.
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /library/search` | staged reuse query → `{candidates, confidence_tier}` |
+| `POST /library/search` | staged reuse query — `query` text, or `image_id` for more-like-this → `{candidates, confidence_tier}` |
 | `POST /library/import` | ingest a file from disk |
 | `POST /library/reindex` | embed rows with no vector |
+| `POST /library/refresh-models` | re-derive model attributes and clip signatures from the bytes |
 | `POST /library/caption` | backfill labels for label-less visual assets |
 | `POST /library/retag-skyboxes` | re-tag wide images as skyboxes |
 

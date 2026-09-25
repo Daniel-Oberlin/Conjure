@@ -66,7 +66,7 @@ Everything rides the catalog's per-kind JSON `attributes` bag — no schema chan
 | `height_m` | figures | the Y extent — glTF is Y-up |
 | `joints` | figures | joint count per skin, e.g. `[42, 482]` |
 | `clips` | figures | animation names |
-| `morph_targets` | figures | total morph-target count |
+| `morph_targets` | figures | how many DISTINCT morph-target names, beside `morph_names` / `expression_scheme` / `facial_morphs` (§8d) |
 | `spring_bones` | figures | `VRMC_springBone` present |
 | `humanoid` | figures with a map | `{semanticBone: nodeName}` |
 | `humanoid_source` | figures with a map | `vrm` \| `convention:<name>` \| `inferred` |
@@ -106,8 +106,10 @@ silently.
 | **names** | `figures.CONVENTIONS` | five verified tables — `mixamo`, `rigify-fk` (what `blend_to_glb.py` emits from Daz/Rigify ports, both `upper_arm.fk.L` and `upper_arm_fk.L` spellings), `rigify-def` (the deform chain, with no FK controls in the file — what a PlayCanvas export bakes down to), `dot-side` (a free-asset-pack scheme), `cc-base` (Reallusion Character Creator). Exporter prefixes (`mixamorig:`, `Armature|`) are stripped before matching, and a side letter in the wrong CASE still matches when unambiguous (`CC_Base_r_Hand` beside `CC_Base_L_Hand`) | free, exact |
 | **shape** | `figures.infer_humanoid` | pure topology and geometry: feet are the lowest joints, hands the widest (walked up to the first branch point, since the widest joint is a fingertip), the head is the common ancestor of the tallest trunk joints, hips is where the two leg chains meet. Joints along a limb are picked by **fraction of height or reach**, never by index, because chains vary from 4 to 12 joints | reads every vertex weight |
 
-A stated map is read by the importer before either. Names are tried before shape and shape is not run at
-all when a table hits — inference reads the whole weight buffer, which is not work to do speculatively.
+A stated map is layer 0 **inside `best_humanoid`** and not the caller's job — `rig_signature` and
+`retarget.Rig` have bytes and no caller, so holding it at arm's length fingerprinted Saka's 54-bone
+file over a 21-bone inferred map. The importer reads it too. Names are tried before shape and shape is
+not run at all when a table hits — inference reads the whole weight buffer, which is not work to do speculatively.
 Only conventions **verified against a file on disk** are in the table: a speculative row cannot be
 checked, and a name that happens to match is how a control bone gets mapped over the deform bone it
 drives.
@@ -230,10 +232,10 @@ the rig-independent axes buy rather than merely protect, and `scripts/pose_libra
 every pose against every rig of the eval cast, 16 of 17 clean on all three (the exception is `crouch`'s
 torso lean on Trish, whose spine does not carry her head).
 
-The last four fold the trunk forward, and they only became possible once an aim resolved against the
-parent frame *as posed* — see § *What is not built* for what that replaced. They also carry the one
-naming rule this library has learned the hard way: `bend-over` is not called `touch-toes`, because
-measured on the cast the hands stop at about knee height.
+`all-fours`, `bend-over` and `bend-over-wide` fold the trunk forward, and they only became possible
+once an aim resolved against the parent frame *as posed* — see § *What is not built* for what that
+replaced. They also carry the one naming rule this library has learned the hard way: `bend-over` is
+not called `touch-toes`, because measured on the cast the hands stop at about knee height.
 
 **Two verifiers, and they fail differently.**
 
@@ -395,10 +397,10 @@ A capture's figure is one GLB carrying a body, a dress, hair, shoes and a pair o
 meshes. Turning a garment off needs a list of the nodes that ARE the garment, and somewhere to put it
 that a person can correct.
 
-**Classified once, at import**, into `attributes.parts` — `{nodeName: category}` over six categories:
-`body`, `face`, `hair`, `clothing`, `shoes`, `accessory`. Same argument as reading a normal map from the
-registry instead of its pixels: a guess made at import can be inspected, overruled and versioned, while
-one made at render time is invisible and fires again on every load.
+**Classified once, at import**, into `attributes.parts` — `{nodeName: category}` over seven
+categories: `body`, `face`, `hair`, `clothing`, `shoes`, `accessory`, `held`. Same argument as reading
+a normal map from the registry instead of its pixels: a guess made at import can be inspected,
+overruled and versioned, while one made at render time is invisible and fires again on every load.
 
 **The vocabulary is data** — `parts/parts.json` on the user-first search path `config.PARTS_PATH`
 ([`specs/config.md §4`](./config.md)) — because it is never finished: the next capture arrives with a
@@ -465,6 +467,8 @@ them onto DOM data attributes:
 | `humanoid_axes` | — | the `figure` component resolves poses against it |
 | `humanoid_follows` | — | the `figure` component's parent constraint |
 | `parts` | — | `/figure/parts` expands a category into node names (§5a, §8a) |
+| `morph_names`, `expression_scheme` | — | `/figure/expression` resolves `smile` into this author's target names (§8d) |
+| `hand_joints`, `hand_side` | — | `/figure/hand` writes the WebXR joints, and `wear` pairs on the measured side (§8f) |
 
 **`grab` and figures.** Two changes, both in `dynamics/grab/grab.js`, after a 348 k-triangle figure made
 grabbing stutter at 90 Hz:
@@ -483,11 +487,11 @@ graph.**
 ## 7. `FRAME_REV` — a catalog row is a snapshot of what we understood
 
 A figure's map, frame and limits are **cached in the catalog**, and understanding keeps changing while
-rows do not. `figures.FRAME_REV` (**18** today) is bumped whenever anything that changes a derived
+rows do not. `figures.FRAME_REV` (**21** today) is bumped whenever anything that changes a derived
 result changes — inference, the axes, `validate()`, the convention table, which skin is chosen, the
-parts vocabulary.
+parts vocabulary, the face attributes (§8d) and the hand gate (§8f), which ride the same stamp.
 
-`retarget.RETARGET_REV` (**7**) is the same idea for a different artefact. A retargeted clip is
+`retarget.RETARGET_REV` (**8**) is the same idea for a different artefact. A retargeted clip is
 DERIVED and cached under a content address, and a content address fingerprints the bytes rather than the
 method that made them — so without a stamp, a pair retargeted by an older build is handed back forever.
 That is not hypothetical: the fix for an unmapped rotating ancestor landed, the server was restarted,
@@ -654,10 +658,13 @@ it — reported from a headset as *"sometimes I think the old sound is still pla
 playing is now re-seeked in place, and the deferred `begin()` checks it has not been superseded, which
 is the guard the gesture hook beside it always had.
 
-`GET /figure/clips` answers with **two lists that are never merged**: what `shipped_with` this figure,
-and what its `rig_sig` says can play. Compatibility is not sufficiency — 93 of 206 clip names call out a
-fixture (bed 30, sink 18, toilet 12) — so a clip that binds perfectly still puts a figure leaning on a
-sink that is not there. The authored set is the default and reaching past it takes `all=true`. See
+`GET /figure/clips` answers with **three lists that are never merged**: what `shipped_with` this figure,
+what its `rig_sig` says can play natively, and what tier 2 can **rewrite** for it (§8c). Merging the
+third into the second would say a retargeted clip and a native one are the same thing, and the rewrite
+drops every channel the humanoid does not name. Compatibility is not sufficiency — 93 of 206 clip
+names call out a fixture (bed 30, sink 18, toilet 12) — so a clip that binds perfectly still puts a
+figure leaning on a sink that is not there. The authored set is the default and reaching past it takes
+`all=true`. See
 [`decisions.md`](../decisions.md) §27.
 
 ### 8c. Retargeting — a clip rewritten for a rig it was not authored for
@@ -923,8 +930,8 @@ rests disagree by construction, so the check that makes this safe would refuse i
 ([`specs/dynamics.md`](./dynamics.md)) — it has no independent existence, it decorates a placed model. So
 a pose is shared, persisted and replayed on reload for free, over the existing patch/snapshot path.
 
-Four fields, all JSON **strings**, because their keys differ per model and A-Frame's flat schema types
-cannot express that:
+Four fields carry JSON as **strings**, because their keys differ per model and A-Frame's flat schema
+types cannot express that:
 
 ```
 humanoid   {leftUpperArm: "upper_arm.fk.L"}                   which node
@@ -932,6 +939,10 @@ follows    {"Foot.L": "LowerLeg.L"}                           which bones ride a
 axes       {leftUpperArm: {bend: [x,y,z], …, limits: {…}}}     which way, and how far it may go
 pose       {leftUpperArm: {bend: 45}}                          how far, in degrees
 ```
+
+A fifth, `named`, is the library pose the expansion came from. Nothing on the client reads it, and it
+still has to be **declared** — A-Frame drops an undeclared property with a warning, so the readable half
+of the durable state would never reach the client at all.
 
 The durable state is **semantic** — the pose is stored in exactly the terms it was asked for, never as
 quaternions, because that is what a reload replays and what a persona layer would later reason about.
@@ -968,7 +979,7 @@ local −Z — so the two indirections the rest of this document rests on, *whic
 hand named any other way is refused with a reason rather than guessed at
 ([`decisions.md`](../decisions.md) §31).
 
-**What import records** (`conjure/hands.py`, `FRAME_REV` 20):
+**What import records** (`conjure/hands.py`, its own `HAND_REV` riding `figures.FRAME_REV`):
 
 | attribute | |
 |---|---|
@@ -978,9 +989,11 @@ hand named any other way is refused with a reason rather than guessed at
 | `hand_materials`, `hand_images` | what it is dressed in, so a **pair** can be chosen. The catalog's five hand files are not one pair: two are the textured VR set, one an orphaned AR left, and two rights carry no materials at all. Taken in order, the first wearing put a grey untextured right beside a textured left — which reads as a broken import rather than as two files that were never a pair. `conjure-ctl wear --pair` matches on material NAMES, which is a stronger signal than counting textures because the orphaned left is textured too. |
 | `hand_problems` | why not, when it did not — recorded rather than swallowed, so "not a hand" and "a hand we rejected" are distinguishable |
 
-The gate asks two things: all 25 joints present, and every bone along its own local −Z. **Not** that the
-joints form a parent→child chain — the catalog's five hand files are two skeletons whose 25 joints are
-*siblings* under one node, so that check would have refused the files it was written for. And the
+The gate asks three things: all 25 joints present, every bone along its own local −Z, and a chirality
+that can be measured at all — collinear metacarpals mean a malformed file, not an ambiguous one.
+**Not** that the joints form a parent→child chain — the catalog's five hand files are two skeletons
+whose 25 joints are *siblings* under one node, so that check would have refused the files it was
+written for. And the
 **wrist is exempt** from the axis test: five bones leave one frame and it cannot point along all of them
 (measured 0.706–0.975 there against ≥0.986 down every finger), which is exactly why the WebXR spec
 leaves that joint loose.
@@ -1112,10 +1125,15 @@ what import records about one (§2), and how its bone map is recovered (§3).
 
 | Suite | Covers |
 |---|---|
-| `tests/test_figures.py` (55) | inference, `validate`'s every rule, pruning, `follow_bones`, the frame, forward kinematics through a posed bone, aiming, limits, the convention table |
-| `tests/test_importer.py` (27) | `glb_bounds`' skinned/unskinned/armature-scale cases, the VRM maps, what a rigged model records |
-| `tests/test_server.py` (~35) | life-size placement, the catalog revision and its tripwire, `refresh-models`, and `/figure` end to end through the real import → place → pose path |
-| `tests/js/figure.test.js` (46) | rest composition on a deliberately non-identity rest rotation, clearing, riding, client-side clamping, and re-grounding (including that it does not accumulate and does not scale with placement) |
+| `tests/test_figures.py` (74) | inference, `validate`'s every rule, pruning, `follow_bones`, the frame, forward kinematics through a posed bone, aiming, limits, the convention table |
+| `tests/test_importer.py` (35) | `glb_bounds`' skinned/unskinned/armature-scale cases, the VRM maps, what a rigged model records |
+| `tests/test_server.py` (~50 of them) | life-size placement, the catalog revision and its tripwire, `refresh-models`, and `/figure` end to end through the real import → place → pose path |
+| `tests/js/figure.test.js` (61) | rest composition on a deliberately non-identity rest rotation, clearing, riding, client-side clamping, and re-grounding (including that it does not accumulate and does not scale with placement) |
+| `tests/test_retarget_module.py` (25) + `tests/test_retarget.py` (10) | the law's algebra, the identity case, translation and units, the fingers' own reference, the facial gate |
+| `tests/test_expressions.py` (28) | the two schemes, additive composition, `check_regions` and `check_directions` |
+| `tests/test_parts.py` (9), `tests/test_hands.py` (22) | the vocabulary and its ordering; the joint map, the measured side, the gate and the tip defaults |
+| `tests/test_pose_eval.py` (58) | the corpus's own predicates and scoring, with no API calls |
+| `tests/js/figure-clip.test.js` (12), `hand-rig.test.js` (17), `hands-fit.test.js` (14) | the drop rules and re-basing; the worn skeleton's arithmetic against a fake hand |
 
 `tests/js/fixtures/figure-pose-golden.json` is **shared** by `tests/test_figures.py` and
 `tests/js/figure.test.js`. Pose resolution exists twice — in Python, which renders the verification
@@ -1260,12 +1278,16 @@ tool-description edit can actually break, needs no Blender and no judge, and tak
 | `POST /figure/parts` | hide/show parts of a figure by category or mesh name (§8a) |
 | `POST /figure/clip` | play a clip on a figure, or `stop=true`. Refuses a clip from another rig unless `force` (§8b) |
 | `GET /figure/clips` | what shipped with a figure; `all=true` reaches past it, `voiced=true` keeps only clips with a voice |
+| `POST /figure/expression` | drive a figure's face by semantic name or raw morph target, or `clear=true` (§8d) |
+| `POST /figure/hand` | wear a placed hand model on a tracked hand, or take it off (§8f) |
+| `GET /figure/hands` | which hands the library can wear, and which are already placed or worn (§8f) |
 | `POST /library/import` | ingest a `.glb`/`.vrm` — the figure attributes come out of this path |
 | `POST /library/refresh-models` | re-derive every model row's attributes |
 
 **MCP tools:** `inspect_figure` (height, triangle count, the bones this figure actually has, current
 pose), `list_poses` (the named library, read from the data rather than written into a prompt),
-`pose_figure`, `dress_figure` (§8a), and `list_clips` / `play_clip` / `stop_clip` (§8b). Neither is in `_READONLY_TOOLS`, so a `access: "read"` agent gets neither.
+`pose_figure`, `dress_figure` (§8a), `list_clips` / `play_clip` / `stop_clip` (§8b), `set_expression`
+(§8d) and `wear_hand` (§8f). None of them is in `_READONLY_TOOLS`, so an `access: "read"` agent gets none.
 `search_library` annotates a rigged hit with `[figure 1.76 m, 348k tris]` — the two facts that decide
 which of six near-identical figures to place.
 
@@ -1277,7 +1299,7 @@ the answer is "it looked wrong in the headset".
 |---|---|
 | `conjure-ctl pose <entity> [named] [--bone N:AXIS=V] [--clear]` | `--bone` repeats and composes onto a named pose; it reports joints that clamped |
 | `conjure-ctl dress <entity> [--hide C] [--show C] [--only-body]` | categories or mesh names; reports what is still ON, not what the figure owns |
-| `conjure-ctl clips <entity> [--all] [--kind K]` | what shipped with her, apart from what merely fits |
+| `conjure-ctl clips <entity> [--all] [--kind K] [--voiced]` | what shipped with her, apart from what merely fits |
 | `conjure-ctl clip <entity> <label\|id> [--stop] [--once] [--speed] [--force]` | naming no clip is the same request as `--stop` |
 
 These live in `ctl` and not in the shell because the shell proxies only the world server's CONTROL

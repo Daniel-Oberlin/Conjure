@@ -85,7 +85,7 @@ standing nowhere, and is reported as such rather than guessed at.
 | **`<void>`** | sentinel for a world **deliberately** without a physical tie — a pure-sky or purely-virtual world (§4.3) |
 | **`UNSET`** | server-side sentinel for a world whose space is **not decided yet** — a placeholder. Renders like `<void>`; relocatable, where `<void>` is not (§4.3) |
 | **active space** | the one space currently composed into the active world |
-| **space owner** | the user who first captured it; the only user who may write its geometry |
+| **space owner** | the user who first captured it; the only user who may rename it, name its rooms, or change its visibility |
 | **authority** | the headset whose captures the server accepts — the active world's owner |
 | **holder** | an AR client that passed the admission gate and declared `hold` — occupancy |
 | **claim epoch** | the interval from first hold to last release; selection is idempotent within one |
@@ -96,7 +96,7 @@ standing nowhere, and is reported as such rather than guessed at.
 
 ## 2. The record
 
-`SpaceStore` (`conjure/world.py:837`) persists one JSON document per space:
+`SpaceStore` (`conjure/world.py:929`) persists one JSON document per space:
 
 ```jsonc
 {
@@ -117,20 +117,20 @@ standing nowhere, and is reported as such rather than guessed at.
 - **Geometry and default materials only.** Per-world styling is not here; it lives in the world doc as
   `surfaceStyles` (§6).
 - **`boundary` is one polygon and one height** for the whole space, regardless of how many rooms it
-  contains. It is derived from the largest captured floor (`conjure-client.js:2195`, by `_area`), so in
+  contains. It is derived from the largest captured floor (`conjure-client.js:3049`, by `_area`), so in
   a multi-room space the smaller rooms are not represented in it. The height is the constant `2.6`, not
   measured.
-- **It has exactly one consumer: the space summary**, which prints it as a line of text for the director
-  (`mcp_server.py:267`). Nothing clamps placement against it and nothing renders it — despite
-  `query_space`'s docstring saying models land inside the space, that is advice to the model, not an
-  enforced invariant. See [`backlogs/spaces.md`](../backlogs/spaces.md).
+- **One consumer reads it: the space summary**, which prints it as a line of text for the director
+  (`mcp_server.py:269`); the admin listing reports only *whether* there is one. Nothing clamps placement
+  against it and nothing renders it — despite `query_space`'s docstring saying models land inside the
+  space, that is advice to the model, not an enforced invariant. See [`backlogs/spaces.md`](../backlogs/spaces.md).
 - **`recent` is the return-visit history** — `[[scope, world_id], …]`, newest first, capped at
   `_MRU_CAP`. Match this space again and you land back in the newest entry that **still exists**; the
   scope rides along with each world because the agent it belongs to is half of *put me back where I was*.
   `last_scope`/`last_world` are its head, written at the same moment and kept because several readers
   want only "the last one" (the admin listing, public-space discovery) — and because every space doc on
-  disk predates `recent`, so the pair is the fallback when the history is absent. Rewritten by world
-  renames (`world.py:1015`).
+  disk predates `recent`, so the pair is the fallback when the history is absent. A world **rename**
+  rewrites nothing here: every entry holds the permanent `wld_…` id, not the name (`server.py:2606`).
 
   Reading it filters on **two** things, not one: the world must still exist, and the caller must be able
   to enter it (`_may_join_world_in` — you own the scope, or its live session is public). The second
@@ -164,8 +164,8 @@ standing nowhere, and is reported as such rather than guessed at.
   argument. See [`specs/agents.md §2`](./agents.md) for the enforcement model — it is the same substrate
   for spaces, worlds, assets and state.
 
-The root resolves to the user home (`config.DATA_DIR`, `~/.local/share/conjure/`), not the in-project
-`.cache/`.
+The root resolves to the user home (`config.USERS_DIR` — `DATA_DIR/users`, so
+`~/.local/share/conjure/users/`), not the in-project `.cache/`.
 
 ---
 
@@ -182,9 +182,9 @@ A world points at its space through `environment.space`:
 }
 ```
 
-- **Fully qualified** (`_space_ref`, `server.py:2724`) so a world can reference a space in another
+- **Fully qualified** (`_space_ref`, `server.py:3403`) so a world can reference a space in another
   user's scope. A bare `<name>` still resolves, to the world owner's scope, for documents written
-  before qualification (`_resolve_space_ref`, `server.py:2710`); it is rewritten to the qualified form
+  before qualification (`_resolve_space_ref`, `server.py:3389`); it is rewritten to the qualified form
   on the next save.
 - **`<void>`** marks a world with no physical tie. A void world drops any stray inline real surfaces and
   renders pure-virtual.
@@ -194,21 +194,21 @@ A world points at its space through `environment.space`:
 
 The live in-memory document is always **fully composed**; only persistence splits.
 
-**`_compose(world_doc, space)`** (`server.py:2636`) — on load:
+**`_compose(world_doc, space)`** (`server.py:3309`) — on load:
 
 1. Drop the persistence-only `space` ref and the `surfaceStyles` map from the live doc.
 2. Take the space's surfaces as the real entities; overlay each one's
    `environment.spacePresentation.surfaceStyles[<id>]` onto its `material`.
-3. Copy the space's `boundary` into `environment.boundary` (live only — `_decompose` strips it, since
-   the space owns it).
+3. Copy the space's `boundary` — and its `rooms` record — into `environment` (live only — `_decompose`
+   strips both, since the space owns them).
 4. If the world inherited a non-empty space's geometry, default `spacePresentation.active = true` — a
    world that has real surfaces genuinely has something to work with, even with no live capture this
    session. An explicit `false` (an immersion mode) is respected.
 5. Re-pin on-surface images to their (possibly moved) hosts.
 
-**`_decompose(composed, space)`** (`server.py:2668`) — on save, the exact inverse: placed entities plus
-the per-surface material deltas as `surfaceStyles`. Real-surface **geometry** and the boundary are the
-space's job and are stripped from the world doc.
+**`_decompose(composed, space)`** (`server.py:3343`) — on save, the exact inverse: placed entities plus
+the per-surface material deltas as `surfaceStyles`. Real-surface **geometry**, the boundary and the room
+record are the space's job and are stripped from the world doc.
 
 The consequence worth stating plainly: **the same physical space, styled two different ways in two
 different worlds, is one space record and two `surfaceStyles` maps.** Switching worlds restyles the space
@@ -219,8 +219,8 @@ without recapturing it.
 Six paths mint a world: `/worlds/new`, an agent switch (`_activate_scope`), a session mint
 (`/session/new`), a session switch into a session with no world yet, `/space/select` establishing one
 (`_establish_world_in`), and boot with nothing to restore (`_boot_world`). **They all mint through
-`_new_world_store` (`server.py:140`), and it stamps the ref** — `_space_for_new_world`
-(`server.py:2748`) returns the live space, so a world born while a headset is standing in a space
+`_new_world_store` (`server.py:203`), and it stamps the ref** — `_space_for_new_world`
+(`server.py:3422`) returns the live space, so a world born while a headset is standing in a space
 composes that space. The two exceptions are explicit: `_establish_world_in` overwrites the stamp with the
 space it was told to establish, and `_boot_world` opts out (below).
 
@@ -294,7 +294,7 @@ applies to a *guess*. A void world is a decision.
   auto-publishes the assets it uses, and the tool says so.
 
 A **space's** `public` flag governs one specific thing: **who may create a world in it.**
-`_may_create_world_in(user, owner, name)` (`server.py:2737`) allows it iff the caller owns the space or
+`_may_create_world_in(user, owner, name)` (`server.py:3416`) allows it iff the caller owns the space or
 the space is public. It is **not retroactive** — making a space private leaves existing worlds alone and
 only blocks new ones by others. It is also orthogonal to admission: whether you can *enter* is governed
 by co-location plus the *world's* visibility. Toggled by `POST /space/visibility` and the
@@ -312,8 +312,8 @@ connection that arrives first operates on a void world until a headset establish
 Selection is **two-stage**, because neither stage suffices alone:
 
 **Stage 1 — geolocation prefilter.** `POST /geolocation` is read-only. It returns every candidate space
-within `_GEO_RANGE_M` (300 m, `server.py:1628`) **across all users**, each with its surface
-constellation (`_geo_candidates`, `server.py:1649`). Coarse — it separates home from office, and cannot
+within `_GEO_RANGE_M` (300 m, `server.py:2249`) **across all users**, each with its surface
+constellation (`_geo_candidates`, `server.py:2270`). Coarse — it separates home from office, and cannot
 separate two rooms at one address.
 
 **Stage 2 — surface vote, client-side.** The client votes its live capture against those candidate
@@ -324,7 +324,7 @@ second Python implementation.
 
 ### 6.1 What `/space/select` does
 
-`select_space` (`server.py:1733`) branches on whether the active space is already **claimed**:
+`select_space` (`server.py:2355`) branches on whether the active space is already **claimed**:
 
 **Unclaimed** — this AR user establishes:
 
@@ -404,12 +404,12 @@ user on another continent can both inhabit the active world.
 The active space is a claimable resource tracked by occupancy, not by a boot-time pointer:
 
 - An AR client declares `hold` over `/ws` after a successful select, joining `_space_holders`
-  (`server.py:664`).
+  (`server.py:826`).
 - `_occupied()` ⇔ any holder is present.
 - It holds until it `release`s (leaves AR) or its socket closes.
 - When the **last** holder leaves, `_unclaim()` frees the space and resets `_selected_cids`, so the next
   connection may establish a different space from wherever it is.
-- **Boot is provisional.** `_space_holders` starts empty (`server.py:368`), so the booted-active world
+- **Boot is provisional.** `_space_holders` starts empty (`server.py:472`), so the booted-active world
   is a placeholder and the first AR user establishes from their own location rather than being refused
   against a stale one.
 
@@ -421,12 +421,15 @@ Only AR clients hold. Desktop, voice and CLI never do.
 
 Two different gates, often confused:
 
-**Geometry authority — the space owner.** `/space/capture` is owner-only. A guest's capture is rejected; guests
+**Geometry authority — the active world's owner.** `/space/capture` sits in the same owner-only
+middleware as the scene edits below, so the writer is the *world's* owner, not the space's: build your own
+world in someone else's space and you are the capturer there, writing back into their space record. The
+client makes the same call (`WM.isCaptureAuthority(me, worldOwner)`). A guest's capture is rejected; guests
 *register against* the stored geometry and never re-author it (§8). Within one owner, an
 `environment.captureAuthority` records which headset is live, and an idle authority is taken over after `_AUTH_TTL`
-so a reconnecting owner is not locked out (`server.py:2921`).
+so a reconnecting owner is not locked out (`server.py:3632`).
 
-**Authority is not alignment**, and the two were conflated. Owning the space says nothing about whether
+**Authority is not alignment**, and the two were conflated. Being the authority says nothing about whether
 this headset has worked out *where it is* — a returning client is capture authority the moment it posts,
 which may be seconds before it has selected a space and registered against the stored geometry. A capture
 from that window is destructive by default (the client sends `replace: true`), so it prunes everything it
@@ -435,7 +438,7 @@ failed to recognise. Until a client has voted, therefore, a capture may **add bu
 it.
 
 **Scene edit rights — the world owner.** Every scene-mutating endpoint requires the caller to be the
-active world's owner. Enforced by middleware (`server.py:609`): the MCP client attaches
+active world's owner. Enforced by middleware (`server.py:771`): the MCP client attaches
 `X-Conjure-User` on every request, and a non-owner gets 403. A *missing* header is treated as the owner
 — a convenience for the direct dev CLI, not a security posture (see
 [`backlogs/spaces.md`](../backlogs/spaces.md)).
@@ -483,8 +486,8 @@ dependency.
 ### 8.1 Presence
 
 A `presence` message on `/ws` at ~10 Hz; the server relays it to the other clients tagged by user
-(`server.py:4439`), and broadcasts `presence_leave` on disconnect so avatars drop
-(`server.py:4457`).
+(`server.py:6224`), and broadcasts `presence_leave` on disconnect so avatars drop
+(`server.py:6235`).
 
 Each client renders the *others* as a vertical box on the floor (square footprint, side 2·R) plus a
 sphere of radius R at the head, the sphere floating a few cm above the box — R ≈ 0.13 m, gap ≈ 0.03 m,
@@ -520,29 +523,32 @@ still needs a second headset.
 | `POST /geolocation` | read-only; geo-near candidate spaces across all users, with constellations |
 | `POST /space/select` | commit the surface vote; establish or admit/refuse |
 | `POST /space/visibility` | toggle a space's `public` flag |
-| `POST /space/rename` | rename, fixing up back-references |
+| `POST /space/rename` | retitle in place (a shell action, ungated) — the file key is the id, so nothing is re-pointed |
+| `POST /room/name` | space-owner-gated; name a room in the active space (§1.1) |
+| `GET /room/whereami` | which room each present user is standing in, from the presence tick |
 | `POST /space/capture` | owner-only geometry ingest → updates the seed |
 | `POST /space/realign` | owner-only; ask headsets to re-capture at the current tracking origin |
 | `POST /worlds/new` \| `/worlds/switch` | open to all; every mint path stamps the active space ref or `<void>` (§4.2) |
 | `POST /scope/activate` \| `/session/new` | agent / session switch — mints a world, same stamp (§4.2) |
 
-**MCP tools:** `set_space_visibility`, `realign_space`, `query_space`, `set_world_visibility`,
-`switch_world(name, owner=…)`, `list_worlds`.
+**MCP tools:** `set_space_visibility`, `realign_space`, `query_space`, `name_room`,
+`set_world_visibility`, `switch_world(name)`, `list_worlds`.
 
 **Code**
 
 | Concern | Where |
 |---|---|
-| space persistence | `conjure/world.py:837` `SpaceStore` |
-| compose / decompose | `conjure/server.py:2636` / `:2659` |
-| space ref resolution | `conjure/server.py:2710` `_resolve_space_ref`, `:2715` `_space_ref` |
-| geo candidates | `conjure/server.py:1649` `_geo_candidates`, `_GEO_RANGE_M` `:1617` |
-| selection + gate | `conjure/server.py:1733` `select_space` |
-| occupancy | `conjure/server.py:664` `_space_holders`, `_occupied`, `_unclaim` |
-| world-creation gate | `conjure/server.py:2737` `_may_create_world_in` |
-| owner middleware | `conjure/server.py:609` |
-| geometry ingest | `conjure/server.py:2909` `ingest_capture` |
-| presence relay | `conjure/server.py:4439` |
+| space persistence | `conjure/world.py:929` `SpaceStore` |
+| compose / decompose | `conjure/server.py:3309` / `:3343` |
+| space ref resolution | `conjure/server.py:3389` `_resolve_space_ref`, `:3403` `_space_ref` |
+| geo candidates | `conjure/server.py:2270` `_geo_candidates`, `_GEO_RANGE_M` `:2249` |
+| selection + gate | `conjure/server.py:2355` `select_space` |
+| occupancy | `conjure/server.py:826` `_space_holders`, `_occupied`, `_unclaim` |
+| world-creation gate | `conjure/server.py:3416` `_may_create_world_in` |
+| owner middleware | `conjure/server.py:771` `_owner_only_writes`, `_OWNER_ONLY_PATHS` |
+| geometry ingest | `conjure/server.py:3614` `ingest_capture` |
+| room segmentation / identity | `client/space-snap.js` `segmentRooms`, `roomLinks` / `conjure/rooms.py` `resolve_rooms` |
+| presence relay | `conjure/server.py:6224` |
 | desktop-guest spawn | `client/conjure-client.js` `maybeSpawnGuest` + `WM.shouldSpawnGuest` |
 | rig-origin invariant | `client/conjure-client.js` `resetRigForSession` (on `enter-vr`) |
 

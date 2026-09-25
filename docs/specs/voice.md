@@ -126,7 +126,7 @@ every utterance passes through.
 
 Matching is case-insensitive on word boundaries, so `recomputed` does not trigger. Configured aliases
 match too, because a gate defeated by a mis-hearing fails *silently* and that is harder to diagnose than
-one that mis-fires ([`config.md`](./config.md) — `DEFAULT_WAKE_WORDS`).
+one that mis-fires ([`config.md`](./config.md) — `DEFAULT_VOICE_WAKE_WORDS`).
 
 **This is a different word from the shell's, and that is enforced, not advised.** The gate consumes its
 own word before anything downstream sees the line. Sharing one with the shell would make spoken shell

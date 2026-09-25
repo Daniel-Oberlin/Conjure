@@ -32,7 +32,7 @@ sync, while per-client cosmetics (foveation, billboard yaw, interpolation) stay 
 Consequences that hold throughout:
 
 - **Load/unload is world state.** It flows through the existing snapshot/patch path and is owner-gated
-  (`/module`, `/module/dismiss`, `/manipulate` ∈ `_OWNER_ONLY_PATHS`, `server.py:604`). No new authority
+  (`/module`, `/module/dismiss`, `/manipulate` ∈ `_OWNER_ONLY_PATHS`, `server.py:763`). No new authority
   model — conjuring is another kind of scene mutation.
 - **Modules are entities.** A procedural module persists by storing `(seed, config)`; reload restores it
   exactly. No new storage model.
@@ -73,7 +73,7 @@ shared clock and explicitly seeded PRNGs; never `Math.random()` or `Date.now()` 
 module. Anything genuinely authoritative belongs in tier C.
 
 > `module.json`'s `tier` field is **informational**. The loader accepts any string and neither validates
-> nor acts on it (`dynamics.py:148`); it documents intent and appears in no runtime decision.
+> nor acts on it (`dynamics.py:159`); it documents intent and appears in no runtime decision.
 
 ---
 
@@ -130,14 +130,14 @@ change, no restart (`_dynamics_registry()` reloads per request).
 |---|---|---|---|
 | `component` | yes | non-empty | must equal the name the entry registers with `AFRAME.registerComponent` |
 | `entry` | yes | each file **exists** on disk | string or list; normalized to a list; loaded in order |
-| `anchor` | no (`free`) | ∈ `free\|surface\|volume\|ambient` | drives placement (§7) |
+| `anchor` | no (`free`) | ∈ `free\|surface\|volume\|ambient` | documents where it lives (§7); nothing reads it at runtime |
 | `tier` | no (`A`) | **no** | informational |
 | `singleton` | no (`false`) | — | `/module` reuses the existing instance instead of adding one |
 | `face_user` | no (`false`) | — | server orients the entity toward the caller at creation |
 | `default_pos` | no (`[0, 1.3, -1.5]`) | — | used when the caller passes no `position` |
 | `actions` | no (`[]`) | **no** | see the note below |
 | `description` | no (`""`) | — | one line, rendered into the director catalog |
-| `config_schema` | no (`{}`) | `enum` only | `{param: {type, default, desc, enum?}}` |
+| `config_schema` | no (`{}`) | **no** (`enum` is enforced at `/module`) | `{param: {type, default, desc, enum?}}` |
 
 Notes:
 
@@ -152,7 +152,7 @@ Notes:
   prose in `desc` is not sufficient on its own, because an unvalidated enum makes a caller's wrong guess
   indistinguishable from success. `type` and numeric range are **not** yet enforced (see the backlog).
 - **`actions`** declares which semantic XR actions the module consumes, in the same declarative spirit as
-  `config_schema`. It is parsed into `DynamicModuleDef.actions` (`dynamics.py:152`) and **nothing reads it
+  `config_schema`. It is parsed into `DynamicModuleDef.actions` (`dynamics.py:163`) and **nothing reads it
   yet** — it is not validated against known action names, not in the catalog, and never reaches the
   client. Runtime action resolution comes entirely from `window.CONJURE_BINDINGS`
   ([`input.md`](./input.md)), which is also where the action vocabulary is defined. Declare it
@@ -222,7 +222,9 @@ messages so a per-frame condition logs once rather than flooding.
 
 ## 6. The runtime surface
 
-Globals loaded before any module (`client/index.html`). Two are documented here; **XR input is its own
+Globals the client defines (`client/index.html`). Only `ConjureClock` and `ConjurePointers` load *before*
+the injected module scripts; the rest come after, so a module reads every global at runtime — in `init` or
+`tick` — never at registration. Two are documented here; **XR input is its own
 area** ([`specs/input.md`](./input.md)) because its consumers are not all modules, and the frame-conversion
 globals are documented where they are used — `ConjureFrames` in §8, `ConjureWorldFrame` in §8b.
 
@@ -248,7 +250,7 @@ frame with nothing to resynchronise.
 For interactive modules where each headset runs its **own** simulation but must react to everyone's input.
 
 - `ConjureBus.emitShared(event, payload)` — relay to the OTHER clients. Sends a ws `module_event`; the
-  server fans it out with `_broadcast_others` (`server.py:4349`), so the sender never receives its own.
+  server fans it out with `_broadcast_others` (`server.py:6396`), so the sender never receives its own.
 - `ConjureBus.on(event, fn)` / `off(event, fn)` — subscribe / unsubscribe. `fn` receives `{event, payload}`.
 
 A module acts on its **own** input immediately and locally, and uses the bus only for cross-client
@@ -288,7 +290,9 @@ What a module needs from it is three lines:
 
 ## 7. Placement and anchors
 
-The server places the carrying entity from the manifest before the client renders it.
+The server places the carrying entity from the manifest before the client renders it. `anchor` itself is
+documentation — like `tier`, it is validated at load and read by nothing; what actually places an instance
+is `default_pos`/`face_user` plus the caller's `position`/`on_surface`.
 
 - **`free`** — free-standing at `default_pos` (or the caller's `position`). If `face_user` is true, it is
   rotated to face the viewer **at creation** (fixed, not tracking).
@@ -316,7 +320,9 @@ node — a curated capability, not something the contract grants generally.
 ### Discovering what is manipulable
 
 Direct children of `#world-root` that have an id and are neither `data-real` (real surfaces) nor
-`data-scaffold`, excluding the grab entity itself. Other modules' entities are included: a Water Picture
+`data-scaffold`, excluding the grab entity itself and a **worn hand** (`hand-rig` with a side set — while
+worn its transform is only where the hand will be put down, so a box would sit metres from the hand you
+can see and dragging it would move nothing). Other modules' entities are included: a Water Picture
 is grabbable.
 
 ### Determining focus
@@ -324,7 +330,11 @@ is grabbable.
 Focus follows the beam, in three stages, first hit wins:
 
 1. **`_pick`** — an exact raycast against the object's meshes *and* the HUD's corner handles (they are
-   children of the target). This decides what you *grab*, so it must be exact.
+   children of the target). This decides what you *grab*, so it must be exact. Two cost guards bound it,
+   both added after a 348k-triangle rigged figure made this stutter on device: the ray must cross the
+   object's cached box before any triangle is tested, and a **rigged figure's body is never triangle-tested
+   at all** — its box is the grab affordance and stage 2 supplies the hit, while its HUD is still tested
+   exactly, because resize must land on a real corner.
 2. **`_boxPick`** — does the ray pass through the object's **selection box**, tested in the object's own
    space so the box is oriented rather than axis-aligned? A model's corner handles stand off in empty
    space; between the silhouette and a corner the ray hits nothing, and without this stage focus dropped,
@@ -531,7 +541,7 @@ both modes.
 **Sensitivity is deliberately non-uniform.** Tangential yaw is ill-conditioned near the centre: a 0.2 m hand
 movement at 0.2 m radius is ~45° of yaw and ~2° at 5 m. A minimum engage radius was considered and rejected
 — you learn a turntable's feel faster than a rule about where you may touch it, and grab-far-for-fine is
-self-teaching. What *is* required is an epsilon floor on the grab radius **for the arithmetic only**:
+self-teaching. What *is* required is an epsilon floor on **both** radii, **for the arithmetic only**:
 `r_now/r_grab` at zero is `Infinity`, and a non-finite value reaching a transform blanks that branch of the
 scene graph and stays blanked.
 

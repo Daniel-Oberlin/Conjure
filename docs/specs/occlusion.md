@@ -33,7 +33,7 @@ the per-material path being avoided, so hard edges are accepted globally.
 
 `off | hands | hands-solid`, selected by `--occlusion` → `Settings.occlusion` →
 `window.CONJURE_OCCLUSION`, with a per-client URL override `?occlusion=off|hands|hands-solid` (consistent
-with the existing `?stereodebug=` toggles). Resolution order is **URL override → injected default → off**;
+with the existing `?hands=` toggle). Resolution order is **URL override → injected default → off**;
 a junk override is ignored rather than fatal.
 
 | Mode | What the pre-pass writes |
@@ -61,7 +61,7 @@ Two implementation constraints that are easy to get wrong:
 - **Joints come from `frame.getJointPose`, not three's `getHand`** — the latter never populated joints
   under A-Frame. The scene root is pinned to the XR reference space, so a joint pose in that space maps
   1:1 into scene coordinates. This read is **its own**, not shared with `ConjurePointers`
-  ([`specs/input.md`](./input.md)), which reads `index-finger-tip` only; unifying the two is
+  ([`specs/input.md`](./input.md)), which publishes all 25 joints itself; unifying the two is
   [`backlogs/input.md`](../backlogs/input.md).
 - **The mesh is added to the scene graph**, not rendered in a separate pass. three renders its own depth
   content *before* A-Frame's scene render, which clears depth (`autoClearDepth = true`) — anything drawn
