@@ -580,25 +580,32 @@ def _world_with_real_table():
 
 
 @respx.mock
-async def test_recolouring_a_real_surface_also_makes_it_visible(monkeypatch):
+async def test_update_entity_reports_the_surface_treatment_the_SERVER_applied(monkeypatch):
+    """The visible/clear-texture fix moved server-side, after the target is resolved. Deciding it here
+    meant deciding it from the phrase the user typed: `real_table_115` is an exact id and got it, while
+    `table` — which fans out to every matching surface — did not, so the same intent worked or silently
+    did nothing depending on how it was named. The tool now sends the colour and reports what came back."""
     monkeypatch.setattr(m, "BASE", "http://world")
-    respx.get("http://world/world").mock(return_value=httpx.Response(200, json=_world_with_real_table()))
-    route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 54}))
+    route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={
+        "rev": 54,
+        "ops": [{"op": "update", "id": "real_table_115",
+                 "set": {"components.material.color": "#C71585",
+                         "components.material.visible": True, "components.material.src": ""}}]}))
     out = await _tool("update_entity")(id="real_table_115", color="#C71585")
     sets = json.loads(route.calls.last.request.content)["ops"][0]["set"]
-    assert sets["components.material.color"] == "#C71585"
-    assert sets["components.material.visible"] is True     # ← without this the change is invisible
-    assert sets["components.material.src"] == ""           # and a texture would hide the colour anyway
-    assert "real surface" in out                           # the result SAYS what it did beyond the ask
+    assert sets == {"components.material.color": "#C71585"}, "no guessing from the name"
+    assert "1 real surface" in out                         # the result SAYS what it did beyond the ask
 
 
 @respx.mock
 async def test_an_ordinary_entity_is_not_given_the_surface_treatment(monkeypatch):
     """visible/src are a fix for a real-surface quirk. Forcing them on a normal entity would silently
-    un-hide something the director deliberately hid, and wipe its texture."""
+    un-hide something the director deliberately hid, and wipe its texture. The server says so by
+    returning the op unembellished, and the tool stays quiet about it."""
     monkeypatch.setattr(m, "BASE", "http://world")
-    respx.get("http://world/world").mock(return_value=httpx.Response(200, json=_world_with_real_table()))
-    route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={"rev": 55}))
+    route = respx.post("http://world/patch").mock(return_value=httpx.Response(200, json={
+        "rev": 55,
+        "ops": [{"op": "update", "id": "cube", "set": {"components.material.color": "red"}}]}))
     out = await _tool("update_entity")(id="cube", color="red")
     sets = json.loads(route.calls.last.request.content)["ops"][0]["set"]
     assert sets == {"components.material.color": "red"}

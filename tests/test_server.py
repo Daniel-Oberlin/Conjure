@@ -819,6 +819,43 @@ def test_space_unchanged_capture_is_not_rebroadcast(srv, client):
     assert client.get("/world").json()["rev"] > rev          # a real move DOES update
 
 
+def test_recolouring_real_surfaces_shows_them_however_they_were_NAMED(srv, client):
+    """The treatment that makes a recolour visible has to be decided on the surfaces actually hit, not
+    on the phrase that named them. It used to be decided by the caller from the target string, so an
+    exact id got it and 'wall' — which fans out to every wall — did not: the patch succeeded, the tool
+    said so, and nothing appeared. That is the exact failure the surface tools exist to prevent."""
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": [
+        {"id": "real_wall_1", "semantic": "wall", "position": [0, 1, -2], "extent": [3, 2.4]},
+        {"id": "real_wall_2", "semantic": "wall", "position": [2, 1, 0], "extent": [3, 2.4],
+         "rotation": [0, 90, 0]}]})
+
+    # the fanned-out form: one semantic target, several surfaces, none of them named exactly
+    client.post("/patch", json={"ops": [{"op": "update", "id": "wall",
+                                         "set": {"components.material.color": "#123456"}}]})
+    walls = [e for e in _entities(client) if e["id"].startswith("real_wall_")]
+    assert len(walls) == 2
+    for w in walls:
+        mat = w["components"]["material"]
+        assert mat["color"] == "#123456"
+        assert mat["visible"] is True, "recoloured but still invisible — the bug"
+        assert mat["src"] == ""
+
+    # an explicit instruction in the same op is completed, never overruled
+    client.post("/patch", json={"ops": [{"op": "update", "id": "real_wall_1",
+                                         "set": {"components.material.color": "#654321",
+                                                 "components.material.visible": False}}]})
+    w1 = next(e for e in _entities(client) if e["id"] == "real_wall_1")
+    assert w1["components"]["material"]["visible"] is False
+
+    # and an ordinary entity is left exactly as asked
+    client.post("/patch", json={"ops": [{"op": "add", "id": "cube", "entity": {"id": "cube"}}]})
+    client.post("/patch", json={"ops": [{"op": "update", "id": "cube",
+                                         "set": {"components.material.color": "red"}}]})
+    cube = next(e for e in _entities(client) if e["id"] == "cube")
+    assert "visible" not in cube["components"]["material"]
+    assert "src" not in cube["components"]["material"]
+
+
 def test_capture_authority_taken_over_only_when_stale(srv, client, monkeypatch):
     import conjure.server as S
     body = lambda cid: {"client_id": cid, "surfaces": [
