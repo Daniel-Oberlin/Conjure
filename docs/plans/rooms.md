@@ -1,8 +1,12 @@
 # Plan — rooms as a first-class unit
 
-**Status:** step 1 DONE (settled into `specs/spaces.md` §1.1) · step 2 BUILT but **never read on device**,
-which is its entire output · step 3 gated on that reading · step 4 open and needs no headset
+**Status:** step 1 DONE (settled into `specs/spaces.md` §1.1) · step 2 BUILT **and read on device**
+(2026-09-23/24) · step 3 **per-room boundary** — ready, and needs no headset · step 4 **apply the
+refinement** — measured, its recommendation revised, and undecided
 **Opened:** 2026-09-07 · **Steps 1–2 landed:** 2026-09-09, branch `feat/rooms`
+**Steps 3 and 4 swapped 2026-09-25:** the boundary work is ready and the refinement is not, so the order
+now matches what can be done. Steps are named as well as numbered below, since this is the second time a
+pointer to "step 3" has had to be chased.
 
 **This file is temporary.** A plan spans areas that the specs and backlogs deliberately keep apart — this
 one runs across client geometry, server identity, the space record, the director's tools and registration
@@ -17,18 +21,17 @@ lines of plan had stopped that file being a backlog. The rename it depended on i
 
 | Part | Goes to | When |
 |---|---|---|
-| Steps 1 and 2 — built, and already described as built | **deleted**; [`specs/spaces.md` §1.1](../specs/spaces.md) and [`specs/spaces-geometry.md` §4.4](../specs/spaces-geometry.md) carry them | once step 3 is decided, since its argument still cites them |
-| Step 3 — the guards, and the `y` decision | `specs/spaces-geometry.md` §4.4 if applied; [`backlogs/spaces-geometry.md`](../backlogs/spaces-geometry.md) if dropped | after the device run |
-| Step 4 — per-room boundary | [`backlogs/spaces.md`](../backlogs/spaces.md), where the boundary item already waits on it | when built or deferred |
-| Why piecewise-rigid, and the alternatives rejected on measurement | [`decisions.md`](../decisions.md) | with step 3 |
+| Steps 1 and 2 — built, and already described as built | **deleted**; [`specs/spaces.md` §1.1](../specs/spaces.md) and [`specs/spaces-geometry.md` §4.4](../specs/spaces-geometry.md) carry them | once **the refinement** is decided, since its argument still cites them |
+| **Per-room boundary** — step 3 | [`backlogs/spaces.md`](../backlogs/spaces.md), where the boundary item already waits on it | when built or deferred |
+| **The refinement** — step 4: the guards, and the `y` decision | `specs/spaces-geometry.md` §4.4 if applied; [`backlogs/spaces-geometry.md`](../backlogs/spaces-geometry.md) if dropped | when decided |
+| Why piecewise-rigid, and the alternatives rejected on measurement | [`decisions.md`](../decisions.md) | with **the refinement** |
 
 If it outlives those, it has become a backlog by another name and should be dissolved on the spot.
 
 ---
 
-**Status:** proposed 2026-09-07, **reviewed the same day — nothing built.** Branch
-`feat/room-segmentation`. The four open questions are settled below; the *"room" rename* is a
-prerequisite and lands on `main` first.
+Proposed and **reviewed 2026-09-07**. The four open questions are settled below, and the *"room" rename*
+was a prerequisite. Status lives in the header — this line records the review, not the state.
 
 [`specs/spaces.md` §1](../specs/spaces.md) says it plainly: *"Nothing in the record models a 'room' as a
 unit."* This plan gives it one. Two wants turn out to share a single primitive — a registration that stops
@@ -181,9 +184,11 @@ Real surfaces gain `meta.room` — a scalar room id. Doors and windows additiona
   rule. A guest cannot rename your kitchen.
 - `meta.room` is authoritative for membership; `rooms[].floor` exists solely as identity tier 2.
 
-**Integration point not to miss:** `meta.room` must join `_surface_changes`' aspect set, and a room
-reassignment must **not** drag `position` along — the 2026-08-31 rule that a change to one aspect must never
-rewrite the pose.
+**Integration point, and what was built instead:** a room reassignment must **not** drag `position` along —
+the 2026-08-31 rule that a change to one aspect must never rewrite the pose. This was expected to mean
+adding `meta.room` to `_surface_changes`' aspect set. It did not: room labels are written as their own
+dotted-path ops (`server.py:3798-3807`), so the rule holds by construction rather than by aspect
+bookkeeping. Worth knowing before porting this section into a spec.
 
 ### Connectivity — doors know what they lead to
 
@@ -253,7 +258,7 @@ several sessions. The checklist that drove it has been retired; this is what it 
 | Identity | a name survived a client restart, a **server** restart read back off the space file with no capture to mask it, and **losing its own defining floor** — carried by surface-set overlap alone, with the record self-repairing |
 | Targeting | a room as a target, `room=` ∩ semantic, and an unresolvable room refusing rather than repainting the space |
 | Which room | names the right room, follows you between them within a second (a 3 s transit showed up), and reports nobody with no headset present. **No flicker at any boundary** |
-| Residuals | settled **5–16 mm** per room across two sessions; see step 3 |
+| Residuals | settled **5–16 mm** per room across two sessions; rooms disagree by a median 3.2 mm, and by 78.6 mm in one session of sixteen — see *the refinement* (step 4) |
 
 **Four defects it found, all fixed**, and every one found by the device rather than by reading the code:
 segmentation ran *after* the capture pass strips `_lp`/`_lq`, so it silently found nothing on every capture;
@@ -263,8 +268,10 @@ the target instead of the scope.
 
 **Two pre-existing bugs it confirmed**, both larger than predicted, both in
 [`backlogs/spaces-geometry.md`](../backlogs/spaces-geometry.md): every anchor binds to the *last* floor in
-the array rather than the one under the content, and the surface-churn fault recurred with the load gate
-working, on gates the first campaign never saw.
+the array rather than the one under the content — **fixed the same day** (`dcb4256`, with
+`scripts/migrate_anchor_floors.py` re-pointing the 8 stored anchors) — and the surface-churn fault
+recurred with the load gate working, on gates the first campaign never saw, which is **still open**,
+though the global-assignment half has since landed (`fe37f82`).
 
 ### Staging
 
@@ -283,16 +290,54 @@ working, on gates the first campaign never saw.
    fit, its before/after, `dy` reported separately, and the `would_apply` verdict the guards give. See
    [`specs/spaces-geometry.md` §4.4](../specs/spaces-geometry.md).
 
-   **Nothing has been read on device.** The whole point of this increment is the field data, and there is
-   none yet — every number so far is from synthetic pairs and the golden capture.
-3. **Apply the refinement** — ⛔ **recommend DROPPING, on the measurement it was deferred for.** Two device
-   sessions (2026-09-23) settle the inter-room residual at **5–16 mm** per room, against the 20 mm bar this
-   plan set for itself before anything was built. The 150–170 mm each session opens with is a whole-space
-   tracking settle, not per-room non-rigidity: all three rooms decay together on one curve. The refinement
-   does still halve what remains, so this is "real and small", not "absent" — but it has to argue for
-   itself now, and the argument it was going to make has been measured away. See *Validated on device*
-   above; per-room numbers are in the geometry log, readable with `scripts/room_residuals.py`.
-4. **Per-room boundary**, separately: it changes a schema with two consumers and deserves its own increment.
+   **Read on device 2026-09-23/24**: 378 `room.residual` events over 16 client sessions, in
+   `temp/geometry-2026-09-24.jsonl` and `temp/geometry-archive-pre-inset-dispatch/`. What it found is in
+   *Validated on device* above and in [`specs/spaces-geometry.md` §4.4](../specs/spaces-geometry.md) —
+   including the warning to read the last epoch rather than the first, since a session opens ten times
+   higher than it settles, which is how this data was first misread.
+3. **Per-room boundary** — ready, and the only open step that needs no headset. It changes a schema with
+   two consumers and deserves its own increment. The brief is
+   [`backlogs/spaces.md`](../backlogs/spaces.md)'s top entry: *"make it honest"* (a floor polygon plus its
+   own covering ceiling height, per room, with the summary reporting the one the user is standing in) and
+   *"make it useful"* (the summary says *"a room roughly 4 × 5 m, you are near the north wall"* rather
+   than dumping a raw polygon at the model). That backlog recommends doing both, and rates the second
+   higher on its own — the boundary's only reader today is the director's per-turn summary.
+
+   **One constraint the rooms schema did not face.** `rooms` and `meta.room` were safe to add because
+   `main` never knew them and so never wrote them. `boundary` is a key `main` *does* write, so changing
+   its shape in place is not covered by that precedent — the next capture under `main`, sharing the same
+   live data, would overwrite it. Per-room boundaries need a sibling key `main` never touches, exactly as
+   `rooms` was added.
+4. **Apply the refinement** — 🔶 **undecided. The drop recommendation is revised, and the case now rests
+   on the tail rather than the median.**
+
+   The original reading stands as far as it goes. Re-measured over all 378 logged events: what matters is
+   not each room's displacement but how far the rooms **disagree with each other** at settle, since a
+   common offset is a whole-space tracking settle that no per-room refinement can help. That disagreement
+   has a **median of 3.2 mm** — comfortably under the 20 mm bar this plan set for itself, and the
+   150–170 mm each session opens with is indeed the whole space settling, all three rooms decaying
+   together on one curve.
+
+   But one session in sixteen disagreed by **78.6 mm** (`room_1` −19.6, `room_2` +31.0, `room_3`
+   +59.0 mm), which is the same order as the raised-floor fault's measured **104 mm**, where floor and
+   ceiling agreed within 1 mm — the number that proved a room moves as a rigid unit. That fault is
+   explicitly intermittent (*"sometimes raised by 4–6 inches… goes back and forth every few days"*), so a
+   two-day campaign mostly samples healthy sessions. **Judging a fault that fires on some days by the
+   median of all days is the wrong statistic**, and that is what the original recommendation did.
+
+   **The option this suggests is a gate, not a drop:** refine only when the between-room spread exceeds a
+   threshold. The 94% of sessions where rooms agree to ~3 mm are untouched and carry no new risk; the tail
+   gets corrected. It also dissolves the floating-room corrector's open question, as this plan already
+   notes a continuous estimate would.
+
+   **What still argues against it,** and why this is a decision rather than an obvious yes: it modifies
+   **identity matching**, whose failure re-mints a surface and loses the user's styling — so the downside
+   is user data and the upside is margin. Verification is device-only against an intermittent fault, so a
+   clean run proves little; the synthetic route is the golden-fixture test below. And a refinement that
+   fires on a bad fit is worse than none, which is what the guards above exist for.
+
+   Numbers are in the geometry log (`scripts/room_residuals.py`, which currently reads only `temp/` and
+   so misses the archived sessions).
 
 Step 1 is verifiable with no device. `fixtures/golden-space.json` is 45 surfaces across two rooms — a known
 answer — and this space's three rooms have their ground truth written down above. The registration claim is
@@ -359,5 +404,6 @@ Two things worth keeping at this level:
   device-tested. A trial merge confirmed it — `main + rename ← feat/pose-eval-harness` merges clean, since
   none of that branch's ~3,200 changed lines contains a room-named identifier.
 
-**Status: the identifier half is complete** (Tiers 2 and 3), `978 pytest / 204 JS` green throughout. What
-remains is prose.
+**Status: identifiers, model-facing prose and docs prose are all complete**, `978 pytest / 204 JS` green
+throughout. What remains is ~460 occurrences in code comments and tests, plus the `EMPTY-ROOM` call — and
+[`plans/room-rename.md`](./room-rename.md) records that it blocks nothing.

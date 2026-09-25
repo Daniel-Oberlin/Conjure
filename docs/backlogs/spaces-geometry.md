@@ -406,9 +406,12 @@ resolving their identity across captures, naming them, and refining registration
 fitting one rigid transform to a space the Quest maps non-rigidly.
 
 Steps 1 and 2 are built and described in [`specs/spaces.md` §1.1](../specs/spaces.md) and
-[`specs/spaces-geometry.md` §4.4](../specs/spaces-geometry.md). **Step 3 — applying the per-room
-refinement — is deliberately gated on field data that does not exist yet**, so the open item this backlog
-still owns is that the measurement has never been read on device.
+[`specs/spaces-geometry.md` §4.4](../specs/spaces-geometry.md). The measurement they were gated on **was
+read on device 2026-09-23/24** — 378 `room.residual` events — so what this backlog still owns is the
+**decision** that data now supports arguing either way: rooms disagree by a median 3.2 mm, under the bar
+the plan set, but by 78.6 mm in one session of sixteen, against the raised-floor fault's measured 104 mm.
+The fault is intermittent over days, so the median under-describes it. **Applying the per-room
+refinement** is undecided; the live option is to gate it on the spread rather than drop it.
 
 ## Instrumentation — the geometry event log
 
