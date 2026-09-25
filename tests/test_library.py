@@ -376,6 +376,26 @@ def test_a_tombstone_is_reachable_by_id_and_by_NOTHING_else(tmp_path):
     assert lib.count_by_user("daniel") == 1
 
 
+def test_a_tombstone_does_not_come_back_from_the_VECTOR_stage(tmp_path):
+    """The one read that goes through neither `_scope_sql` nor the scoped view. It filters in Python,
+    and it was filtering on visibility alone — so a superseded asset stayed a live `find()` candidate
+    long after every other reader had stopped returning it. `supersede` deliberately leaves the vector
+    row alone (a `revive` would otherwise need re-embedding), which is precisely why the read has to
+    ask the row."""
+    lib = _lib(tmp_path)
+    if not lib.has_vectors:
+        pytest.skip("sqlite-vec not available")
+    S = "daniel/agents/builder"
+    for i in ("old.png", "new.png"):
+        lib.upsert(i, kind="image", scope=S, prompt="jane")
+        lib.add_embedding(i, [1.0, 0.0, 0.0], "fake")       # identical vectors: both are nearest
+    lib.supersede("old.png", "new.png")
+
+    assert [h["id"] for h in lib.vector_search([1.0, 0.0, 0.0], limit=5)] == ["new.png"]
+    assert [h["id"] for h in lib.vector_search([1.0, 0.0, 0.0], scope=S, limit=5)] == ["new.png"]
+    assert lib.get("old.png") is not None                   # still addressable by id, like every tombstone
+
+
 def test_supersession_refuses_the_two_cases_that_would_lose_data(tmp_path):
     lib = AssetLibrary(tmp_path / "library.db")
     lib.upsert("a.glb", kind="model", label="a", scope="daniel/agents/builder", source="cache://a.glb")
