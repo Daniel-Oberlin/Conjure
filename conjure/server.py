@@ -3556,6 +3556,8 @@ def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
 _AUTH_TTL = 6.0                       # seconds (~3 capture cycles) an idle authority holds before takeover
 #: Below this many stored surfaces the >50% prune guard does not apply — a room's structural shell alone is
 #: six (four walls, floor, ceiling), so a smaller space is not established and losing most of it is normal.
+#: Set two above that shell rather than at it: a space holding exactly its six walls and nothing else is
+#: still mid-capture, and guarding it would refuse the ordinary churn of a room still being discovered.
 _PRUNE_GUARD_MIN = 8
 _authority_ts: float = 0.0            # server time of the last accepted capture from the current authority
 # NOTE (local-first, docs/specs/spaces-geometry.md §2): the old ESTABLISH-then-FREEZE machinery (a timed

@@ -135,6 +135,22 @@ Most of the 116 are mechanical. These are the ones that would have misled someon
 Each was left **unchanged** in the spec because it could not be resolved with confidence, or because
 resolving it means changing code rather than prose.
 
+**All eight are now closed** (2026-09-25), and the table is kept as the record of what was asked. Four
+were code: `/space/rename` is space-owner gated; `update_entity`'s treatment moved server-side to where
+targets are resolved; the vector index records provenance so a figure's render survives a `reindex`; and
+`armed()` learned to say "this frame". Three were a distinction nothing had named — 51 vs 52 bones is
+`CORE_BONES`' 21 vs the 22 that include the optional `upperChest`; the prune guard's floor is two above
+the shell it cites, deliberately; and `config.md §6`'s "belt-and-braces" was one mechanism and a spare.
+One was left alone on purpose: `meta.leads_to`'s `null` reads identically to absent for every consumer,
+so normalising it is churn.
+
+Chasing them turned up a **ninth**, which no spec claimed and no question anticipated: the skin-joint and
+humanoid memos were keyed on `id(build)` in module-level dicts, so a collected build's answers were
+inherited by the next build allocated at its address. It read as a suite that failed one run in three;
+it also means any bulk compose or rebuild could hand one capture another's skeleton. Fixed by moving both
+memos onto the `Build`. The lifted-figure count in `captures.md §3` was measured before that fix and is
+flagged there for re-running.
+
 | Where | Question |
 |---|---|
 | `spaces.md §10` | **`/space/rename` is entirely ungated** (`server.py:2633`) — the body carries `owner`, defaulting to the active space's, and nothing checks the caller. Any shell user can retitle any user's space. Deliberate admin surface, or a missed gate? Written as "ungated" rather than asserting intent |
