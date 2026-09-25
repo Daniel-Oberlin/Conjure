@@ -23,6 +23,11 @@ valuable output of the audit** — in every case the spec described the intended
 and the code had drifted away from it, so fixing the spec would have written the bug down as truth.
 All four were left as code findings; **no spec was edited to match them**.
 
+**All four were fixed in `0c1dbb2`, and no spec needed changing after all** — both specs that described
+a broken behaviour were already describing the *intended* one, so the code now says what they say.
+Each fix was checked by reverting it and confirming its test fails. The table below is kept as the
+record of what was found, not of what is outstanding.
+
 | # | Finding | Evidence | Why it matters |
 |---|---|---|---|
 | 1 | **`/show_surface` is not owner-gated.** `_OWNER_ONLY_PATHS` covers `/style_surface` and `/texture_surface` but not `/show_surface` | `conjure/server.py:763` vs route at `:3935` | Any admitted guest can hide or reveal another user's surfaces. `worlds-surfaces.md §6` claims "scene mutation is owner-gated server-side". The endpoint is recent — reads as an oversight when matching moved out of the MCP layer |
@@ -138,7 +143,7 @@ resolving it means changing code rather than prose.
 | `library.md §6` | `scripts/describe_figures.py --embed` deliberately writes `kind='model'` vectors into the image space; §6 says models are deliberately *not* embedded and `reindex` **clears** exactly those rows. One of the two is stale — could not tell which |
 | `spaces-geometry.md §8` | The spec's reasoning for the prune guard ("a room's shell alone is six surfaces") mirrors the code comment, but `_PRUNE_GUARD_MIN` is **8**. The spec asserts no number, so nothing was changed — but one of the two should move |
 | `config.md §6` | "Two independent mechanisms, deliberately belt-and-braces" for keeping tests off a real home — but **nothing in the repo sets `CONJURE_HOME`**; the suite is entirely in-process. Demote to one mechanism plus an escape hatch? |
-| `input.md §5` | Code finding 4 above — fix `armed()`, or document that `beam_timeout = 0` disables the beam entirely |
+| ~~`input.md §5`~~ | ~~Code finding 4 — fix `armed()`, or document that `beam_timeout = 0` disables the beam entirely~~ **Settled in `0c1dbb2`: `armed()` fixed, spec unchanged because it already described the fixed behaviour** |
 | `spaces.md §1.1` | `meta.leads_to` for an exterior door is written as `null`, not absent as the spec says. Functionally identical for every reader found |
 
 ---
