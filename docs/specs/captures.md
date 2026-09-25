@@ -134,7 +134,7 @@ shipped **in the build being converted**, not remembered. Each is a silent wrong
 blend mode is invisible until something stands behind the figure, and an inverted roughness map reads as
 a lighting problem.
 
-Four things it detects rather than assumes, all of which Jane exercises:
+Five things it detects rather than assumes, all of which Jane exercises:
 
 | | |
 |---|---|
@@ -195,7 +195,7 @@ separate props**. Measured on the captures:
 ```
 office-babe          192 entities   9 live  1 optional   office-babe.glb×8 · manager_fixing.glb×1 · underwear.glb×1
 Oktoberfest-milf     183            6      1            -milf.glb×2 (eyelashes, BEER) · -fixing.glb×4 · underwear.glb×1
-bride_ready          237           12      1            model_britney_bride.glb×1 · bride_ready.glb×11 · underwear.glb×1
+Bride                237           12      1            model_britney_bride.glb×1 · bride_ready.glb×11 · underwear.glb×1
 JAPANESEROOM BAKED    39           34      1            JAPANESEROOM BAKED.glb×34 · WOODout.glb×1 (the deck)
 Banana                 2            1      0            TOOLS LIBRARYblend5.glb×1  (catalogued)
 ```
@@ -232,15 +232,19 @@ Two kinds of entry, and they are very different in size:
 
 - **`exclude`** is SITE-WIDE and written once. Every capture ships the app's own scene identically —
   `2049393.json`, 1,016 entities whose Root children are `LeftController`, `Gestures`, `ToolModeStore`,
-  `TRASH` and four more. They render meshes and nobody would place them. Nine names, all captures.
-- **`captures`** is per capture, keyed by scene file, and **one of twenty needs it**. susan's Root child
-  `aula` is a classroom with Alice standing in it; `ModelParent` (the figure) and `EnvironmentVR` (the
-  room) sit two levels down and are separately useful. Nothing in the graph says to split there. A LIST
-  names the things at any depth; a MAP also renames, because `ModelParent` is no use as an asset label.
+  `TRASH` and five more. They render meshes and nobody would place them. Nine names, all captures.
+- **`captures`** is per capture, keyed by scene file, and **eighteen of twenty carry an entry — two of
+  them to SPLIT, the rest only to RENAME**. susan's Root child `aula` is a classroom with Alice standing
+  in it; `ModelParent` (the figure) and `EnvironmentVR` (the room) sit two levels down and are separately
+  useful. Nothing in the graph says to split there. A LIST names the things at any depth; a MAP also
+  renames, because `ModelParent` is no use as an asset label — and neither is `MainModelToiletAgnes`, so
+  a figure takes the handle its capture is already known by, and five rooms named after the woman
+  standing in them (`CheatingBride` → `church`) stop competing with her in the catalog.
 
 That ratio is the answer to "will this need manual guidance for every import": one file written once,
-plus roughly one capture in twenty. It is a floor rather than a ceiling — twenty captures from one
-origin is a narrow sample — which is why detection reports rather than decides.
+plus two captures in twenty that need a SPLIT — and `_lift_figures` now does that from the file alone
+(below), so what is left in the file is a label. It is a floor rather than a ceiling — twenty captures
+from one origin is a narrow sample — which is why detection reports rather than decides.
 
 **Which entity is a thing is CONVENTION, not format.** The rule — a direct child of a scene's Root
 whose subtree renders something — holds in the content scenes and is **false in the app's own**:
@@ -269,19 +273,27 @@ lost their figure.
 schema key, and the one heuristic (`--adopt`) matches on render-asset names read from the build. But the
 coverage was shaped by one character, so what it CANNOT carry is listed in `_UNCARRIED` and warned about
 per material rather than dropped quietly: the specular/gloss workflow, light and environment maps,
-height maps, clear coat, sheen, refraction, iridescence, and texture tiling/offset/rotation. Second UV
-sets, `emissiveIntensity` and `aoIntensity` are carried.
+height maps, clear coat, sheen, refraction, iridescence, depth write and depth test switched off, and
+texture tiling/offset/rotation. Second UV sets, `emissiveIntensity` and `aoIntensity` are carried.
 
-Those tests gate on PlayCanvas's `use*` flags, never on a value, and that distinction is measured: it
+The sheen and iridescence tests gate on PlayCanvas's `use*` flag, never on a value, and that distinction
+is measured: it
 leaves `sheen` at a default WHITE with `useSheen: false`, so a check keyed on the colour fires for all
 208 materials across the three builds here — and a warning that always fires is one nobody reads.
 `useDynamicRefraction` is true exactly **once** in those 208, on Jane's eyes, which is the case the list
 earns its keep for and the one visible thing this does not reproduce.
 
-**A fourth way a layer can be all environment and no content: a refractive LENS.** No maps of its own,
-see-through, `useDynamicRefraction` set — its whole appearance is the environment bent through it, which
-glTF core cannot express. The fallback is not neutral: a flat colour at partial alpha is white PAINT over
-the thing it was meant to enhance. Bride's `Reflections-eyes` is 48% white over her irises and washed the
+**Three ways a layer can be all environment and no content, and glTF expresses none of them**: a blend
+mode that only LIGHTENS (`BLEND_ADDITIVE`, `_ADDITIVEALPHA`, `_SCREEN`, where black is the no-op), one
+that MODULATES (`BLEND_MULTIPLICATIVE`, `_MULTIPLICATIVE2X`, where white is), and a see-through MIRROR —
+`useMetalness` with metalness ≥ 0.9, a skybox or environment map, no diffuse map, opacity ≤ 0.6. Each is
+made invisible when it carries no detail of its own, because drawn opaque it OCCLUDES the thing it was
+meant to enhance — and in every case here that thing was an eye: one model's corneas went solid black,
+another's solid white, over irises the body mesh was drawing all along.
+
+**A fourth way: a refractive LENS.** No maps of its own, see-through, `useDynamicRefraction` set — its
+whole appearance is the environment bent through it, which glTF core cannot express. The fallback is not
+neutral: a flat colour at partial alpha is white PAINT over the thing it was meant to enhance. Bride's `Reflections-eyes` is 48% white over her irises and washed the
 brown out to a pale tan. Five of 1,241 bound materials are this shape, four of them named for an eye
 (`Reflections-eyes`, `Genesis 8 Female_EyeMoisture`, `Sclerea`, `eyes`); the fifth is a pane of glass,
 likewise better seen through than fogged. Made invisible and warned about, exactly as the mirror and the
@@ -297,7 +309,7 @@ named poses — with 8 materials where there were none.
 `compose_thing(build, thing)` writes the subtree out as a single self-contained GLB;
 `scripts/playcanvas_rebuild.py --compose` runs it over a capture. It emits **alongside** the
 per-container output rather than instead of it, so nothing downstream changes until the comparison is
-done. Measured over the twenty captures: **263 things, 516 MB**, against 416 per-container files.
+done. Measured over the twenty captures: **258 things, 533 MB**, against 416 per-container files.
 
 **The node tree IS the scene's entity subtree, one for one.** Not a merge of the containers'
 hierarchies, which is where the first version went wrong: a container's own root transform is
@@ -432,26 +444,36 @@ again has to be in the file to be shown.
 
 `scripts/glb_check.mjs` is the second, independent gate: it loads a GLB with the same three.js
 `GLTFLoader` the client uses and prints the bounding box. A file can satisfy every structural check and
-still throw in the loader, and it can load perfectly while being a hundred times the wrong size. All 263
+still throw in the loader, and it can load perfectly while being a hundred times the wrong size. All 258
 load; the six acceptance cases measure 0.07 m (Banana), 1.73 m (Alice), 1.83 m (office-babe), 1.87 m
 (bride), 2.04 m (Oktoberfest at her 1.25 scale) and 10.9 × 3.6 × 13.7 m (the Japanese room).
 
 **Basis textures are decoded by a pre-pass**, `scripts/basis_to_png.js`, which writes `Foo.png` beside
 `Foo.basis` — the exact name the registry already gives that texture, so the rebuild finds it knowing
-nothing about Basis at all. The transcoder is **found, not required**: `--transcoder` if given, else the one the build ships
+nothing about Basis at all. It stays a separate script with its own output on disk, and both the rebuild
+and the compose RUN it first (`--no-decode` opts out): a fresh capture overwrites the decoded PNGs, and
+leaving the pre-pass to be remembered cost nancy her skin — 0 of 6 materials mapped, which reads exactly
+like a failed download and is not one. The transcoder is **found, not required**: `--transcoder` if given, else the one the build ships
 (`basis.wasm.js` + `basis.wasm.wasm`, two separate PlayCanvas assets in unrelated directories), else the
 upstream build committed in `vendor/basis`. The capture's own copy is preferred because a decoder
 shipped beside the data is the one certain to read it; the vendored one exists because a capture only
 contains one if the grabber happened to save it, and that is the file everything else depends on. Their
-output is byte-identical on the textures here. The PNG is written by hand over `zlib`, Node shipping no encoder
+output is byte-identical on the textures here. A capture's own copy is also a BROWSER bundle that may
+not START in Node — one throws `$jscomp is not defined` on require, before any file is read, taking all
+fourteen of that capture's textures down with it — so a transcoder that will not load falls back to the
+vendored one rather than ending the run.
+The PNG is written by hand over `zlib`, Node shipping no encoder
 and a truecolour-with-alpha PNG being cheaper to write than to justify a dependency for.
 
 **A normal map needs unpacking.** Basis stores one as X in RGB and Y in alpha, which transcodes to a
 greyscale image with an independent alpha — and handed to glTF's `normalTexture` that way, grey remaps
 to a ZERO-LENGTH normal and the lighting breaks out in dark blotches over every surface using it. Z is
-recomputed and the alpha dropped. Which textures to treat this way comes from the REGISTRY, not from the
-pixels: a genuine greyscale mask with an alpha channel is indistinguishable, and one build has both — a
-pixel heuristic alone wrecked its specular maps while fixing its normals.
+recomputed and the alpha dropped. Which textures to treat this way needs the REGISTRY and the pixels to
+agree, and neither alone: a genuine greyscale mask with an alpha channel is indistinguishable from a
+packed normal, and one build has both — a pixel heuristic alone wrecked its specular maps while fixing
+its normals — while a normal map may also be stored plainly, and unpacking one of those is worse than
+leaving it alone. So the registry says which assets are normal maps, and the pixels (greyscale, with an
+alpha that is not a solid 255) say which of those are packed.
 
 Measured on Akari: 42 files decoded, 0 failed, and she rebuilt at 9 materials over 3 meshes.
 
@@ -641,7 +663,8 @@ do not reason about the pipeline**:
 
 1. **`--max-texture N`** rescales image datablocks before export (Blender's exporter re-encodes but will
    not resize). The single biggest size lever: 229 MB → 37 MB on one model, of which 210 MB was textures.
-2. **Probe.** Export once, then read back which materials the exporter genuinely failed — no
+2. **Probe** — this rung and the three below it run only under `--bake N`, which is off by default.
+   Export once, then read back which materials the exporter genuinely failed — no
    `baseColorTexture` and a near-black (`max < 0.15`) or absent `baseColorFactor`. The exporter's own
    output is the only oracle that cannot disagree with the exporter.
 3. **`use_colour_images`.** Before baking, rebuild each failed material as a plain Principled around the
@@ -661,14 +684,14 @@ or cyclic case; neither should run speculatively, since each perturbed a bake an
 The script `os._exit(0)` after flushing, because Blender can fault during *shutdown* on multi-GB scenes
 long after the file is written and valid — a teardown bug must not masquerade as a conversion failure.
 
-Three companion scripts:
+Four companion scripts:
 
 | Script | Job |
 |---|---|
 | `scripts/inspect_blend.py` | structural dump of a `.blend` to JSON — reads `bpy.data`, not the scene, because these are "append model" files whose objects are often linked into no scene at all |
 | `scripts/blend_summary.py` | human-readable digest of those dumps |
 | `scripts/glb_preview.py` | render a GLB from several angles (Workbench), printing the imported bbox and height so "is it life size" is answered numerically |
-| `scripts/pose_test.py` | the **functional** test of a map: drives the real `best_humanoid` / `anatomical_axes` / `resolve_pose` and renders **front and side**, always — a front view cannot tell a raised knee from a leg swung backwards. Also accepts raw euler on a rig bone by its own name as an escape hatch |
+| `scripts/pose_test.py` | the **functional** test of a map: drives the real `best_humanoid` / `anatomical_axes` / `resolve_pose` and renders **front, three-quarter and side**, always — a front view cannot tell a raised knee from a leg swung backwards, and an arm aimed straight forward foreshortens into a folded elbow there; the three-quarter sits at 35° so no limb aligns with the view axis. Also accepts raw euler on a rig bone by its own name as an escape hatch |
 
 `pose_test` writes the pose both as node rotations **and** as a one-keyframe animation, because Blender's
 glTF importer reads a joint node's TRS as the bone's *rest* and reconciles the difference silently — an

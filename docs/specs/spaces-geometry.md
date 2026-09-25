@@ -50,7 +50,7 @@ and both render content onto the same real wall.
 
 **There is no shared render frame.** Registration still solves `T : F_track → F_ref` (`Tmat` in code),
 but its useful output is the **id correspondence**. `#world-root` is held at **identity** for a captured
-space (`conjure-client.js:1407`); content is F_track-native.
+space (`conjure-client.js:1767`); content is F_track-native.
 
 This is what buys drift immunity for free: when tracking jumps, the detected walls jump, and every
 plane-relative anchor **re-solves against the jumped walls** — content stays glued to the walls, and so
@@ -217,9 +217,9 @@ a bad global lock; a large height offset is not. The floating-room displacement 
 observed three times larger between one morning and one afternoon — and the unmerged correction's own
 0.15 m ceiling would have refused the very fault it was written for.
 
-The guards a future *apply* would use (≥4 pairs, ≥2 walls, a non-degenerate solve, ≤0.25 m, and the fit
-must reduce the room's residual) are evaluated now and logged as `would_apply`, so the field data says
-whether the refinement would have been accepted rather than only what it computed.
+The guards a future *apply* would use (≥4 pairs, ≥2 walls, a non-degenerate solve, ≤0.25 m in x/z, ≤0.6 m
+in y, and the fit must reduce the room's residual) are evaluated now and logged as `would_apply`, so the
+field data says whether the refinement would have been accepted rather than only what it computed.
 
 Emission is change-gated by `WM.roomResidualGate` — first fit, a move past 1 cm, or a flipped verdict —
 so a settled space still emits nothing, which is what makes §10's log affordable to leave running for
@@ -441,8 +441,10 @@ multilateration; the codebase says "plane-relative anchor".)
 
 Position has 3 DOF, and a plane is a *linear* constraint (`n·p = c`), so this is a clean 3×3 solve.
 
-- **Authoring** (owner, once): for the floor and each of the ~3 nearest walls `k`, store the signed
-  perpendicular offset `d_k = n_k · (p − q_k)` plus the floor height `h = p.y − floor.y`.
+- **Authoring** (owner, once): for the floor **under it** (`floorUnder`'s footprint test where the caller
+  can run it; `authorAnchor` otherwise falls back to the nearest floor centre in plan view) and each of the
+  ~3 nearest walls `k`, store the signed perpendicular offset `d_k = n_k · (p − q_k)` plus the floor height
+  `h = p.y − floor.y`.
 - **Solving** (any client, at render): using its **own** local plane for each stored id, each wall
   contributes `n_k′ · p = d_k + n_k′·q_k′` and the floor contributes `up′ · p = floor.y′ + h`. Minimise
   `Σ w_k (n_k′·p − e_k)²`; the normal equations are a 3×3 system.
@@ -552,22 +554,25 @@ The moving, high-frequency case. Computed at the **source**, re-solved at each *
 
 ## 6. Recovering a surface the client did not capture
 
-The **only** exception to headset-first. A **non-wall** surface that exists in the seed but is absent
-from a client's live capture: the client simply missed it.
+The **only** exception to headset-first. A surface that is neither a **wall** nor a **floor**, exists in
+the seed, and is absent from a client's live capture: the client simply missed it.
 
 Once the map has stabilised, for each unmatched seed surface the client solves its anchor against its own
 local walls and folds it into the render set, so it draws and can host content. Each recovery logs
 `[recover] surface … reconstructed`.
 
-- **In-wall surfaces ride their recorded host wall.** Recovery applies the inset's seed
-  offset-from-its-wall onto the wall's **local rendered** pose: `inset_local = wall_local · (wall_seed⁻¹ ·
-  inset_seed)`. This preserves along-wall position *and* height exactly. A free multilateration
+- **In-wall surfaces ride their recorded host wall.** Recovery solves the inset's stored corner-relative
+  anchor (§6.1) against the host wall's **local** corners and floor/ceiling edges, so it lands where that
+  wall's own structure puts it rather than where this device centred its scan. A seed carrying no such
+  distances falls back to the centroid ride — the inset's seed offset-from-its-wall applied to the wall's
+  **local rendered** pose, `inset_local = wall_local · (wall_seed⁻¹ · inset_seed)` — which preserves
+  along-wall position *and* height but moves with a differently-centred scan. A free multilateration
   under-constrains the along-wall axis for a mid-wall inset with no perpendicular wall nearby, which
   showed up as >10 cm lateral shifts.
 - **Snapping still runs** on a recovered inset, so it ends up co-planar with its wall rather than at the
   raw anchor depth.
-- **Walls are excluded.** A wall is the *basis* of the anchor system — a plane, not a point — and its
-  absence perturbs everyone's nearest-wall set. Missing-wall recovery is a separate, harder problem.
+- **Walls and floors are excluded.** They are the *basis* of the anchor system — planes, not points — and
+  a wall's absence perturbs everyone's nearest-wall set. Missing-wall recovery is a separate, harder problem.
 - **Live detection wins the moment it is available**, and the id is re-inherited via `matchRef`.
 
 `--drop-surface SEMANTIC|ID[,…]` makes the client pretend it did not capture matching surfaces, so this
@@ -614,7 +619,8 @@ Applied identically to the local render **and** the posted seed, in this order:
    2.673 — 4 mm). **Vertical only**: it moves centre height and height, never the plane, normal,
    horizontal offset or width, so registration and anchors are unaffected. Guarded by `--wall-seal-tol`
    (0.15 m, `0` disables) so a genuine partial or knee wall is not stretched, and **multi-room safe** —
-   it seals to the nearest *covering* ceiling by footprint test, not to another room's.
+   it seals to the **highest** *covering* ceiling (and the **lowest** covering floor) by footprint test, so a
+   wall shared between two rooms reaches the taller one and merely pokes hidden into the shorter.
 3. **`snapInsets`** — snaps insets onto their host wall and records the openings. Runs *after* sealing,
    so openings are cut against the sealed wall with no compensation needed.
 
@@ -635,7 +641,9 @@ round-trips.
 
 **Structural triggers:** a surface added; a surface confirmed removed; a semantic reclassification; a
 **large move** beyond ~0.5 m or 20° (real furniture moved or a re-scan, not drift) — which prints and
-logs, because it is rare and attention-worthy; a styling or content edit; a boundary change.
+logs, because it is rare and attention-worthy; an opening-count change; a styling or content edit; a
+boundary change; a room segmentation the server has not acknowledged (otherwise a space that is already
+fully captured never sends its rooms at all, since every other trigger is a change to the *surfaces*).
 
 **Server side** (`_surface_changes`): a surface is added when new, pruned when absent, and on a structural
 change updated **only in the fields that changed**. That last part is load-bearing — writing the whole
@@ -805,9 +813,8 @@ So there is a second lane, **always on and change-gated**: `temp/geometry-<date>
 emits **nothing**. That property is what makes it affordable to leave running for weeks, and it is enforced
 by construction, not by discipline — every event fires on a transition.
 
-Separate from `conjure.log` deliberately: that file is unrotated and the test suite also appends to it,
-while the unit of analysis here is "compare Tuesday to Friday". This one rotates daily and prunes past
-`--geometry-log-days` (21).
+Separate from `conjure.log` deliberately: that file is a single unrotated blob, while the unit of analysis
+here is "compare Tuesday to Friday". This one rotates daily and prunes past `--geometry-log-days` (21).
 
 **Batched, never a fetch per event.** `debugLog` does one POST per line, which is exactly why the jitter
 probes had to be decoupled from the registration diagnostics (§9) — the measurement was contaminating the
@@ -982,15 +989,15 @@ checked anywhere before. The probe needs no overlay and settles the displacement
 | Knob | Default | Purpose |
 |---|---|---|
 | `--capture-interval` | 2 s | capture throttle |
-| `--apply-tol-pos` / `--apply-tol-rot` / `--apply-tol-ext` | — | the apply-gate deadbands (shared by surfaces and content) |
+| `--apply-tol-pos` / `--apply-tol-rot` / `--apply-tol-ext` | 0.02 m / 1° / 0.02 m | the apply-gate deadbands (shared by surfaces and content) |
 | `--group-surface-relay` | on | re-lay all surfaces at one epoch; off reproduces the seams for A/B |
 | `--geo-slice-ms` | 3 | re-triangulation budget per frame; ≤0 disables slicing |
 | `--pose-tau` | 0 (off) | slew time constant |
 | `--wall-seal-tol` | 0.15 m | max gap `sealWalls` will close; 0 disables |
 | `--surface-weld` | 0.002 m | fill overlap against hairline cracks |
-| `--on-surface-standoff` | — | how far an inset sits in front of its wall plane |
+| `--inset-standoff` | 0.02 m | how far an inset sits in front of its wall plane |
 | `--reg-size-tol` / `--reg-min-cov` / `--reg-min-cov-frac` / `--reg-inlier-m` / `--reg-yaw-peaks` | 0.5 / 4 / 0.3 / 0.4 / 5 | registration acceptance |
-| `--wall-perp-tol` / `--wall-yaw-tol` / `--wall-overlap-slop` | — | `matchWall` identity tolerances |
+| `--wall-perp-tol` / `--wall-yaw-tol` / `--wall-overlap-slop` | 0.15 m / 30° / 0.3 m | `matchWall` identity tolerances |
 | `--drop-surface` | — | pretend a surface was not captured (exercise recovery solo) |
 | `--foveation` | 0 | GPU headroom; raising it cut the dropped-frame rate monotonically |
 | `--void-origin` | `centres` | a void world's canonical-frame origin basis (§4.1.3): wall centres or plane corners |
@@ -1029,15 +1036,15 @@ with a golden test like `plane_anchor`'s.
 
 **`client/surface-overlay.js`** — the three-layer debug overlay (§10.4): `setDevice`, `setSeed`,
 `clearSeed`, `poll`, `hud`. DOM/A-Frame-side, so not in the typechecked set; the geometry claims it rests
-on are pinned in `space-snap.test.js` instead (the `Tmat⁻¹` round-trip).
+on are pinned in `surface-overlay.test.js` against a stubbed `window`/`document` (the `Tmat⁻¹` round-trip).
 
 **`client/plane-anchor.js`** — `authorAnchor`, `solveAnchor`; internals `wallFrame`, `averageQuat`,
 `twistAbout`, `solveSym3`, `cond2`.
 
 **`client/world-model.js`** — `surfaceSig`, `surfaceMoved`, `surfacePoseMoved`, `surfaceShapeChanged`,
 `advanceSig`, `slewAlpha`, `slewSettled`, `eulerYXZQuat`, `holesAttr`, `spawnRight`, `avatarAim`,
-`loadGate`, `voidFrameGate`, `voidGateAdvance`, `voidGateInit`,
-`levelDeviation`.
+`hasFrameBasis`, `loadGate`, `selectGate`, `relocStep`, `relocHint`, `voidFrameGate`, `voidGateAdvance`,
+`voidGateInit`, `roomResidualGate`, `levelDeviation`.
 
 **`client/space-worker.js`** — the off-thread `register` host.
 
@@ -1046,11 +1053,11 @@ on are pinned in `space-snap.test.js` instead (the `Tmat⁻¹` round-trip).
 | Concern | Where |
 |---|---|
 | structural-change gate | `conjure/server.py` `_surface_changes` + `_surface_update_set` (write only what changed) |
-| ingest (seed-only, no broadcast) | `conjure/server.py:2909` `ingest_capture` |
+| ingest (seed-only, no broadcast) | `conjure/server.py:3614` `ingest_capture` |
 | seed planes for server solves | `conjure/server.py` `_seed_planes` |
 | server-side anchor authoring | `conjure/server.py` `_content_anchor` |
-| pose-relative queries | `conjure/server.py:3898` `/view_relative` |
-| local render + world-root identity | `client/conjure-client.js:1396` |
+| pose-relative queries | `conjure/server.py:4851` `/view_relative` |
+| local render + world-root identity | `client/conjure-client.js:1793` `_renderLocal` + `:1763` `_updateWorldFrame` |
 | void frame establish + hold | `client/conjure-client.js` the `isVoidWorld` branch; `_onReset` invalidates it |
 | content placement | `client/conjure-client.js` `_placeContent` |
 | recovery | `client/conjure-client.js` `_recoverMissing` |
@@ -1059,7 +1066,7 @@ on are pinned in `space-snap.test.js` instead (the `Tmat⁻¹` round-trip).
 
 **Tests:** `tests/js/space-snap.test.js` (synthetic rooms plus `fixtures/golden-space.json`, a real
 45-surface two-room Quest capture), `tests/js/plane-anchor.test.js`, `tests/js/world-model.test.js`,
-`tests/test_plane_anchor.py`, `tests/test_geometry_log.py`.
+`tests/js/surface-overlay.test.js`, `tests/test_plane_anchor.py`, `tests/test_geometry_log.py`.
 
 ---
 
