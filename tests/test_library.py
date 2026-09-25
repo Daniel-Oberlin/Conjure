@@ -405,9 +405,37 @@ def test_supersession_refuses_the_two_cases_that_would_lose_data(tmp_path):
     assert lib.get("a.glb")["superseded_by"] is None
 
 
-def test_migration_v4_to_v8_preserves_data_reworks_scope_and_adds_public(tmp_path):
-    """A schema bump must ALTER, never DROP — and v4→v8 cumulatively adds transparent (v5), the public
-    flag and user-first scope (v6), many-to-many ownership (v7), and the supersession tombstone (v8)."""
+def test_migration_v8_to_v9_backfills_embed_provenance_from_the_old_kind_test(tmp_path):
+    """v9 records what a vector was derived from, because the index had been inferring it from the
+    asset's kind. The backfill has to reproduce the old inference exactly, or the first reindex after
+    the upgrade would clear vectors the previous one kept."""
+    import sqlite3
+    path = tmp_path / "library.db"
+    raw = sqlite3.connect(str(path))
+    raw.execute("CREATE TABLE assets (id TEXT PRIMARY KEY, kind TEXT, label TEXT, filename TEXT, "
+                "scope TEXT, notes TEXT, public INTEGER, transparent INTEGER, superseded_by TEXT, "
+                "embed_model TEXT, embed_dim INTEGER)")
+    for i, (aid, kind, em) in enumerate((("pic.png", "image", "siglip"),      # visual + embedded
+                                         ("old.glb", "model", "siglip"),      # the title vectors v9 keeps sweeping
+                                         ("bare.glb", "model", None))):       # never embedded → no provenance
+        raw.execute("INSERT INTO assets (id, kind, embed_model) VALUES (?,?,?)", (aid, kind, em))
+    raw.execute("PRAGMA user_version = 8")
+    raw.commit()
+    raw.close()
+
+    lib = AssetLibrary(path)
+    assert lib._db.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert lib.get("pic.png")["embed_from"] == "image"
+    assert lib.get("old.glb")["embed_from"] == "text"
+    assert lib.get("bare.glb")["embed_from"] is None, "no vector, nothing to say about its provenance"
+    # The sweep sees exactly what the kind test used to see, so the upgrade itself moves nothing.
+    assert [a["id"] for a in lib.embedded_from_text()] == ["old.glb"]
+
+
+def test_migration_v4_to_v9_preserves_data_reworks_scope_and_adds_public(tmp_path):
+    """A schema bump must ALTER, never DROP — and v4→v9 cumulatively adds transparent (v5), the public
+    flag and user-first scope (v6), many-to-many ownership (v7), the supersession tombstone (v8), and
+    embedding provenance (v9)."""
     import sqlite3
     path = tmp_path / "library.db"
     raw = sqlite3.connect(str(path))
@@ -426,7 +454,8 @@ def test_migration_v4_to_v8_preserves_data_reworks_scope_and_adds_public(tmp_pat
     assert rec["public"] == 1                                      # v5→v6 flag, default public
     assert rec["scope"] == "daniel/agents/builder"                 # v5→v6 user-first scope rewrite
     assert rec["superseded_by"] is None                             # v7→v8 tombstone column
-    assert lib._db.execute("PRAGMA user_version").fetchone()[0] == 8
+    assert rec["embed_from"] is None                                # v8→v9: never embedded, so unset
+    assert lib._db.execute("PRAGMA user_version").fetchone()[0] == 9
     # v6→v7: the single owner is backfilled as the first row, so nothing changes for anyone until a
     # second owner is granted.
     owners = lib._db.execute("SELECT scope FROM asset_scopes WHERE asset_id='keep.png'").fetchall()

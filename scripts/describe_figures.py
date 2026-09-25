@@ -161,7 +161,9 @@ def main() -> int:
         if notes:
             lib.upsert(r["id"], notes=notes)
         if vector is not None and embedder is not None:
-            lib.add_embedding(r["id"], vector, embedder.name)
+            # A render of the figure, so an image vector on the same scale as every other one — which
+            # is why it survives a reindex despite living on a `model` row (specs/library.md §6).
+            lib.add_embedding(r["id"], vector, embedder.name, source="image")
         wrote += 1
 
     print(f"\n{wrote} figure(s) written" if args.commit and not args.list else

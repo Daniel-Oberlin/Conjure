@@ -40,7 +40,7 @@ except Exception:                     # noqa: BLE001
 # Bump when the schema changes, and add a branch to _migrate() to upgrade existing data in place
 # (ALTER, not DROP — captions/embeddings/curation aren't recoverable from the cache bytes). The
 # destructive rebuild is a last resort for a fresh or unrecognised DB only.
-_SCHEMA_VERSION = 8
+_SCHEMA_VERSION = 9
 
 # faces/persons are reserved now (sub-image entities + named clusters) so the NAS seam is honest;
 # they stay empty until the NAS ingestion subsystem (Phase 5) populates them.
@@ -67,6 +67,9 @@ CREATE TABLE IF NOT EXISTS assets (
   notes TEXT, tags TEXT,           -- USER CURATION (FTS-indexed): "my favorite city skybox", keywords
   rating INTEGER, favorite INTEGER,-- ⭐ 0–5 / boolean — filter & rank
   embed_model TEXT, embed_dim INTEGER,   -- which model/space this asset's vector is in (Phase 1)
+  embed_from TEXT,                       -- "image" | "text": what the vector was DERIVED from, which is
+                                         -- the question the index cares about. NOT the asset's kind — a
+                                         -- model with a rendered thumbnail is an image vector (see v9)
   -- The id of the asset that REPLACED this one. An id is a content address, so re-converting a capture
   -- with a fixed converter yields different bytes and therefore a different row; this is how the old
   -- one steps aside. A TOMBSTONE, never a deletion: the bytes are still on disk and a world that placed
@@ -197,6 +200,17 @@ class AssetLibrary:
                              (f"{DEFAULT_USER}/agents/",))
         if ver <= 7 and "superseded_by" not in cols:     # v7 → v8: re-import leaves a tombstone
             self._db.execute("ALTER TABLE assets ADD COLUMN superseded_by TEXT")
+        if ver <= 8 and "embed_from" not in cols:        # v8 → v9: vectors record their PROVENANCE
+            # The index has always wanted to hold image-derived vectors only, and asked the asset's KIND
+            # instead — a fine proxy while only visual kinds had vectors, and wrong the moment a figure
+            # got a rendered thumbnail: `reindex` then deleted the embedding `describe_figures --embed`
+            # had just made, silently, every run. Backfill with the old proxy so nothing moves today.
+            self._db.execute("ALTER TABLE assets ADD COLUMN embed_from TEXT")
+            if "embed_model" in cols:                    # a pre-embedding catalog has nothing to backfill
+                self._db.execute(
+                    "UPDATE assets SET embed_from = CASE WHEN kind IN ('image','skybox',"
+                    "'grounded_skybox','photo') THEN 'image' ELSE 'text' END "
+                    "WHERE embed_model IS NOT NULL")
         if ver <= 6:                                     # v6 → v7: ownership becomes many-to-many
             self._db.executescript(
                 "CREATE TABLE IF NOT EXISTS asset_scopes ("
@@ -410,9 +424,16 @@ class AssetLibrary:
             f"embedding float[{dim}])")
         self._db.execute("INSERT INTO vec_meta (dim) VALUES (?)", (dim,))
 
-    def add_embedding(self, id: str, vector: list[float], model: str) -> None:
+    def add_embedding(self, id: str, vector: list[float], model: str, *, source: str = "image") -> None:
         """Store an asset's embedding (expects an already-normalized vector) and record its space
-        (`embed_model`/`embed_dim`). No-op if sqlite-vec isn't available or the vector is empty."""
+        (`embed_model`/`embed_dim`) and its provenance (`embed_from`). No-op if sqlite-vec isn't
+        available or the vector is empty.
+
+        `source` is what the vector was made FROM — "image" for anything embedded from pixels, including
+        a model's rendered thumbnail, and "text" for a vector derived from words. The index holds image
+        vectors only, and this is how it knows; an asset's kind cannot answer it (specs/library.md §6)."""
+        if source not in ("image", "text"):
+            raise ValueError(f"embed source must be 'image' or 'text', not {source!r}")
         if not self._vec or not vector:
             return
         with self._lock:
@@ -422,8 +443,8 @@ class AssetLibrary:
             self._db.execute("DELETE FROM assets_vec WHERE asset_id=?", (id,))
             self._db.execute("INSERT INTO assets_vec (asset_id, kind, embedding) VALUES (?,?,?)",
                              (id, kind, serialize_float32(vector)))
-            self._db.execute("UPDATE assets SET embed_model=?, embed_dim=? WHERE id=?",
-                             (model, len(vector), id))
+            self._db.execute("UPDATE assets SET embed_model=?, embed_dim=?, embed_from=? WHERE id=?",
+                             (model, len(vector), source, id))
             self._db.commit()
 
     def vector_search(self, query_vec: list[float], *, kind: Optional[str] = None,
@@ -529,14 +550,20 @@ class AssetLibrary:
             q = (f"SELECT * FROM assets WHERE (label IS NULL OR label='') AND kind IN ({ph})")
             return [dict(r) for r in self._db.execute(q, list(kinds)).fetchall()]
 
-    def embedded_nonvisual(self, visual_kinds) -> list[dict]:
-        """Embedded assets whose kind is NOT visual — i.e. vectors that don't belong in the (image)
-        index. Text-derived vectors (e.g. model titles) sit at a different similarity scale and would
-        dominate a text query, so they're cleared out (see plan §1)."""
-        ph = ",".join("?" for _ in visual_kinds)
+    def embedded_from_text(self) -> list[dict]:
+        """Embedded assets whose vector was derived from WORDS — the ones that don't belong in the
+        image index. Text-derived vectors (e.g. earlier model titles) sit at a different similarity
+        scale and would dominate a text query, so they're cleared out (see plan §1).
+
+        This asks provenance, not kind. Asking the kind cost us the figure embeddings: a rendered
+        thumbnail is an image vector on a model row, so a kind test swept away exactly the vectors
+        `describe_figures --embed` exists to create. A row embedded before v9 carries the backfill's
+        best guess, which IS the old kind test — so this returns the same set until something new is
+        embedded."""
         with self._lock:
-            q = f"SELECT id, kind FROM assets WHERE embed_model IS NOT NULL AND kind NOT IN ({ph})"
-            return [dict(r) for r in self._db.execute(q, list(visual_kinds)).fetchall()]
+            q = ("SELECT id, kind FROM assets "
+                 "WHERE embed_model IS NOT NULL AND COALESCE(embed_from, 'text') != 'image'")
+            return [dict(r) for r in self._db.execute(q).fetchall()]
 
     def retag_skyboxes(self, min_aspect: float = 1.9) -> int:
         """Backfill cleanup: an early backfill couldn't tell a skybox `.png` from a regular image, so
@@ -734,7 +761,8 @@ class AssetLibrary:
                     self._db.execute("DELETE FROM assets_vec WHERE asset_id=?", (id,))
                 except sqlite3.OperationalError:
                     pass                       # assets_vec not created yet — nothing to delete
-            self._db.execute("UPDATE assets SET embed_model=NULL, embed_dim=NULL WHERE id=?", (id,))
+            self._db.execute("UPDATE assets SET embed_model=NULL, embed_dim=NULL, embed_from=NULL "
+                             "WHERE id=?", (id,))
             self._db.commit()
 
     def search(self, text: Optional[str] = None, *, kind: Optional[str] = None,

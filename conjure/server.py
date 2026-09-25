@@ -521,8 +521,10 @@ def _embed_now(id: str, *, image: bytes | None = None, text: str | None = None) 
     if embedder is None:
         return
     try:
+        # The branch that made the vector is the only thing that knows what it was made from, so it
+        # is the thing that records it — rather than the index inferring it from the row afterwards.
         vec = embedder.embed_image(image) if image is not None else embedder.embed_text(text or "")
-        library.add_embedding(id, vec, embedder.name)
+        library.add_embedding(id, vec, embedder.name, source="image" if image is not None else "text")
     except Exception as exc:  # noqa: BLE001
         print(f"[conjure] embed failed for {id}: {exc}")
 
@@ -2632,13 +2634,21 @@ async def worlds_rename(req: WorldRenameRequest) -> dict:
 
 
 @app.post("/space/rename")
-async def space_rename(req: SpaceRenameRequest) -> dict:
+async def space_rename(req: SpaceRenameRequest, request: Request) -> dict:
     """Give one of YOUR spaces a human name. The file key (`space-1`) is its permanent id and never
     changes, so worlds pointing at it — including other users' worlds, which we may not rewrite — are
-    untouched."""
+    untouched.
+
+    Space-owner gated, like `/room/name` and `/space/visibility`: `owner` rides in the body and so
+    cannot certify anyone, and the space record is the one thing here a guest has no claim on. A
+    missing caller header is trusted-local, mirroring `_owner_only_writes`. Renaming strands nothing,
+    so the damage was confusion rather than corruption — but it was still anybody's to do."""
     if spaces is None:
         return {"ok": False, "error": "no space store"}
     owner = req.owner or active_space_owner
+    caller = request.headers.get("X-Conjure-User")
+    if caller and owner and caller != owner:
+        return {"ok": False, "error": f"{owner} owns this space — only they can rename it"}
     try:
         sid = spaces.rename(owner, req.name or active_space, req.new_name)
     except ValueError as exc:
@@ -4253,10 +4263,14 @@ async def library_reindex(req: ReindexRequest) -> dict:
     path; returns how many were queued."""
     if embedder is None:
         return {"ok": False, "error": "no embedder — install the optional 'embed' dependency group"}
-    # Self-healing: the vector index should hold exactly the VISUAL assets. Clear any text-derived
-    # vectors that crept in (e.g. earlier model-title embeddings), then embed visual assets missing one.
+    # Self-healing: the vector index should hold exactly the IMAGE-DERIVED vectors. Clear any text-derived
+    # ones that crept in (e.g. earlier model-title embeddings), then embed visual assets missing one.
+    #
+    # Clearing asks provenance and embedding asks kind, and the asymmetry is the point. A figure's vector
+    # comes from a Blender render via `describe_figures --embed`, so it BELONGS here and must survive —
+    # but this endpoint cannot make one, having no thumbnail to embed, so `model` stays out of the targets.
     cleared = 0
-    for a in library.embedded_nonvisual(_VISUAL_KINDS):
+    for a in library.embedded_from_text():
         library.clear_embedding(a["id"])
         cleared += 1
     targets = [a for a in library.assets_missing_embedding(kind=req.kind) if a["kind"] in _VISUAL_KINDS]
