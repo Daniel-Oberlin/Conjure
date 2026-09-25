@@ -252,3 +252,27 @@ test("grasp is the WEAKEST finger, not the average", () => {
   assert.ok(all > 0.7, `all four curled ${all}`);
   assert.ok(allButOne < 0.05, `one finger out is not a grasp, whatever the other three say (${allButOne})`);
 });
+
+test("`beam_timeout = 0` arms for the PULLING FRAME, not for no frames at all", () => {
+  // The knob means "no lingering — show the beam only while I hold the trigger". It meant the
+  // opposite: `armedUntil` was set to the build's own timestamp, and `nowMs()` is a fresh reading, so
+  // by the time the beam asked — same frame, a few hundred microseconds later — the deadline had
+  // already passed. No beam at any pull, and no highlight either, since `grab` gates on the same
+  // signal. `<=` would not have helped; a deadline cannot express "this frame", so the pull is
+  // stamped with its frameId as well.
+  window.CONJURE_BEAM_MS = 0;
+  try {
+    assert.ok(pointers({ gamepads: [pad({ 0: 1 })] }).all[0].armed(), "a pulled trigger shows a beam");
+    assert.ok(!pointers({ gamepads: [pad({})] }).all[0].armed(), "and releasing it takes the beam away");
+  } finally { delete window.CONJURE_BEAM_MS; }
+});
+
+test("a non-zero `beam_timeout` still LINGERS across frames", () => {
+  // The other half of the same fix: the frame stamp carries the zero case and must not swallow the
+  // deadline, or a momentary release mid-grab flickers the beam off — the thing the linger exists for.
+  window.CONJURE_BEAM_MS = 10000;
+  try {
+    assert.ok(pointers({ gamepads: [pad({ 0: 1 })] }).all[0].armed());
+    assert.ok(pointers({ gamepads: [pad({})] }).all[0].armed(), "still lit a frame after the release");
+  } finally { delete window.CONJURE_BEAM_MS; }
+});

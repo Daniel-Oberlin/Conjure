@@ -1935,8 +1935,14 @@ def test_every_geometry_and_scene_write_is_gated(srv, client):
     exact strings — so renaming a route without updating the set silently ungates it instead of
     404ing. The route-inventory test above would not notice; this does."""
     for p in ("/patch", "/reset", "/space/capture", "/space/realign", "/style_surface",
-              "/texture_surface", "/place_asset", "/place_image", "/set_skybox", "/manipulate"):
+              "/texture_surface", "/show_surface", "/place_asset", "/place_image", "/set_skybox",
+              "/manipulate"):
         assert p in srv._OWNER_ONLY_PATHS, f"{p} is a write but is not owner-gated"
+    # The three surface tools resolve the same targets through `_surface_targets` and mutate the same
+    # entities, so they gate together or the weakest one is the gate. `/show_surface` shipped ungated
+    # for exactly that reason: it gained the shared vocabulary when matching moved server-side, and
+    # nothing here asked whether it had gained the shared gate too.
+    assert {"/style_surface", "/texture_surface", "/show_surface"} <= srv._OWNER_ONLY_PATHS
     # every gated path must actually be a registered route — a typo would gate nothing
     routes = {r.path for r in srv.app.routes}
     assert srv._OWNER_ONLY_PATHS <= routes, f"gated but unrouted: {srv._OWNER_ONLY_PATHS - routes}"
@@ -1945,6 +1951,10 @@ def test_every_geometry_and_scene_write_is_gated(srv, client):
 def test_guest_cannot_edit_the_world_but_reads_are_open(srv, client):
     # the reported bug: a guest styling a surface in the owner's world → still 403 (edit-rights follow ownership)
     assert client.post("/style_surface", json={"target": "door", "color": "blue"},
+                       headers={"X-Conjure-User": "bob"}).status_code == 403
+    # hiding one is the same edit by another name — a guest who can blank the owner's walls has edited
+    # the world, whatever the verb says
+    assert client.post("/show_surface", json={"target": "wall", "visible": False},
                        headers={"X-Conjure-User": "bob"}).status_code == 403
     # but reads/listing stay open to guests
     assert client.post("/worlds/list", json={}, headers={"X-Conjure-User": "bob"}).status_code == 200

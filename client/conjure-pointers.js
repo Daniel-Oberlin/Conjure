@@ -164,6 +164,7 @@
   var captured = {};           // key → owner, until released
   var reserved = {};           // key → {owner, f}
   var armedUntil = {};         // key → ms; a pointer is "in use" until then (see armed())
+  var armedFrame = {};         // key → frameId of the last pull; carries the zero-linger case (see armed())
 
   // Diagnostics → console + temp/conjure.log, like [water]/[grab]. This layer failing silently is
   // indistinguishable from "no controllers in range", and every module downstream goes dead with it, so it
@@ -236,12 +237,16 @@
     var linger = +window.CONJURE_BEAM_MS; if (!(linger >= 0)) linger = 0;
     var tNow = nowMs();
     out.forEach(function (p) {
-      if (p.value("select") >= thresh || p.anyActive()) armedUntil[p.key] = tNow + linger;
+      if (p.value("select") >= thresh || p.anyActive()) {
+        armedUntil[p.key] = tNow + linger; armedFrame[p.key] = frameId;
+      }
     });
     // Drop edge state for pointers that vanished, so a reconnect doesn't inherit a stale "held".
     var live = {};
     out.forEach(function (p) { live[p.key] = p.ctrl; });
-    for (var k in prev) if (!live[k]) { delete prev[k]; delete captured[k]; delete reserved[k]; delete armedUntil[k]; }
+    for (var k in prev) if (!live[k]) {
+      delete prev[k]; delete captured[k]; delete reserved[k]; delete armedUntil[k]; delete armedFrame[k];
+    }
     var was = {};
     for (var k2 in prev) was[k2] = prev[k2];
     out.forEach(function (p) { p._was = was[p.key] || null; p._all = out; });
@@ -309,7 +314,14 @@
       // action, and lingering after (config: CONJURE_BEAM_TRIGGER / CONJURE_BEAM_MS). Lives here rather
       // than in the beam so PRESENTATION and FOCUS agree: a highlight box shouldn't appear on an object
       // when there's no visible pointer aimed at it.
-      armed: function () { return nowMs() < (armedUntil[key] || 0); },
+      //
+      // The frame test carries the zero-linger case and the deadline carries the rest. `nowMs()` is a
+      // fresh reading on every call, so with a linger of 0 the deadline is `tNow` — already in the past
+      // by the time the beam asks, a few hundred microseconds later in the same frame. A deadline
+      // comparison cannot express "this frame" at all; `<=` would not have saved it. So the pull is
+      // ALSO stamped with its frameId, which makes `beam_timeout = 0` mean the pulling frame, as both
+      // the spec (input.md §5) and config.py's comment have always said it does.
+      armed: function () { return armedFrame[key] === frameId || nowMs() < (armedUntil[key] || 0); },
       // Is ANY bound action engaged? Lets presentation (the beam) follow intent without knowing which.
       anyActive: function () {
         var b = bindings();

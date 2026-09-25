@@ -432,10 +432,13 @@ class AssetLibrary:
         order) and `match="vector"`. Empty list if vectors aren't available/populated. The reuse-tier
         layer (Phase 2) maps distance → strong/weak/none. If `scope` is given, results are limited to
         the caller's own scope ∪ `public=1` (visibility lives on the row, not the vector index, so we
-        over-fetch KNN and filter — specs/agents.md §2.2)."""
+        over-fetch KNN and filter — specs/agents.md §2.2). Tombstones are filtered the same way and for
+        the same reason: `supersede` leaves the vector row in place so `revive` costs nothing, which
+        means the index outlives the tombstone and only the row knows."""
         if not self._vec or not query_vec:
             return []
-        k = limit if scope is None else limit * 4       # over-fetch so private rows don't crowd out visible ones
+        k = limit * 4                                   # over-fetch: tombstoned and invisible rows are
+                                                        # dropped below, so KNN must have spares either way
         with self._lock:
             if self._db.execute("SELECT dim FROM vec_meta LIMIT 1").fetchone() is None:
                 return []
@@ -447,6 +450,8 @@ class AssetLibrary:
             for h in hits:
                 a = self._db.execute("SELECT * FROM assets WHERE id=?", (h["id"],)).fetchone()
                 if a:
+                    if a["superseded_by"] is not None:
+                        continue                        # retired — reachable by id and by nothing else
                     if scope is not None and agent_of(a["scope"] or "") != agent_of(scope):
                         continue                        # different agent — hard wall (even if public)
                     if scope is not None and a["scope"] != scope and not a["public"]:

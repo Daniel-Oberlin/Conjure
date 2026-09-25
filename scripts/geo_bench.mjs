@@ -7,8 +7,17 @@
 // measurement, and it stayed unmeasured long enough to be worth fixing.
 //
 // WHAT THIS COVERS: the pure JS added to every capture — heightCensus, levelDeviation over every surface,
-// and floatingRoom. That is the whole steady-state addition; explainNoMatch runs only on a miss, and the
+// and roomResiduals. That is the whole steady-state addition; explainNoMatch runs only on a miss, and the
 // log's fetch is batched on a timer rather than per event.
+//
+// `roomResiduals` replaced `floatingRoom` in the rooms work (cf1af36) and is not a rename: the old one
+// read per-surface height deviations and returned a correction to apply, the new one reads the
+// REGISTRATION's own residuals per room and reports a displacement it deliberately never applies. So it
+// needs inputs the detector did not — the residuals register() already computed, and a room map — and
+// those are built once below as setup rather than timed. register() and segmentRooms() are excluded on
+// purpose: both are the capture doing its own job, not the log's overhead. This script called the old
+// name for three weeks after it was deleted and simply threw, which is the sort of thing a benchmark
+// nobody runs on a schedule does quietly.
 //
 // WHAT IT DOES NOT COVER, and why the on-device A/B is still the real test: a Quest's CPU is several times
 // slower than a laptop's, and this measures none of the browser-side cost (the fetch, JSON.stringify of a
@@ -35,7 +44,7 @@ const RX90 = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0),
 
 // A capture built from the stored room, displaced the way the field fault displaces it — so the detector
 // does its full job (finds a room, builds a membership set) rather than bailing early on the cheap path.
-const seed = {}, basis = [], live = {}, surfaces = [];
+const seed = {}, basis = [], live = {}, surfaces = [], ref = [], cur = [];
 for (const e of doc.surfaces) {
   const m = e.meta || {}, sem = m.semantic, t = e.transform || {};
   const p = t.position, rot = t.rotation || [0, 0, 0];
@@ -53,7 +62,18 @@ for (const e of doc.surfaces) {
     _lq: new THREE.Quaternion()
       .setFromEuler(new THREE.Euler(rot[0] * D2R, rot[1] * D2R, rot[2] * D2R, "YXZ")).multiply(RX90),
   });
+  // The same pair in the form register() reads: the stored constellation, and the displaced capture.
+  ref.push(RS.surfaceToRef(THREE, e));
+  cur.push(RS.surfaceToRef(THREE, { ...e, transform: { ...t, position: [p[0], y, p[2]] } }));
 }
+
+// SETUP, not measured. The residuals fall out of the lock the capture performs anyway, and the room map
+// is the segmentation the room model needs regardless of whether anything is being logged.
+const reg = RS.register(THREE, cur, ref);
+const residuals = reg.residuals || [];
+const seg = RS.segmentRooms(THREE, surfaces);
+const roomOf = {};
+seg.rooms.forEach((rm) => rm.ids.forEach((id) => { roomOf[id] = rm.floor; }));
 
 function capture() {                                     // exactly what a capture adds, in order
   const cen = RS.heightCensus(THREE, surfaces);
@@ -61,16 +81,20 @@ function capture() {                                     // exactly what a captu
   cen.floors.concat(cen.ceilings).forEach((f) => { flat[f.id] = f.y; });
   const dev = {};
   WM.levelDeviation(live, seed, basis).forEach((d) => { dev[d.id] = d.dev; });
-  const fix = RS.floatingRoom(THREE, surfaces, dev, { minM: 0.04 });
-  return { cen, flat, dev, fix };
+  const rows = RS.roomResiduals(THREE, residuals, ref, roomOf);
+  return { cen, flat, dev, rows };
 }
 
-const { cen, fix } = capture();
+const { cen, rows } = capture();
+const moved = rows.filter((r) => r.dy != null && Math.abs(r.dy) > 0.04);
 console.log(`space   : ${SPACE}`);
 console.log(`surfaces: ${surfaces.length}  (${cen.floors.length} floors, ${cen.ceilings.length} ceilings, `
   + `${cen.walls.length} walls, ${cen.insets.length} insets)`);
-console.log(`detector: ${fix ? `corrects ${fix.floor} by ${(fix.offset * 1000).toFixed(0)} mm, `
-  + `${fix.ids.length} surfaces` : "no correction (fixture did not reproduce the fault)"}`);
+console.log(`register: ${reg.stat}, cov ${reg.cov}, ${residuals.length} residuals over `
+  + `${seg.rooms.length} room(s)`);
+console.log(`rooms   : ${rows.length} reported` + (moved.length
+  ? `, ${moved.map((r) => `${r.room} dy ${(r.dy * 1000).toFixed(0)} mm`).join(", ")}`
+  : " (fixture did not reproduce the fault)"));
 
 for (let i = 0; i < 2000; i++) capture();                // warm the JIT
 const N = 20000, t0 = process.hrtime.bigint();
