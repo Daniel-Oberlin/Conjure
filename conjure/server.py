@@ -3195,6 +3195,34 @@ def _reanchor_moved_content_ops(applied_ops: list[dict]) -> list[dict]:
     return out
 
 
+def _fill_real_surface_ops(ops: list[dict]) -> list[dict]:
+    """Make a recolour of a real surface actually show, whatever named it.
+
+    A real surface's fill only draws when `material.visible` is explicitly true — otherwise it falls back
+    to the global default, which is FALSE in AR (client `applyRealVisibility`). So a bare colour change
+    lands on a hidden mesh: the patch succeeds, the tool reports success, and nothing appears.
+    `style_surface` avoids that by always setting visible and clearing `src` alongside the colour.
+
+    This runs AFTER `_resolve_op_ids`, which is the whole point. The test has to be "is the thing I am
+    about to change a real surface", and the caller only has the phrase the user typed — `update_entity`
+    asked whether the TARGET was an exact real-surface id, so `real_wall_4` got the treatment and
+    `wall 4`, which fans out to every wall, did not. Same tool, same intent, invisible difference.
+
+    An explicit `visible` or `src` in the same op is left alone: hiding a surface while recolouring it is
+    a coherent thing to ask for, and this exists to complete an instruction, not to overrule one."""
+    for op in ops:
+        s = op.get("set") or {}
+        if op.get("op") != "update" or "components.material.color" not in s:
+            continue
+        e = next((x for x in store.doc["entities"] if x.get("id") == op.get("id")), None)
+        if not e or not (e.get("meta") or {}).get("real"):
+            continue
+        s.setdefault("components.material.visible", True)
+        s.setdefault("components.material.src", "")      # clear any texture so the colour shows
+        op["set"] = s
+    return ops
+
+
 @app.post("/patch")
 async def post_patch(patch: Patch) -> dict:
     ops: list[dict] = []
@@ -3208,6 +3236,7 @@ async def post_patch(patch: Patch) -> dict:
                 ops.extend({**op, "id": i} for i in ids)
                 continue
         ops.append(op)
+    ops = _fill_real_surface_ops(ops)
     applied = store.apply_patch(ops, origin=patch.origin)
     # A move/rotate of anchored content must re-author its anchor (§7c) or the client reverts it next capture.
     reanchor = _reanchor_moved_content_ops(applied["ops"])

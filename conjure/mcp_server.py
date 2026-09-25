@@ -451,17 +451,6 @@ def _reason(out: dict) -> str:
     return err
 
 
-async def _is_real_surface(id: str) -> bool:
-    """Is this entity id a captured real surface? Keyed on `meta.real`, the authoritative marker — the
-    `real_…` id prefix is a convention, not a guarantee. Returns False if the world can't be read: a
-    lookup failure must not turn an ordinary entity update into a no-op."""
-    try:
-        doc = await _get("/world")
-    except Exception:  # noqa: BLE001 — world unreachable; the patch below will surface the real error
-        return False
-    return any(e.get("id") == id and (e.get("meta") or {}).get("real") for e in doc.get("entities", []))
-
-
 @mcp.tool()
 async def show_surface(target: str, visible: bool = True, room: Optional[str] = None) -> str:
     """Show or hide real surface(s) as virtual geometry. target: a surface id ('real_wall_1'),
@@ -1682,18 +1671,15 @@ async def update_entity(
         changes["transform.scale"] = scale
     if not changes:
         return "No changes specified."
-    note = ""
-    if color is not None and await _is_real_surface(id):
-        # A real surface's fill only draws when material.visible is explicitly true — otherwise it
-        # falls back to the global default, which is FALSE in AR (client applyRealVisibility). So a
-        # bare colour change lands on a hidden mesh: the patch succeeds, the tool reports success, and
-        # nothing whatsoever appears. `style_surface` avoids this by always setting visible first
-        # (server.style_surface); do the same here rather than report a change nobody can see.
-        changes["components.material.visible"] = True
-        changes["components.material.src"] = ""      # clear any texture so the colour shows
-        note = (" (a real surface, so it was also made visible and any texture cleared — "
-                "style_surface is the direct route for this)")
     patch = await _post_patch([{"op": "update", "id": id, "set": changes}])
+    # The visible/clear-texture treatment a real surface needs is applied SERVER-side, after the target
+    # is resolved (`_fill_real_surface_ops`) — deciding it here meant deciding it from the phrase the
+    # user typed, which is why `real_wall_4` worked and `wall 4` silently did not. Read back what was
+    # actually done so the note describes the surfaces hit rather than the name used.
+    hit = [o for o in patch.get("ops", [])
+           if (o.get("set") or {}).get("components.material.visible") is True]
+    note = (f" ({len(hit)} real surface(s), so they were also made visible and any texture cleared — "
+            f"style_surface is the direct route for this)") if hit else ""
     return f"Updated {id!r}: {changes}. World rev {patch['rev']}.{note}"
 
 

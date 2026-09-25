@@ -194,12 +194,18 @@ So `style_surface` always sets `material.visible = True` and clears `material.sr
 without that the patch applies, the tool reports success, and nothing changes on screen. An opacity below
 1 also sets `material.transparent`.
 
-The generic `update_entity` is the trap: it sets only the fields it is given. It now applies the same
-three-field treatment when its target carries `meta.real` and a colour is being set, and says so in its
-result — because a tool that reports success for an invisible change is worse than one that refuses.
-Recolouring a captured surface **by its id** through either tool is therefore safe; `style_surface`
-remains the direct route, the only one that takes an opacity, and the only one whose target may be a
-semantic, a friendly id or a room.
+The generic `update_entity` is the trap: it sets only the fields it is given. The same three-field
+treatment is therefore applied to any colour change landing on an entity that carries `meta.real`, and
+the result says so — because a tool that reports success for an invisible change is worse than one that
+refuses. Recolouring a captured surface through either tool is safe; `style_surface` remains the direct
+route and the only one that takes an opacity.
+
+**The treatment is applied server-side in `/patch`, after `_resolve_op_ids`** (`_fill_real_surface_ops`),
+which is what makes it hold for *every* way of naming a target. Deciding it in the caller meant deciding
+it from the string the user typed: an exact id was recognised, and `wall 4` — which fans out to one op
+per matching surface — was not, so the same instruction worked or silently did nothing depending on how
+it was phrased. An explicit `visible` or `src` in the same op is left alone, since hiding a surface while
+recolouring it is a coherent request; the rule completes an instruction rather than overruling one.
 
 ### 4.1 Mounting onto a surface
 
