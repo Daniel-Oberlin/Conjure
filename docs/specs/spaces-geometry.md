@@ -679,7 +679,9 @@ neither can change a match or lose data by firing:
 - **Refuse a wholesale prune.** A post deleting more than half an *established* space is likelier a bug
   than a room that lost half its surfaces. The size floor (`_PRUNE_GUARD_MIN`) matters as much as the
   ratio: a room's structural shell alone is six surfaces, so below that a space is not established and
-  losing most of it is ordinary. A coarse backstop only — it would **not** have caught 2026-09-09, which
+  losing most of it is ordinary. The floor sits at **8**, two above that shell, because a space holding
+  exactly its six walls is still mid-capture and guarding it would refuse the ordinary churn of a room
+  still being discovered. A coarse backstop only — it would **not** have caught 2026-09-09, which
   pruned 25 of 86 (~29%).
 
 Both log `seed.prune_refused`, and only when something was actually refused.

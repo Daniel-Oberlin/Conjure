@@ -752,6 +752,12 @@ spells them, because `vrm_humanoid` already hands us `leftIndexProximal` from a 
 block. Kept out of `CORE_BONES`, which is what a map is JUDGED on — most rigs are missing some finger or
 other, and folding them in would report thirty bones missing on a figure whose body map is perfect.
 
+**52 and 51 are both right, and count different things.** 52 is what a map may *contain*: 22 core names
+plus the 30 fingers. 51 is `CORE_BONES`' 21 plus the 30 — the set §8e and §12 quote. The odd one out is
+`upperChest`, which every convention table maps and which carries joint limits, `_CHAINS` and
+`TRUNK_BONES`, but which stays out of `CORE_BONES` for the same reason the fingers do: plenty of rigs
+have no such vertebra, and judging a map on one would fail figures whose spine is fine.
+
 **A finger cannot be squared up against a BODY axis.** A hand turns freely at the wrist, so no fixed
 body direction stays perpendicular to a finger: measured, the best body axis available still reads 0.966
 against one rig's index finger and 0.996 against another's thumb, either of which is a degenerate frame.

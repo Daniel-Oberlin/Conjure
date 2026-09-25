@@ -244,7 +244,8 @@ Amend by observation, not imagination: add the mis-hearing you actually saw in t
 
 ## 6. How tests stay off a real home
 
-Two independent mechanisms, deliberately belt-and-braces:
+One mechanism, and an escape hatch for the runs that cannot use it. Only the first has ever run, so this
+is **not** redundancy — an out-of-process test would be the first to exercise the second:
 
 - **Unit tests monkeypatch the resolved constants** (`server.ASSET_CACHE`, `server.SESSION_PTR`,
   `config.AGENTS_PATH`, …) straight to a `tmp_path`. This **bypasses resolution entirely**, so a real

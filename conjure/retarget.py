@@ -39,7 +39,8 @@ Measured by `scripts/retarget_probe.py` over every rigged figure in the catalog:
 0.2–8.7° and whole-body orientation within 11°, against 5.5–89.5° and up to 84° for a naive copy. The
 probe is the specification; this module is the part of it that ships.
 
-**What it cannot carry.** The humanoid names 22 bones and a captured clip drives 222. The other 200 —
+**What it cannot carry.** The humanoid names 22 core bones — `figures.CORE_BONES`' 21 plus `upperChest`,
+which is left out of that tuple because plenty of rigs have no such vertebra — and a captured clip drives 222. The other 200 —
 skirt, breast and secondary chains — have no bone on any other rig to receive them, and they are
 dropped and counted rather than quietly lost.
 """
@@ -64,7 +65,7 @@ from .figures import (FINGER_JOINTS, FINGERS, _local_matrix, best_humanoid,
 #: rule is general: anything derived and cached carries the revision of the code that derived it.
 RETARGET_REV = 8        # 8: the FACE is carried, per bone, gated on measured rest agreement
                         # 7: the OUTPUT interpolates LINEAR — written STEP, it stuttered
-                        # 6: the humanoid reaches the FINGERS, 22 bones -> 52
+                        # 6: the humanoid reaches the FINGERS, 22 core bones -> 52 with them
                         # 5: no `swing` — aligning the rest BODY FRAMES added the rest pose twice
                         # 4: resampling HOLDS the previous keyframe (STEP), not the nearest
                         # 3: a carried translation goes out to WORLD and back, so the armature's UNITS
@@ -531,7 +532,8 @@ class Retargeted:
 
 
 #: Bones whose NAME says they move a face. A name test, and it has to be: the humanoid map covers 51
-#: bones — core plus fingers — and none are facial, so there is no semantic handle to ask for instead.
+#: bones — `CORE_BONES`' 21 plus 30 fingers, 52 on a rig that also maps the optional `upperChest` — and
+#: none of them are facial, so there is no semantic handle to ask for instead.
 #: Three naming families in the corpus (Rigify `DEF-lid.T.L`, Daz `eyelidUpper.L`, CC `lEyelidUpper`)
 #: and these substrings catch all three.
 FACE_HINTS = ("lid", "brow", "lip", "jaw", "cheek", "nose", "eye", "tongue", "teeth", "mouth", "chin")
