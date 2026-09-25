@@ -1308,3 +1308,37 @@ def test_two_containers_sharing_a_file_name_are_both_written(tmp_path):
     assert len(written) == 2 and len(set(written)) == 2, written
     assert sorted(os.path.basename(w) for w in written) == ["Dilda.glb", "Dilda~11.glb"]
     assert any("also named Dilda.glb" in s for s in said), "and it says so"
+
+
+def test_a_builds_memo_dies_with_it_rather_than_aliasing_the_NEXT_build(tmp_path):
+    """The skin-joint and humanoid memos were module-level dicts keyed on `id(build)`. CPython reuses a
+    freed address immediately, so the very next build allocated after one is collected inherits its
+    answers — and `for build_root in find_builds(root)` releases each build before making the next, which
+    is the shape of every bulk compose and rebuild (`compose.py`, `playcanvas_rebuild.py`).
+
+    It surfaced as a suite that failed roughly one run in three, always in `test_compose`'s lifted-figure
+    family, because an inherited "not humanoid" verdict means `_lift_figures` lifts nobody. Same mechanism
+    would hand capture N+1 capture N's skeleton in a bulk run, silently.
+    """
+    import conjure.playcanvas as P
+    assert not hasattr(P, "_SKIN_JOINTS"), "an id()-keyed global is the bug, not the cache"
+    assert not hasattr(P, "_HUMANOID")
+
+    ids = []
+
+    def fresh():
+        b = P.Build(root=str(tmp_path), assets={})
+        ids.append(id(b))
+        return b
+
+    first = fresh()
+    P._skin_joints(first, 7)                     # populates the memo (no file → {} , but it is CACHED)
+    first._humanoid_memo[7] = "vrm"              # a verdict that must not outlive this build
+    assert first._skin_memo and first._humanoid_memo
+    del first
+
+    second = fresh()
+    if ids[0] != ids[1]:
+        pytest.skip("the allocator did not reuse the address this run")
+    assert second._humanoid_memo == {}, "a new build inherited a dead build's humanoid verdict"
+    assert second._skin_memo == {}, "a new build inherited a dead build's skin joints"

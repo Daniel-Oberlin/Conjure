@@ -182,6 +182,14 @@ class Build:
     # `dead_meshes` call Alice's `CC_Base_Eye` dead: the scene draws it, and the template's richer
     # materials merely won the tie-break.
     scene_claims: set = field(default_factory=set)
+    # Memo tables for the two derivations expensive enough to want caching — a container's skin joints
+    # (reads and parses a GLB) and its humanoid verdict (runs the import's whole discovery). They live
+    # ON the build because they are ABOUT the build, and because the obvious alternative is a trap: a
+    # module-level dict keyed on `id(build)` aliases two DIFFERENT builds the moment CPython reuses a
+    # freed address, which is every iteration of `for build_root in find_builds(root)` — the shape of
+    # every bulk compose and rebuild. Keyed by container; lifetime is the build's own.
+    _skin_memo: dict = field(default_factory=dict, repr=False, compare=False)
+    _humanoid_memo: dict = field(default_factory=dict, repr=False, compare=False)
 
     def asset(self, aid) -> dict:
         return self.assets.get(int(aid)) if aid is not None else None
@@ -965,14 +973,10 @@ def _lift_figures(build: Build, entities: dict, thing: Thing) -> tuple[Thing, li
     return rest, figures
 
 
-_SKIN_JOINTS: dict[tuple, dict] = {}
-_HUMANOID: dict[tuple, str] = {}
-
-
 def _skin_joints(build: Build, container: int) -> dict[int, frozenset]:
-    """`{mesh index: joint names}` for every skinned mesh in a container. Cached per build."""
-    key = id(build), int(container)
-    if key not in _SKIN_JOINTS:
+    """`{mesh index: joint names}` for every skinned mesh in a container. Memoised on the build."""
+    key = int(container)
+    if key not in build._skin_memo:
         out: dict[int, frozenset] = {}
         path = build.path(container)
         if path and os.path.exists(path):
@@ -987,8 +991,8 @@ def _skin_joints(build: Build, container: int) -> dict[int, frozenset]:
                 if mesh is not None and skin is not None and skin < len(skins):
                     out.setdefault(int(mesh), frozenset(
                         nodes[j].get("name") for j in skins[skin].get("joints") or [] if j < len(nodes)))
-        _SKIN_JOINTS[key] = out
-    return _SKIN_JOINTS[key]
+        build._skin_memo[key] = out
+    return build._skin_memo[key]
 
 
 def _humanoid(build: Build, container: int) -> str:
@@ -996,8 +1000,8 @@ def _humanoid(build: Build, container: int) -> str:
 
     `figures.best_humanoid` — the import's own test for a character, gated by `validate()`.
     """
-    key = id(build), int(container)
-    if key not in _HUMANOID:
+    key = int(container)
+    if key not in build._humanoid_memo:
         from .figures import best_humanoid                  # noqa: PLC0415 — only when a rig is found
         found = ""
         path = build.path(container)
@@ -1008,8 +1012,8 @@ def _humanoid(build: Build, container: int) -> str:
                 found = (source or "humanoid") if mapping else ""
             except Exception:                            # noqa: BLE001 — unreadable is not a figure
                 found = ""
-        _HUMANOID[key] = found
-    return _HUMANOID[key]
+        build._humanoid_memo[key] = found
+    return build._humanoid_memo[key]
 
 
 def _walk(build: Build, entities: dict, guid: str, scene: str, *, skip: frozenset = frozenset()) -> Thing:
