@@ -1610,6 +1610,76 @@
     return out;
   }
 
+  /**
+   * The reference constellation with each room moved onto where this capture actually found it — the
+   * APPLY half of `roomResiduals`, and the payoff the whole piecewise-rigid argument was for
+   * (docs/plans/rooms.md step 4). Identity only: a refined reference is never persisted, never rendered,
+   * and never reaches `levelDeviation`, whose baseline is valid only because it compares raw seed against
+   * raw live (§10.2).
+   *
+   * **Only the DEVIATION from the common offset is applied, never the whole delta.** Two device days say
+   * why: rooms disagree with each other by a median of 3.2 mm, while a session OPENS at 150–180 mm with
+   * all rooms decaying together on one curve. That common component is the whole space's tracking settling
+   * down — the global fit's own business, and the one thing a per-room refinement must not pretend to
+   * improve. Subtracting the mean makes a whole-space settle a no-op by construction rather than by a
+   * threshold that has to be tuned, and leaves exactly the quantity per-room refinement exists for: one
+   * room displaced while the others are not, which is the raised-floor fault (104 mm, floor and ceiling
+   * agreeing within 1 mm) and was 78.6 mm in one logged session of sixteen.
+   *
+   * `minSpreadM` then asks only whether that remaining disagreement is worth acting on at all. Below it
+   * nothing is touched — and nothing is COPIED either, so a settled space keeps object identity through
+   * this function and the caller's downstream mutation of `_ref` is unaffected.
+   *
+   * A refined ref is a shallow copy carrying `_orig`, so the caller maps its winner back to the real
+   * reference object before mutating it. Rooms whose fit failed a guard (`ok === false`) are left where
+   * they are: a room that cannot be refined must not become a room that fails to register.
+   *
+   * @param {RefSurface[]} refs
+   * @param {Record<string, string>} roomOf                reference surface id → room id
+   * @param {{room: string, dx: number, dz: number, dy: number|null, ok: boolean}[]} rows
+   * @param {{minSpreadM?: number}} [opts]
+   * @returns {{refs: RefSurface[], rooms: Record<string, {dx: number, dz: number, dy: number}>,
+   *            spread: number, common: {dx: number, dz: number, dy: number}}}
+   */
+  function refineRefs(refs, roomOf, rows, opts) {
+    opts = opts || {};
+    var MINS = opts.minSpreadM != null ? opts.minSpreadM : 0.02;
+    var good = (rows || []).filter(function (r) { return r && r.ok; });
+    var none = { refs: refs || [], rooms: {}, spread: 0, common: { dx: 0, dz: 0, dy: 0 } };
+    if (good.length < 2) return none;          // one room is not a disagreement; it IS the global fit
+
+    var cx = 0, cz = 0, cy = 0;
+    good.forEach(function (r) { cx += r.dx; cz += r.dz; cy += (r.dy || 0); });
+    cx /= good.length; cz /= good.length; cy /= good.length;
+
+    /** @type {Record<string, {dx: number, dz: number, dy: number}>} */ var dev = {};
+    var spread = 0;
+    good.forEach(function (r) {
+      var d = { dx: r.dx - cx, dz: r.dz - cz, dy: (r.dy || 0) - cy };
+      dev[r.room] = d;
+      spread = Math.max(spread, Math.hypot(d.dx, d.dz, d.dy));
+    });
+    // The rooms agree; whatever is left belongs to the global fit. Both numbers are still returned —
+    // "how far off is the global solve" and "how far do the rooms disagree" are the two quantities this
+    // decision turns on, and a log that only reports them when something happened cannot show the 94%
+    // of sessions where nothing should.
+    if (spread < MINS) return { refs: refs || [], rooms: {}, spread: spread, common: { dx: cx, dz: cz, dy: cy } };
+
+    var out = (refs || []).map(function (r) {
+      var d = r && r.id ? dev[roomOf[r.id]] : null;
+      if (!d) return r;
+      // Exactly what `matchCost` reads, plus the way back. Copying field-by-field rather than spreading
+      // keeps this honest about its contract with the matcher: anything else a ref carries is reached
+      // through `_orig`, which is the object the caller must mutate.
+      return /** @type {any} */ ({
+        id: r.id, sem: r.sem, ext: r.ext, nyaw: r.nyaw, orient: r.orient,
+        pos: { x: r.pos.x - d.dx, y: r.pos.y - d.dy, z: r.pos.z - d.dz },
+        _orig: r,
+      });
+    });
+    return { refs: out, rooms: dev, spread: spread, common: { dx: cx, dz: cz, dy: cy } };
+  }
+
   // How well does the RECTANGLE we derive from a captured plane fit the polygon the device actually
   // reported? Pass A reduces `plane.polygon` to an axis-aligned bounding box in the plane's own X-Z frame
   // and keeps only its two spans as `extent` (conjure-client Pass A) — the polygon itself is then discarded
@@ -1651,7 +1721,7 @@
   }
 
   return { eulerYXZ: eulerYXZ, yawOf: yawOf, register: register,
-           heightCensus: heightCensus, explainNoMatch: explainNoMatch, explainInsetNoMatch: explainInsetNoMatch, explainInsetMint: explainInsetMint, sameDoorway: sameDoorway, matchCost: matchCost, assignRefs: assignRefs, floorUnder: floorUnder, segmentRooms: segmentRooms, roomLinks: roomLinks, roomResiduals: roomResiduals,
+           heightCensus: heightCensus, explainNoMatch: explainNoMatch, explainInsetNoMatch: explainInsetNoMatch, explainInsetMint: explainInsetMint, sameDoorway: sameDoorway, matchCost: matchCost, assignRefs: assignRefs, floorUnder: floorUnder, segmentRooms: segmentRooms, roomLinks: roomLinks, roomResiduals: roomResiduals, refineRefs: refineRefs,
            polyFit: polyFit, planeCorners: planeCorners,
            canonicalFrame: canonicalFrame, surfaceToRef: surfaceToRef, selectSpace: selectSpace,
            matchRef: matchRef, matchWall: matchWall, matchInset: matchInset, dupInsetIds: dupInsetIds,

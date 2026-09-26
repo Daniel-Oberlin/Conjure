@@ -1609,6 +1609,7 @@
         this._rl = WM.relocInit();  // lost-lock tracking → the passthrough "re-localizing" fallback
         this._lastDiag = null;      // last capture's frame (yaw/px/pz) — for the per-capture drift delta
         this._regRes = null;        // last register()'s per-wall residuals (--debug-registration probe)
+        this._roomOf = null;        // ref id → room id from the LAST segmentation; feeds identity refinement
         this._refSeq = 0;           // counter for minting brand-new surface ids
         // Client-owned model of what's in the room, for the POST gate (§7): only POST when this changes
         // structurally, so a settled room sends nothing. _known: id → last posted-frame surface record;
@@ -1732,6 +1733,7 @@
         // The geometry log's per-world state goes with it: a new world's surface set and heights are a new
         // baseline, so carrying the old one over would report the switch itself as churn and an anomaly.
         this._miss = {}; this._everClaimed = {}; this._wasStyled = {};
+        this._roomOf = null;        // a new world's partition is a new partition — never refine across one
         this._lastLevel = null; this._levelAlarm = {}; this._census = null; this._censusFloors = null;
         this._churnRing = []; this._loading = 0;
         // The void frame AND the gate's session memory: a world switch may be a switch to a different
@@ -2245,6 +2247,12 @@
           var rid = byFloor[rm.floor] || rm.floor;
           rm.ids.forEach(function (id) { roomOf[id] = rid; });
         });
+        // Kept for the NEXT capture's identity refinement (§step 4). Segmentation runs at the end of a
+        // capture, after the ids it labels have been resolved, so the partition is always one capture
+        // behind where matching needs it — which costs nothing, because the partition is a property of
+        // the seed and does not change between captures. A capture with no previous labels simply does
+        // not refine, which is the same thing as today's behaviour.
+        this._roomOf = roomOf;
         var rows;
         try {
           rows = window.SpaceSnap.roomResiduals(AFRAME.THREE, this._regRes, this._ref, roomOf);
@@ -3093,7 +3101,33 @@
           curRef.push(probe);
           b1.push({ c: c, rp: rp, cyaw: cyaw, probe: probe });
         });
-        var asg = RS.assignRefs(b1.map(function (x) { return x.probe; }), self._ref, window.CONJURE_WALL);
+        // Piecewise-rigid identity (plans/rooms.md step 4), OFF unless `room_refine` is set. One rigid
+        // transform cannot reconcile a map the Quest draws non-rigidly, and the unit that moves is the
+        // room — so each room may be matched with a small delta of its own, taken from the residuals the
+        // global solve already produced. Only IDENTITY: the refined constellation is a throwaway copy,
+        // never persisted, never rendered, and never fed to levelDeviation, whose baseline is valid only
+        // because it compares raw seed against raw live (§10.2).
+        var refs = self._ref, refined = null;
+        if (window.CONJURE_ROOM_REFINE === 1 && self._roomOf && self._regRes && self._ref.length) {
+          try {
+            var rrows = RS.roomResiduals(AFRAME.THREE, self._regRes, self._ref, self._roomOf);
+            refined = RS.refineRefs(self._ref, self._roomOf, rrows,
+                                    { minSpreadM: +window.CONJURE_ROOM_REFINE_SPREAD || 0.02 });
+            refs = refined.refs;
+          } catch (err) { self._roomFail("refine", err); refs = self._ref; refined = null; }
+        }
+        var asg = RS.assignRefs(b1.map(function (x) { return x.probe; }), refs, window.CONJURE_WALL);
+        // Back to the real references before anything mutates one. A refined ref is a copy, and a copy
+        // that reached `_ref` would move the seed by exactly the amount we refused to persist.
+        if (refined && Object.keys(refined.rooms).length) {
+          asg.assigned = asg.assigned.map(function (a) { return (a && a._orig) || a; });
+          geoLog("room.refine", {
+            rooms: Object.keys(refined.rooms).length,
+            spread: +refined.spread.toFixed(4),
+            common: [+refined.common.dx.toFixed(4), +refined.common.dz.toFixed(4),
+                     +refined.common.dy.toFixed(4)],
+          });
+        }
         // A candidate that did not get its own cheapest reference. Under emission-order greedy this was
         // invisible — a wrong match emits nothing, since churn.* only fires on a mint, miss or prune — so
         // this is the first time the assignment can be audited at all. Logged, not refused: best-first

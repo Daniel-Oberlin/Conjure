@@ -2,7 +2,8 @@
 
 **Status:** step 1 DONE (settled into `specs/spaces.md` §1.1) · step 2 BUILT **and read on device**
 (2026-09-23/24) · step 3 **per-room boundary** DONE 2026-09-26 (settled into `specs/spaces.md` §1.1) ·
-step 4 **apply the refinement** — measured, its recommendation revised, and undecided
+step 4 **apply the refinement** BUILT 2026-09-26 but shipped **off** (`room_refine`) — the
+decision is still open, and the knob is how it stays open
 **Opened:** 2026-09-07 · **Steps 1–2 landed:** 2026-09-09, branch `feat/rooms`
 **Steps 3 and 4 swapped 2026-09-25:** the boundary work is ready and the refinement is not, so the order
 now matches what can be done. Steps are named as well as numbered below, since this is the second time a
@@ -314,8 +315,16 @@ though the global-assignment half has since landed (`fe37f82`).
    its shape in place is not covered by that precedent — the next capture under `main`, sharing the same
    live data, would overwrite it. Per-room boundaries need a sibling key `main` never touches, exactly as
    `rooms` was added.
-4. **Apply the refinement** — 🔶 **undecided. The drop recommendation is revised, and the case now rests
-   on the tail rather than the median.**
+4. **Apply the refinement** — 🔶 **BUILT 2026-09-26 and shipped OFF** (`room_refine`), on
+   `feat/room-refinement`. `SpaceSnap.refineRefs` hands `assignRefs` a reference constellation with each
+   room moved onto where this capture found it — identity only, never persisted, never rendered, never
+   fed to `levelDeviation`. Only a room's **deviation from the common offset** is applied, so a
+   whole-space settle is a no-op by construction rather than by a tuned threshold. See
+   [`specs/spaces-geometry.md` §4.4](../specs/spaces-geometry.md).
+
+   **The decision it was gated on is still open, and the knob is how it stays open.** Turning it on for a
+   device session is now the cheap experiment, rather than a branch to write first. What follows is the
+   argument as it stood.
 
    The original reading stands as far as it goes. Re-measured over all 378 logged events: what matters is
    not each room's displacement but how far the rooms **disagree with each other** at settle, since a

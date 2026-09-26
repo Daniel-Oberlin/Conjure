@@ -396,6 +396,15 @@ class Settings:
     reg_size_tol: float = 0.5                        # how much LARGER (m) a detected plane may be than a reference
     reg_inlier_m: float = 0.4                        # max distance (m) a plane may sit from a same-kind reference
     reg_yaw_peaks: int = 5                           # candidate room rotations tried when solving orientation
+    # Piecewise-rigid identity (docs/plans/rooms.md step 4). One rigid transform cannot reconcile a map the
+    # Quest draws non-rigidly, and the unit that moves is the ROOM — so each room may be matched against the
+    # reference with a small delta of its own. OFF by default and deliberately: it changes surface IDENTITY,
+    # and identity is what carries a user's styling, so the downside is their data and the upside is margin.
+    # Only a room's DEVIATION from the common offset is ever applied; a whole-space settle is the global
+    # fit's business. Two device days put the median room-to-room disagreement at 3.2 mm — under the floor
+    # below — and one session in sixteen at 78.6 mm, which is the raised-floor fault's shape.
+    room_refine: bool = False                        # apply per-room deltas when matching identity
+    room_refine_min_spread: float = 0.02             # m of room-to-room disagreement below which nothing moves
     capture_interval: float = 2.0                    # seconds between recaptures/re-registrations
     # Render apply-gate (docs/specs/spaces-geometry.md §9.1): a locally-rendered surface is only re-laid when
     # it moves past ONE of these tolerances — otherwise sub-tolerance re-derivation is skipped so the mesh
@@ -625,6 +634,8 @@ def get_settings() -> Settings:
         reg_size_tol=float(os.environ.get("CONJURE_REG_SIZE_TOL", "0.5")),
         reg_inlier_m=float(os.environ.get("CONJURE_REG_INLIER_M", "0.4")),
         reg_yaw_peaks=int(os.environ.get("CONJURE_REG_YAW_PEAKS", "5")),
+        room_refine=os.environ.get("CONJURE_ROOM_REFINE", "0").strip().lower() not in ("0", "false", "no", "off", ""),
+        room_refine_min_spread=float(os.environ.get("CONJURE_ROOM_REFINE_MIN_SPREAD", "0.02")),
         capture_interval=float(os.environ.get("CONJURE_CAPTURE_INTERVAL", "2.0")),
         apply_tol_pos=float(os.environ.get("CONJURE_APPLY_TOL_POS", "0.02")),
         apply_tol_rot_deg=float(os.environ.get("CONJURE_APPLY_TOL_ROT_DEG", "1.0")),
@@ -756,6 +767,8 @@ SETTABLE: dict[str, tuple[str, str]] = {
     "reg_size_tol":          ("client", "metres a detected plane may exceed its reference"),
     "reg_inlier_m":          ("client", "metres a plane may sit from a same-kind reference"),
     "reg_yaw_peaks":         ("client", "candidate room rotations tried when solving orientation"),
+    "room_refine":           ("client", "match identity with a per-room delta (piecewise-rigid); OFF by default"),
+    "room_refine_min_spread": ("client", "m of room-to-room disagreement below which no room is moved"),
     "beam_timeout":          ("client", "seconds a controller beam lingers after the trigger"),
     "beam_trigger":          ("client", "0..1 trigger pull that arms the beam"),
     "void_origin":           ("client", "origin basis for an outdoor world: centres | corners"),
@@ -774,7 +787,7 @@ LIMITS: dict[str, tuple[float, float]] = {
     "foveation": (0.0, 1.0), "beam_trigger": (0.0, 1.0), "reg_min_cov_frac": (0.0, 1.0),
     "pose_tau": (0.0, 10.0), "geo_slice_ms": (0.0, 16.0), "capture_interval": (0.1, 60.0),
     "history_cap": (0, 10_000), "geometry_log_days": (0, 3650), "reg_min_cov": (0, 100),
-    "reg_yaw_peaks": (1, 64), "beam_timeout": (0.0, 600.0),
+    "reg_yaw_peaks": (1, 64), "beam_timeout": (0.0, 600.0), "room_refine_min_spread": (0.0, 1.0),
 }
 CHOICES: dict[str, tuple[str, ...]] = {
     "occlusion": ("off", "hands", "hands-solid"),

@@ -217,9 +217,32 @@ a bad global lock; a large height offset is not. The floating-room displacement 
 observed three times larger between one morning and one afternoon — and the unmerged correction's own
 0.15 m ceiling would have refused the very fault it was written for.
 
-The guards a future *apply* would use (≥4 pairs, ≥2 walls, a non-degenerate solve, ≤0.25 m in x/z, ≤0.6 m
-in y, and the fit must reduce the room's residual) are evaluated now and logged as `would_apply`, so the
-field data says whether the refinement would have been accepted rather than only what it computed.
+The guards (≥4 pairs, ≥2 walls, a non-degenerate solve, ≤0.25 m in x/z, ≤0.6 m in y, and the fit must
+reduce the room's residual) are evaluated on every fit and logged as `would_apply`, so the field data says
+whether the refinement would have been accepted rather than only what it computed.
+
+**Applying it — `SpaceSnap.refineRefs`, off unless `room_refine` is set.** A copy of the reference
+constellation with each room moved onto where this capture found it, passed to `assignRefs` in place of
+the real one. **Identity only**: the copy is never persisted, never rendered, and never reaches
+`levelDeviation`, whose baseline is valid precisely because it compares raw seed against raw live (§10.2).
+Each refined entry carries `_orig`, and the caller maps a winner back before mutating it — a copy that
+reached `_ref` would move the seed by the amount we declined to persist.
+
+**Only a room's deviation from the common offset is applied, never its whole delta.** A session opens at
+150–180 mm with every room decaying together on one curve: that shared component is the whole space's
+tracking settling, which is the global solve's business, and a per-room refinement that "corrected" it
+would be doing the global fit's job worse. Subtracting the mean makes a whole-space settle a no-op by
+construction rather than by a tuned threshold, and leaves exactly the quantity this exists for — one room
+displaced while the others are not. `room_refine_min_spread` (0.02 m) then asks only whether that
+remaining disagreement is worth acting on; below it nothing is copied at all. Two rooms are the minimum,
+since a single room's delta *is* the global fit rather than a disagreement with it.
+
+It is **off by default**, and that is a statement about asymmetry rather than confidence: it changes
+surface identity, identity is what carries a user's styling, so a wrong refinement costs data while a
+right one buys margin. Measured room-to-room disagreement is a median **3.2 mm** across 16 logged
+sessions — under the floor, so nothing would move — against **78.6 mm** in one of them, which is the
+raised-floor fault's shape (104 mm, floor and ceiling agreeing within 1 mm). A `room.refine` event records
+the spread and the common offset whenever rooms are moved.
 
 Emission is change-gated by `WM.roomResidualGate` — first fit, a move past 1 cm, or a flipped verdict —
 so a settled space still emits nothing, which is what makes §10's log affordable to leave running for
@@ -1000,6 +1023,7 @@ checked anywhere before. The probe needs no overlay and settles the displacement
 | `--inset-standoff` | 0.02 m | how far an inset sits in front of its wall plane |
 | `--reg-size-tol` / `--reg-min-cov` / `--reg-min-cov-frac` / `--reg-inlier-m` / `--reg-yaw-peaks` | 0.5 / 4 / 0.3 / 0.4 / 5 | registration acceptance |
 | `--wall-perp-tol` / `--wall-yaw-tol` / `--wall-overlap-slop` | 0.15 m / 30° / 0.3 m | `matchWall` identity tolerances |
+| `room_refine` / `room_refine_min_spread` | **off** / 0.02 m | match identity with a per-room delta (§4.4); the floor is room-to-room disagreement, not displacement |
 | `--drop-surface` | — | pretend a surface was not captured (exercise recovery solo) |
 | `--foveation` | 0 | GPU headroom; raising it cut the dropped-frame rate monotonically |
 | `--void-origin` | `centres` | a void world's canonical-frame origin basis (§4.1.3): wall centres or plane corners |
@@ -1034,7 +1058,7 @@ with a golden test like `plane_anchor`'s.
 `matchCost`, `assignRefs`, `sameDoorway`, `dupInsetIds`, `wallCorners`, `authorInsetAnchor`,
 `reconstructInset`, `insetAlong`, `hostWallFor`, `joinCorners`, `sealWalls`, `snapInsets`, `eulerYXZ`,
 `yawOf`, `heightCensus`, `explainNoMatch`, `explainInsetNoMatch`, `explainInsetMint`, `floorUnder`,
-`segmentRooms`, `roomLinks`, `roomResiduals`, `polyFit`, `planeCorners`.
+`segmentRooms`, `roomLinks`, `roomResiduals`, `refineRefs`, `polyFit`, `planeCorners`.
 
 **`client/surface-overlay.js`** — the three-layer debug overlay (§10.4): `setDevice`, `setSeed`,
 `clearSeed`, `poll`, `hud`. DOM/A-Frame-side, so not in the typechecked set; the geometry claims it rests

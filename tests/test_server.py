@@ -5988,3 +5988,18 @@ def test_audio_relay_says_so_when_the_voice_server_is_down(srv, client, monkeypa
     with client.websocket_connect("/audio?user=alice") as ws:
         ev = ws.receive_json()
         assert ev["type"] == "notice" and "voice server" in ev["text"]
+
+
+def test_index_injects_the_room_refinement_knob_defaulting_OFF(srv, client, monkeypatch):
+    """It changes surface IDENTITY, and identity is what carries a user's styling — so the downside of a
+    wrong refinement is their data and the upside is registration margin. It ships off, and a device
+    session turns it on deliberately."""
+    import dataclasses
+    html = client.get("/").text
+    assert "window.CONJURE_ROOM_REFINE=0;" in html, "off unless asked for"
+    assert "window.CONJURE_ROOM_REFINE_SPREAD=0.02;" in html
+    monkeypatch.setattr(srv, "settings", dataclasses.replace(srv.settings, room_refine=True,
+                                                             room_refine_min_spread=0.05))
+    html = client.get("/").text
+    assert "window.CONJURE_ROOM_REFINE=1;" in html
+    assert "window.CONJURE_ROOM_REFINE_SPREAD=0.05;" in html

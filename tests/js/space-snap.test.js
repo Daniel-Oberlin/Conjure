@@ -1833,3 +1833,61 @@ test("golden room (real capture): each room measures a DIFFERENT ceiling, and ne
     assert.ok(r.boundary.polygon.length >= 3);
   });
 });
+
+// ---------------------------------------------------------------- refineRefs (plans/rooms.md step 4)
+
+function refOf(id, x, z, y) {
+  return { id, sem: "wall", ext: [3, 2.4], nyaw: 0, orient: "vertical",
+           pos: { x, y: y === undefined ? 1.2 : y, z } };
+}
+const ROW = (room, dx, dz, dy, ok = true) => ({ room, dx, dz, dy, ok, n: 8, nz: 4, before: 0.1, after: 0.02 });
+
+test("refineRefs: a whole-space settle moves NOTHING, because it is the global fit's job", () => {
+  // The case that dominates the logs. A session opens at 150-180 mm with all rooms decaying together on
+  // one curve — that is tracking settling, not rooms disagreeing, and refining each room by the same
+  // amount would be a worse way of doing what the global solve already does.
+  const refs = [refOf("w1", 0, 0), refOf("w2", 5, 0)];
+  const roomOf = { w1: "room_1", w2: "room_2" };
+  const out = RS.refineRefs(refs, roomOf, [ROW("room_1", 0.16, 0.02, 0.01), ROW("room_2", 0.16, 0.02, 0.01)]);
+  assert.deepEqual(out.rooms, {}, "no room is moved");
+  assert.strictEqual(out.refs[0], refs[0], "and nothing is even copied — object identity survives");
+  assert.ok(Math.abs(out.common.dx - 0.16) < 1e-9, "the common component is reported, not applied");
+});
+
+test("refineRefs: ONE room displaced while the others are not is exactly what moves", () => {
+  // The raised-floor shape: 104 mm on one room, floor and ceiling agreeing within 1 mm. Only the
+  // deviation from the common offset is applied, so the untouched rooms barely move and the odd one out
+  // takes almost the whole correction.
+  const refs = [refOf("w1", 0, 0), refOf("w2", 5, 0), refOf("w3", 10, 0)];
+  const roomOf = { w1: "room_1", w2: "room_2", w3: "room_3" };
+  const out = RS.refineRefs(refs, roomOf,
+    [ROW("room_1", 0, 0, 0), ROW("room_2", 0, 0, 0), ROW("room_3", 0, 0, 0.104)]);
+  assert.ok(out.spread > 0.06, `a real disagreement survives the mean subtraction (${out.spread})`);
+  const moved = out.refs.find((r) => r.id === "w3");
+  assert.ok(Math.abs(moved.pos.y - (1.2 - 0.104 * 2 / 3)) < 1e-6, "displaced room takes the deviation");
+  assert.strictEqual(moved._orig, refs[2], "and carries the way back to the real reference");
+});
+
+test("refineRefs: a room whose fit failed a guard is left where it is", () => {
+  const refs = [refOf("w1", 0, 0), refOf("w2", 5, 0)];
+  const roomOf = { w1: "room_1", w2: "room_2" };
+  const out = RS.refineRefs(refs, roomOf, [ROW("room_1", 0.3, 0, 0, false), ROW("room_2", 0, 0, 0.09)]);
+  assert.deepEqual(out.rooms, {}, "one usable row is not a disagreement — it IS the global fit");
+  assert.strictEqual(out.refs[1], refs[1]);
+});
+
+test("refineRefs: a ref in no room, or in a room with no accepted fit, is passed through untouched", () => {
+  const refs = [refOf("w1", 0, 0), refOf("w2", 5, 0), refOf("orphan", 99, 0)];
+  const roomOf = { w1: "room_1", w2: "room_2" };
+  const out = RS.refineRefs(refs, roomOf, [ROW("room_1", 0, 0, 0), ROW("room_2", 0, 0, 0.1)]);
+  assert.strictEqual(out.refs[2], refs[2], "unlabelled surfaces are not guessed at");
+  assert.ok(out.refs[1]._orig, "the room that genuinely differs is the one that moved");
+});
+
+test("refineRefs: the refinement never mutates the reference it was given", () => {
+  // It feeds identity matching only. A refined reference that leaked into the seed would move the space.
+  const refs = [refOf("w1", 0, 0), refOf("w2", 5, 0)];
+  const before = JSON.stringify(refs);
+  RS.refineRefs(refs, { w1: "room_1", w2: "room_2" }, [ROW("room_1", 0, 0, 0), ROW("room_2", 0.2, 0, 0.1)]);
+  assert.equal(JSON.stringify(refs), before, "the seed is untouched");
+});
