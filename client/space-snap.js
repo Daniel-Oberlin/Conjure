@@ -48,6 +48,8 @@
  * @property {{x:number, y:number, w:number, h:number}[]} [holes]   openings cut into a wall
  * @property {boolean} [_recovered]                      reconstructed via anchor (§5.2) — project onto its wall plane
  * @property {string} [hostWall]                         for an inset: the wall id it belongs to (recorded by snapInsets)
+ * @property {{x:number, z:number}[]} [_poly]            the device's own polygon in the plane's OWN frame,
+ *                                                       carried for a room's footprint and stripped before the POST
  * @property {any} [debug]
  */
 
@@ -1343,10 +1345,16 @@
    * Over-segmentation is safe — two sub-rooms that genuinely co-move refine to equal deltas — so nothing
    * here tries to merge.
    *
+   * Each room also carries its own **`boundary`** — footprint size, floor polygon and the **measured**
+   * height to its covering ceiling. This is where the space-wide boundary's hard-coded 2.6 m dies: the
+   * ceiling is already in hand here (it is half the definition of a room), and the whole-space boundary
+   * could never measure it because it never knew which ceiling went with which floor.
+   *
    * @param {THREE_NS} THREE
    * @param {SnapSurface[]} surfaces
    * @param {{faceM?: number, probeM?: number}} [opts]
-   * @returns {{rooms: {floor: string, ceiling: string|null, ids: string[]}[],
+   * @returns {{rooms: {floor: string, ceiling: string|null, ids: string[],
+   *                    boundary: {size: number[], height: number|null, polygon: number[][]}}[],
    *            unassigned: string[], links: {door: string, a: string, b: string|null}[]}}
    */
   function segmentRooms(THREE, surfaces, opts) {
@@ -1358,15 +1366,55 @@
     var floors = placed.filter(function (s) { return s.semantic === "floor" && s.extent; });
     var ceils  = placed.filter(function (s) { return s.semantic === "ceiling" && s.extent; });
 
-    /** @type {{floor: string, ceiling: string|null, ids: string[]}[]} */ var rooms = [];
+    /** @type {{floor: string, ceiling: string|null, ids: string[],
+     *           boundary: {size: number[], height: number|null, polygon: number[][]}}[]} */ var rooms = [];
     /** @type {Record<string, number>} */ var roomOf = {};        // surface id → room index
     /** @type {Record<string, number>} */ var roomOfFloor = {};   // floor id   → room index
+
+    /** @param {number} n @returns {number} */
+    var r4 = function (n) { return Math.round(n * 1e4) / 1e4; };
+
+    /**
+     * This room's footprint, from its own floor and its own ceiling.
+     *
+     * `polygon` is in the FLOOR'S OWN X-Z frame, centred on the floor's pose — not in the reference
+     * frame. That is the existing convention (the space-wide `boundary.floorPolygon` is the raw
+     * `XRPlane.polygon`, never multiplied by the plane pose), and it is kept rather than quietly
+     * changed, because a consumer that mixes the two would place a room's outline at the origin. It
+     * encodes SHAPE and SIZE; `size` is the same footprint as two spans, which is what a reader
+     * actually wants. Locating it needs the floor's own pose from the surfaces payload.
+     *
+     * Pass A already reduces a plane's polygon to its axis-aligned box to make `extent`, so a floor
+     * with no polygon carried through falls back to that box — the same simplification the rest of the
+     * system runs on, not a guess.
+     *
+     * `height` is MEASURED: the covering ceiling's centre minus the floor's. Null when the room has no
+     * covering ceiling, and null rather than wrong when the gap is not a plausible storey — a ceiling
+     * mis-paired across a split level would otherwise report a confident absurdity.
+     *
+     * @param {SnapSurface} f                 this room's defining floor
+     * @param {SnapSurface|null} c            its covering ceiling, if it has one
+     * @returns {{size: number[], height: number|null, polygon: number[][]}}
+     */
+    function roomBoundary(f, c) {
+      var h = null;
+      if (c) {
+        var d = c._lp.y - f._lp.y;
+        if (d > 0.5 && d < 6) h = r4(d);
+      }
+      var ext = f.extent || [0, 0];         // floors are filtered on `extent`, so this is a type guard
+      var poly = (f._poly && f._poly.length >= 3)
+        ? f._poly.map(function (/** @type {{x: number, z: number}} */ p) { return [r4(p.x), r4(p.z)]; })
+        : [[r4(-ext[0] / 2), r4(-ext[1] / 2)], [r4(ext[0] / 2), r4(-ext[1] / 2)],
+           [r4(ext[0] / 2), r4(ext[1] / 2)], [r4(-ext[0] / 2), r4(ext[1] / 2)]];
+      return { size: [r4(ext[0]), r4(ext[1])], height: h, polygon: poly };
+    }
 
     floors.forEach(function (f) {
       var c = /** @type {SnapSurface|null} */ (null);
       ceils.forEach(function (cc) { if (!c && covers(THREE, cc, f._lp.x, f._lp.z)) c = cc; });
       var idx = rooms.length;
-      rooms.push({ floor: f.id, ceiling: c ? c.id : null, ids: [f.id] });
+      rooms.push({ floor: f.id, ceiling: c ? c.id : null, ids: [f.id], boundary: roomBoundary(f, c) });
       roomOf[f.id] = idx; roomOfFloor[f.id] = idx;
       if (c && roomOf[c.id] == null) { rooms[idx].ids.push(c.id); roomOf[c.id] = idx; }
     });

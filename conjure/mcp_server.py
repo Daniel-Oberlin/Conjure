@@ -266,9 +266,6 @@ async def _space_summary() -> str:
         return "No space model yet — the headset hasn't shared one (capture the space, or work in VR)."
     lines = [f"Space: {len(reals)} surfaces · passthrough={env.get('passthrough', False)} · "
              f"surfaces-visible-by-default={pres.get('defaultSurfaceVisible', False)}"]
-    b = env.get("boundary")
-    if b:
-        lines.append(f"boundary: height {b.get('height')}m, floor polygon {b.get('floorPolygon')}")
     # Group by ROOM when the space has been segmented. The grouping is the point: a flat list of 59
     # surfaces tells the director nothing about which of them are in the same physical place, which is
     # exactly what it needs to act on "make the kitchen blue".
@@ -278,6 +275,25 @@ async def _space_summary() -> str:
         rec = rooms.get(rid) or {}
         nm = (rec.get("name") or "").strip()
         return nm or f"room #{rec.get('n', '?')}"
+
+    def _room_size(rid: str) -> str:
+        """A room's footprint in words, because the reader is a language model deciding where to put a
+        dragon. A raw polygon is a poor input for that and was the entire boundary line for a year.
+        Empty for a room captured before per-room boundaries; the ceiling is stated as unmeasured rather
+        than guessed, since the number it replaces was a hard-coded 2.6 that nobody had measured."""
+        bd = (rooms.get(rid) or {}).get("boundary") or {}
+        size, h = bd.get("size"), bd.get("height")
+        if not (isinstance(size, list) and len(size) == 2):
+            return ""
+        return (f"roughly {size[0]:.1f} × {size[1]:.1f} m, "
+                + (f"ceiling {h:.2f} m" if isinstance(h, (int, float)) else "ceiling not measured"))
+
+    # The space-wide boundary is the LARGEST floor's polygon presented as the whole space's, so in a
+    # segmented space it is the wrong room's footprint and the per-room lines below supersede it. Kept
+    # for a space with no rooms yet, where it is still the only footprint there is.
+    b = env.get("boundary")
+    if b and not any((rec or {}).get("boundary") for rec in rooms.values()):
+        lines.append(f"boundary: height {b.get('height')}m, floor polygon {b.get('floorPolygon')}")
 
     def _surface_line(e: dict) -> str:
         m = e.get("meta", {})
@@ -308,11 +324,13 @@ async def _space_summary() -> str:
     if grouped:
         order = sorted(grouped, key=lambda r: (rooms.get(r) or {}).get("n", 0))
         if here and here in rooms:
-            lines.append(f"the user is standing in {_room_label(here)}")
+            sz = _room_size(here)
+            lines.append(f"the user is standing in {_room_label(here)}" + (f" — {sz}" if sz else ""))
         lines.append(f"rooms: {', '.join(_room_label(r) for r in order)}"
                      + (" — name one with name_room" if not any((rooms.get(r) or {}).get("name") for r in order) else ""))
         for rid in order:
-            lines.append(f"{_room_label(rid)} ({len(grouped[rid])} surfaces):")
+            sz = _room_size(rid)
+            lines.append(f"{_room_label(rid)} ({len(grouped[rid])} surfaces{', ' + sz if sz else ''}):")
             lines.extend(_surface_line(e) for e in grouped[rid])
         if loose:
             lines.append(f"not in any room ({len(loose)}):")

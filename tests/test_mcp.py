@@ -658,3 +658,46 @@ def test_an_ordinary_error_survives_untouched_apart_from_its_full_stop():
     assert m._reason({"error": "Grok can't produce transparency. Use Chat for transparency."}) \
         == "Grok can't produce transparency. Use Chat for transparency"
     assert m._reason({}) == "unknown error"
+
+
+@respx.mock
+async def test_the_summary_gives_each_room_its_MEASURED_size_not_a_raw_polygon(monkeypatch):
+    """What the boundary is actually for. Its only reader is this text, injected every turn, and a list of
+    coordinates is a poor input for a model deciding where to put something — while the space-wide polygon
+    was the LARGEST floor's, so in a segmented space it described the wrong room."""
+    monkeypatch.setattr(m, "BASE", "http://world")
+    respx.get("http://world/world").mock(return_value=httpx.Response(200, json={
+        "entities": [
+            {"id": "real_floor_8", "meta": {"real": True, "semantic": "floor", "friendly_id": 8, "room": "room_1"},
+             "components": {"material": {}}, "transform": {"position": [0, 0, 0]}},
+            {"id": "real_floor_10", "meta": {"real": True, "semantic": "floor", "friendly_id": 10, "room": "room_2"},
+             "components": {"material": {}}, "transform": {"position": [5, 0, 0]}}],
+        "environment": {"passthrough": True, "spacePresentation": {"active": True},
+                        "boundary": {"height": 2.6, "floorPolygon": [[0, 0], [4, 0], [4, 4], [0, 4]]},
+                        "rooms": {
+                            "room_1": {"n": 1, "name": "kitchen", "floor": "real_floor_8",
+                                       "boundary": {"size": [4.12, 3.2], "height": 2.44, "polygon": [[0, 0]]}},
+                            "room_2": {"n": 2, "floor": "real_floor_10",
+                                       "boundary": {"size": [3.0, 2.5], "height": None, "polygon": [[0, 0]]}}}}}))
+    respx.get("http://world/room/whereami").mock(return_value=httpx.Response(200, json={
+        "ok": True, "rooms": {}, "standing": {"daniel": "room_1"}, "you": "room_1"}))
+    out = await _tool("query_space")()
+
+    assert "standing in kitchen — roughly 4.1 × 3.2 m, ceiling 2.44 m" in out
+    assert "roughly 3.0 × 2.5 m, ceiling not measured" in out, "absent, not the 2.6 it would have been told"
+    assert "floor polygon" not in out, "the whole-space polygon is the wrong room's and is superseded"
+    assert "2.6" not in out
+
+
+@respx.mock
+async def test_the_space_wide_boundary_survives_for_a_space_with_no_rooms_yet(monkeypatch):
+    """It is misleading only once there is a partition to be wrong about. Unsegmented, it is the only
+    footprint there is, so removing it would be a regression rather than a correction."""
+    monkeypatch.setattr(m, "BASE", "http://world")
+    respx.get("http://world/world").mock(return_value=httpx.Response(200, json={
+        "entities": [{"id": "real_floor", "meta": {"real": True, "semantic": "floor", "friendly_id": 7},
+                      "components": {"material": {}}, "transform": {"position": [0, 0, 0]}}],
+        "environment": {"passthrough": True, "boundary": {"height": 2.6, "floorPolygon": [[0, 0]]},
+                        "spacePresentation": {"active": True}}}))
+    out = await _tool("query_space")()
+    assert "floor polygon" in out and "2.6" in out

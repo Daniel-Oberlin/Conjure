@@ -3299,7 +3299,7 @@ class CaptureUpdate(BaseModel):
     # labels: the server owns which persistent room each group IS (conjure/rooms.py), and a client that
     # sent labels would be asserting an identity it cannot know. Absent ⇒ this capture says nothing about
     # rooms and the stored labels stand.
-    rooms: Optional[list[dict]] = None        # [{floor, ceiling, ids: [...]}]
+    rooms: Optional[list[dict]] = None        # [{floor, ceiling, ids: [...], boundary: {size, height, polygon}}]
     links: Optional[list[dict]] = None        # [{door, a: <floor id>, b: <floor id>|null}]
 
 

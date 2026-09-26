@@ -1,8 +1,8 @@
 # Plan — rooms as a first-class unit
 
 **Status:** step 1 DONE (settled into `specs/spaces.md` §1.1) · step 2 BUILT **and read on device**
-(2026-09-23/24) · step 3 **per-room boundary** — ready, and needs no headset · step 4 **apply the
-refinement** — measured, its recommendation revised, and undecided
+(2026-09-23/24) · step 3 **per-room boundary** DONE 2026-09-26 (settled into `specs/spaces.md` §1.1) ·
+step 4 **apply the refinement** — measured, its recommendation revised, and undecided
 **Opened:** 2026-09-07 · **Steps 1–2 landed:** 2026-09-09, branch `feat/rooms`
 **Steps 3 and 4 swapped 2026-09-25:** the boundary work is ready and the refinement is not, so the order
 now matches what can be done. Steps are named as well as numbered below, since this is the second time a
@@ -22,7 +22,7 @@ lines of plan had stopped that file being a backlog. The rename it depended on i
 | Part | Goes to | When |
 |---|---|---|
 | Steps 1 and 2 — built, and already described as built | **deleted**; [`specs/spaces.md` §1.1](../specs/spaces.md) and [`specs/spaces-geometry.md` §4.4](../specs/spaces-geometry.md) carry them | once **the refinement** is decided, since its argument still cites them |
-| **Per-room boundary** — step 3 | [`backlogs/spaces.md`](../backlogs/spaces.md), where the boundary item already waits on it | when built or deferred |
+| **Per-room boundary** — step 3 | [`backlogs/spaces.md`](../backlogs/spaces.md), where the boundary item already waits on it | ✅ **discharged 2026-09-26** — built, and that entry now records what landed and what (3) still needs |
 | **The refinement** — step 4: the guards, and the `y` decision | `specs/spaces-geometry.md` §4.4 if applied; [`backlogs/spaces-geometry.md`](../backlogs/spaces-geometry.md) if dropped | when decided |
 | Why piecewise-rigid, and the alternatives rejected on measurement | [`decisions.md`](../decisions.md) | with **the refinement** |
 
@@ -295,8 +295,14 @@ though the global-assignment half has since landed (`fe37f82`).
    *Validated on device* above and in [`specs/spaces-geometry.md` §4.4](../specs/spaces-geometry.md) —
    including the warning to read the last epoch rather than the first, since a session opens ten times
    higher than it settles, which is how this data was first misread.
-3. **Per-room boundary** — ready, and the only open step that needs no headset. It changes a schema with
-   two consumers and deserves its own increment. The brief is
+3. **Per-room boundary** — ✅ **Built 2026-09-26** on `feat/room-boundary`: `segmentRooms` gives each room
+   a `boundary` of `{size, height, polygon}` measured from its own floor and its own covering ceiling;
+   `resolve_rooms` persists it on the room record, derived like `floor` and refreshed each capture; the
+   summary states it in words for the room the user is standing in and drops the whole-space polygon once
+   per-room data exists. On the reference capture the rooms measure **2.42 m and 2.68 m** — the hard-coded
+   `2.6` was wrong for both, in opposite directions. The in-bounds clamp (option 3) is **not** built and
+   cannot be until the polygon is carried into the reference frame; see
+   [`backlogs/spaces.md`](../backlogs/spaces.md). The brief was
    [`backlogs/spaces.md`](../backlogs/spaces.md)'s top entry: *"make it honest"* (a floor polygon plus its
    own covering ceiling height, per room, with the summary reporting the one the user is standing in) and
    *"make it useful"* (the summary says *"a room roughly 4 × 5 m, you are near the north wall"* rather

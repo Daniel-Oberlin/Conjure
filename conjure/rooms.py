@@ -52,8 +52,10 @@ def resolve_rooms(
 ) -> tuple[list[str | None], dict[str, dict]]:
     """Map each incoming segmentation group onto a persistent room id.
 
-    `incoming`      — `[{"floor": <surface id>, "ceiling": <id|None>, "ids": [<surface id>, …]}, …]`
-    `stored_rooms`  — the space's `rooms` record: `{"room_1": {"n": 1, "name"?: str, "floor": <id>}, …}`
+    `incoming`      — `[{"floor": <surface id>, "ceiling": <id|None>, "ids": [<surface id>, …],
+                         "boundary"?: {"size": [w, d], "height": float|None, "polygon": [[x, z], …]}}, …]`
+    `stored_rooms`  — the space's `rooms` record: `{"room_1": {"n": 1, "name"?: str, "floor": <id>,
+                      "boundary"?: {…}}, …}`
     `prev_labels`   — the previous membership, `{<surface id>: <room id>}` (i.e. every `meta.room`)
 
     Returns `(ids, rooms)` — one room id per incoming group, positionally, and the updated record.
@@ -107,10 +109,19 @@ def resolve_rooms(
 
     # Refresh the defining floor on every matched room; the floor CAN change id without the room
     # changing identity, which is the entire reason tier 1 outranks tier 2.
+    #
+    # The boundary refreshes the same way, and belongs in the same sentence as the floor rather than
+    # beside `name`: it is DERIVED from this capture's geometry, so the newest measurement wins and a
+    # stale one is never preserved. A group that arrives without one leaves the stored value alone —
+    # an older client, or a room whose floor lost its polygon, should not blank what is already known.
     for gi, g in enumerate(incoming):
         rid = out[gi]
-        if rid and g.get("floor"):
+        if not rid:
+            continue
+        if g.get("floor"):
             rooms[rid]["floor"] = g["floor"]
+        if g.get("boundary"):
+            rooms[rid]["boundary"] = g["boundary"]
 
     return out, rooms
 

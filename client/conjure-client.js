@@ -3037,6 +3037,9 @@
         function pushSurface(c, sid, lp, lq, hostId) {
           surfaces.push({ id: sid, semantic: c.sem, position: [lp.x, lp.y, lp.z],
             rotation: self._euler(lq), extent: [c.ext[0], c.ext[1]], _lp: lp.clone(), _lq: lq.clone(),
+            // Scratch, stripped with _lp/_lq before the POST: segmentRooms gives each room its own
+            // footprint, and the polygon is the one thing Pass A keeps that `extent` throws away.
+            _poly: c.poly,
             hostWall: hostId || undefined,
             debug: { pos: c.raw.pos, quat: c.raw.quat, orient: c.orient, label: c.sem,
                      polyY: c.polyY, n: c.poly.length, registered: registered, regStat: self._regStat } });
@@ -3245,7 +3248,7 @@
         } catch (err) {
           this._roomFail("segment", err);                                // never block the capture POST
         }
-        surfaces.forEach(function (s) { delete s._lp; delete s._lq; });
+        surfaces.forEach(function (s) { delete s._lp; delete s._lq; delete s._poly; });
         if (JIT) this._jMark("authO");                    // owner: joinCorners + snapInsets + inset-anchor authoring
         this.lastPost = time;
         var boundary = null;

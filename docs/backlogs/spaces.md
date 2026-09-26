@@ -11,7 +11,21 @@ Items are grouped by what they block, roughly most-actionable first.
 
 ## Known problems — verified against the code
 
-### The boundary is one polygon, from the largest floor, at a hard-coded height
+### The boundary is one polygon, from the largest floor, at a hard-coded height — **(1) and (2) built 2026-09-26; (3) still open**
+
+**What landed.** Each room now measures its own footprint — `rooms[<id>].boundary` = `{size, height,
+polygon}`, derived in `SpaceSnap.segmentRooms` where the floor and its covering ceiling are already
+paired — and the summary states it in words for the room the user is standing in, dropping the
+whole-space polygon once per-room data exists. On the reference capture the two rooms measure **2.42 m
+and 2.68 m**: the hard-coded `2.6` was wrong for both, in opposite directions.
+
+The rest of this entry stands as written, because **(3) is untouched** and the trap below it is now the
+main obstacle to (3) rather than a footnote: the polygon is in the **plane's own frame**, so nothing can
+clamp against it until it is carried into the reference frame by the floor's pose. The one thing that
+changed for (3) is that it no longer has to clamp against the wrong room's outline.
+
+"You are near the north wall" from (2) is **not** built: the presence tick reports which floor the user is
+over, not where on it, so the summary can say which room and how big it is but not where in it they stand.
 
 `conjure-client.js:2194` keeps only the single largest floor by area:
 
@@ -76,11 +90,11 @@ only one, do 2 — the director's behaviour is the only thing downstream of this
 Fixing (1) also unblocks director-authored replacement geometry, which needs a safe footprint to
 extrude — see [`backlogs/worlds-surfaces.md`](./worlds-surfaces.md).
 
-**Option (1) now has a partition to key on.** The room-segmentation plan in
-[`plans/rooms.md`](../plans/rooms.md) (*rooms as a first-class unit*, proposed 2026-09-07)
-builds exactly what per-room boundaries need — floor-keyed rooms with persisted identity — as the
-foundation for piecewise-rigid registration. If it lands, this item is mostly a summary-formatting job on
-top of it rather than a segmentation problem of its own.
+**Option (1) had a partition to key on, and that is what made it small.** The room work in
+[`plans/rooms.md`](../plans/rooms.md) (*rooms as a first-class unit*) had already built what per-room
+boundaries need — floor-keyed rooms with persisted identity — so this was the summary-formatting job that
+prediction said it would be, not a segmentation problem of its own. It read the ceiling that
+`segmentRooms` was computing and discarding.
 
 ### Void worlds cannot be re-homed
 

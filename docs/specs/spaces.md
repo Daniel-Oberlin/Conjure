@@ -38,8 +38,8 @@ single space routinely holds several rooms joined by doors — the reference cap
 under `rooms`. The partition is the device's own: the Quest reports one floor plane per room, and the
 raised-floor fault displaces exactly those groups rigidly, so the grouping that moves is the grouping it
 already drew. A space is still a flat *set* of surfaces — rooms are a labelling over them, not a
-containment hierarchy — and `boundary` is still one polygon for the whole space regardless of how many
-rooms it holds (see [`backlogs/spaces.md`](../backlogs/spaces.md)).
+containment hierarchy. Each room carries **its own footprint** (§1.1); the space-wide `boundary` remains
+one polygon at a hard-coded height beside it, now superseded for every reader that has rooms.
 
 ### 1.1 Rooms
 
@@ -48,8 +48,24 @@ A **room** is a group of surfaces within a space, keyed by the floor plane that 
 | Where | What |
 |---|---|
 | `meta.room` on each real surface | which room it belongs to — **derived**, recomputed from geometry each capture |
-| `space.rooms[<id>]` | `{n, name?, floor}` — **user data**, and the only place a name is stored |
+| `space.rooms[<id>]` | `{n, name?, floor, boundary?}` — `name` is **user data** and the only place a name is stored; `floor` and `boundary` are **derived** and re-measured each capture |
 | `meta.leads_to` on a door or window | the room on the far side, or absent for outside |
+
+**Each room measures its own footprint.** `rooms[<id>].boundary` is `{size: [w, d], height, polygon}` —
+the defining floor's two spans, the **measured** height to its covering ceiling, and the floor's polygon.
+This is where the space-wide `2.6` dies: a room *is* a floor plus its covering ceiling, so the pairing the
+measurement needs is already the definition, while the whole-space boundary never knew which ceiling went
+with which floor. On the reference capture the two rooms measure **2.42 m and 2.68 m** — the constant was
+wrong for both, and by different amounts in different directions.
+
+`height` is `null` rather than wrong when a room has no covering ceiling, or when the gap is not a
+plausible storey (0.5–6 m) — a ceiling mis-paired across a split level would otherwise report a confident
+absurdity to the director as measured fact. `polygon` follows the space-wide convention and is in the
+**floor's own frame**, not the reference frame: it carries shape and size, and locating it needs the
+floor's pose. `size` is what a reader usually wants and needs no such care.
+
+It refreshes like `floor`, not like `name`: the newest capture's measurement wins, and a group arriving
+without one leaves the stored value alone rather than blanking it (`conjure/rooms.py`).
 
 **Membership** is decided client-side (`SpaceSnap.segmentRooms`): a room is a floor plus its *covering*
 ceiling; a wall joins when that floor covers it in plan **and** the floor's centre lies on the wall's
@@ -106,7 +122,9 @@ standing nowhere, and is reported as such rather than guessed at.
   "geolocation": { "lat": …, "lon": … },   // coarse; may be null
   "surfaces": [ /* real-surface entities, geometry + DEFAULT material */ ],
   "boundary": { "floorPolygon": [[x,z], …], "height": 2.6 },
-  "rooms": { "room_1": { "n": 1, "name": "kitchen", "floor": "real_floor_10" },
+  "rooms": { "room_1": { "n": 1, "name": "kitchen", "floor": "real_floor_10",
+                         "boundary": { "size": [4.65, 3.86], "height": 2.68,   // MEASURED — §1.1
+                                       "polygon": [[x,z], …] } },
              "room_2": { "n": 2, "floor": "real_floor_8" } },   // §1.1
   "recent": [ ["daniel/agents/builder", "wld_ab12…"], … ],  // what was open HERE, newest first
   "last_scope": "daniel/agents/builder/…",  // the head of `recent`, kept for readers that want just one
@@ -119,11 +137,14 @@ standing nowhere, and is reported as such rather than guessed at.
 - **`boundary` is one polygon and one height** for the whole space, regardless of how many rooms it
   contains. It is derived from the largest captured floor (`conjure-client.js:3049`, by `_area`), so in
   a multi-room space the smaller rooms are not represented in it. The height is the constant `2.6`, not
-  measured.
-- **One consumer reads it: the space summary**, which prints it as a line of text for the director
-  (`mcp_server.py:269`); the admin listing reports only *whether* there is one. Nothing clamps placement
-  against it and nothing renders it — despite `query_space`'s docstring saying models land inside the
-  space, that is advice to the model, not an enforced invariant. See [`backlogs/spaces.md`](../backlogs/spaces.md).
+  measured. **Per-room footprints (§1.1) supersede it** and the summary drops it once they exist; it is
+  still the only footprint an unsegmented space has, so it stays.
+- **One consumer reads it: the space summary** (`mcp_server.py`); the admin listing reports only *whether*
+  there is one. Nothing clamps placement against it and nothing renders it — despite `query_space`'s
+  docstring saying models land inside the space, that is advice to the model, not an enforced invariant.
+  A clamp also **could not be written against the polygon as stored**: it is the raw `XRPlane.polygon` in
+  the plane's own frame, never multiplied by the plane pose, so it carries shape and size and not place.
+  See [`backlogs/spaces.md`](../backlogs/spaces.md).
 - **`recent` is the return-visit history** — `[[scope, world_id], …]`, newest first, capped at
   `_MRU_CAP`. Match this space again and you land back in the newest entry that **still exists**; the
   scope rides along with each world because the agent it belongs to is half of *put me back where I was*.

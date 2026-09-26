@@ -8,8 +8,11 @@ migrates a name the user typed onto a different physical room, and there is no r
 from conjure.rooms import display_name, resolve_rooms
 
 
-def _g(floor, ids, ceiling=None):
-    return {"floor": floor, "ceiling": ceiling, "ids": ids}
+def _g(floor, ids, ceiling=None, boundary=None):
+    g = {"floor": floor, "ceiling": ceiling, "ids": ids}
+    if boundary is not None:
+        g["boundary"] = boundary
+    return g
 
 
 def test_a_first_capture_mints_rooms_numbered_from_one():
@@ -119,3 +122,39 @@ def test_the_input_record_is_not_mutated():
     rooms = {"room_1": {"n": 1, "name": "kitchen", "floor": "f_a"}}
     resolve_rooms([_g("f_NEW", ["f_NEW"])], rooms, {"f_a": "room_1"})
     assert rooms["room_1"]["floor"] == "f_a", "callers keep their copy"
+
+
+def _bd(w, d, h):
+    return {"size": [w, d], "height": h, "polygon": [[0, 0]]}
+
+
+def test_a_rooms_boundary_is_derived_so_the_newest_measurement_wins():
+    """It sits beside `floor`, not beside `name`: geometry the next capture re-derives, not user data.
+    A room that grew a ceiling between captures must report the height it now has."""
+    ids, rooms = resolve_rooms([_g("f_a", ["f_a", "w1"], boundary=_bd(4.0, 3.0, None))])
+    assert rooms[ids[0]]["boundary"]["height"] is None
+    _, rooms = resolve_rooms([_g("f_a", ["f_a", "w1"], boundary=_bd(4.0, 3.0, 2.44))],
+                            rooms, {"f_a": ids[0], "w1": ids[0]})
+    assert rooms[ids[0]]["boundary"]["height"] == 2.44, "re-measured, not preserved"
+
+
+def test_a_capture_without_a_boundary_does_not_BLANK_the_stored_one():
+    """An older client, or a floor whose polygon never arrived, says nothing about the footprint — and
+    saying nothing must not be read as saying none. This is the `rooms` guard, not the `boundary` one:
+    the space-wide key is assigned unconditionally and a doc without one clears it."""
+    ids, rooms = resolve_rooms([_g("f_a", ["f_a", "w1"], boundary=_bd(4.0, 3.0, 2.44))])
+    _, rooms = resolve_rooms([_g("f_a", ["f_a", "w1"])], rooms, {"f_a": ids[0], "w1": ids[0]})
+    assert rooms[ids[0]]["boundary"]["height"] == 2.44, "left alone rather than dropped"
+
+
+def test_a_boundary_follows_the_room_identity_not_the_floor_id():
+    """The whole point of tier 1. A room whose floor churned is still that room, so the footprint
+    measured this capture lands on the room the user named, not on a freshly minted one."""
+    ids, rooms = resolve_rooms([_g("f_old", ["f_old", "w1", "w2"], boundary=_bd(4.0, 3.0, 2.4))])
+    rooms[ids[0]]["name"] = "kitchen"
+    ids2, rooms = resolve_rooms([_g("f_new", ["f_new", "w1", "w2"], boundary=_bd(4.2, 3.1, 2.45))],
+                               rooms, {"f_old": ids[0], "w1": ids[0], "w2": ids[0]})
+    assert ids2 == ids, "same room, new floor"
+    assert rooms[ids[0]]["name"] == "kitchen"
+    assert rooms[ids[0]]["boundary"]["size"] == [4.2, 3.1]
+    assert rooms[ids[0]]["floor"] == "f_new"

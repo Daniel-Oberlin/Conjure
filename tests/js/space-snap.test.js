@@ -1757,3 +1757,79 @@ test("assignRefs matches horizontals by matchRef's rule, not matchWall's", () =>
   assert.strictEqual(RS.assignRefs([near], [floor]).assigned[0].id, "rF");
   assert.strictEqual(RS.assignRefs([far], [floor]).assigned[0], null, "past the 0.5 m radius");
 });
+
+test("segmentRooms: each room measures its OWN ceiling height, which 2.6 never was", () => {
+  // The space-wide boundary hard-codes height 2.6 and could not do better: it keeps the largest floor by
+  // area and never knows which ceiling belongs to it. A room is a floor PLUS its covering ceiling, so the
+  // pairing that makes the measurement possible is already the definition.
+  const surfaces = twoRooms();
+  surfaces[3] = horiz("ceiling", 4.3, 2.75, 0, [4, 4], "real_ceil_B");   // B is a taller room than A
+  const r = RS.segmentRooms(THREE, surfaces);
+  const byFloor = Object.fromEntries(r.rooms.map((x) => [x.floor, x]));
+  assert.ok(Math.abs(byFloor["real_floor_A"].boundary.height - 2.4) < 1e-6, "A measures its own 2.4");
+  assert.ok(Math.abs(byFloor["real_floor_B"].boundary.height - 2.75) < 1e-6, "B measures its own 2.75");
+  assert.deepEqual(byFloor["real_floor_A"].boundary.size, [4, 4], "footprint is the floor's own spans");
+});
+
+test("segmentRooms: a room with no covering ceiling reports no height rather than a wrong one", () => {
+  const surfaces = twoRooms().filter((s) => s.id !== "real_ceil_B");
+  const r = RS.segmentRooms(THREE, surfaces);
+  const B = r.rooms.find((x) => x.floor === "real_floor_B");
+  assert.equal(B.ceiling, null);
+  assert.equal(B.boundary.height, null, "absent, not the 2.6 it used to be told");
+  assert.deepEqual(B.boundary.size, [4, 4], "the footprint is still known — only the height is not");
+});
+
+test("segmentRooms: an implausible floor-to-ceiling gap is refused, not reported confidently", () => {
+  // A ceiling mis-paired across a split level would otherwise yield a confident absurdity, and the
+  // summary states this number to the director as measured fact.
+  const surfaces = twoRooms();
+  surfaces[1] = horiz("ceiling", 0, 9.0, 0, [4, 4], "real_ceil_A");
+  const r = RS.segmentRooms(THREE, surfaces);
+  const A = r.rooms.find((x) => x.floor === "real_floor_A");
+  assert.equal(A.ceiling, "real_ceil_A", "still paired — the pairing is a footprint question");
+  assert.equal(A.boundary.height, null, "but 9 m is not a storey, so no height is claimed");
+});
+
+test("segmentRooms: a floor's polygon is carried in its OWN frame, and falls back to its box", () => {
+  // The convention is load-bearing and easy to get wrong: the existing space-wide `floorPolygon` is the
+  // raw XRPlane.polygon, never multiplied by the plane pose, so it encodes shape and size and NOT place.
+  // Per-room keeps that convention rather than quietly changing it — mixing the two would draw a room's
+  // outline at the origin.
+  const surfaces = twoRooms();
+  const withPoly = twoRooms();
+  withPoly[0]._poly = [{ x: -2, z: -2 }, { x: 2, z: -2 }, { x: 2, z: 1 }, { x: -1, z: 2 }];  // an L-ish floor
+  const plain = RS.segmentRooms(THREE, surfaces).rooms.find((x) => x.floor === "real_floor_A");
+  const fancy = RS.segmentRooms(THREE, withPoly).rooms.find((x) => x.floor === "real_floor_A");
+  assert.deepEqual(plain.boundary.polygon, [[-2, -2], [2, -2], [2, 2], [-2, 2]],
+                   "no polygon carried ⇒ the axis-aligned box Pass A already reduced it to");
+  assert.deepEqual(fancy.boundary.polygon, [[-2, -2], [2, -2], [2, 1], [-1, 2]],
+                   "carried ⇒ the device's own outline, in the floor's own frame");
+  assert.ok(fancy.boundary.polygon.every(([x, z]) => Math.abs(x) <= 2.001 && Math.abs(z) <= 2.001),
+            "centred on the floor, not offset into the reference frame");
+});
+
+test("golden room (real capture): each room measures a DIFFERENT ceiling, and neither is 2.6", () => {
+  // The synthetic tests above encode the rule; this pins it to the hardware. Both rooms of the reference
+  // capture disagree with the constant the space-wide boundary hard-codes — one by 18 cm, the other by
+  // 8 cm — and they disagree with each other, which is the thing a single space-wide height cannot say.
+  const fixture = require("./fixtures/golden-space.json");
+  const surfaces = fixture.surfaces.map(function (s, i) {
+    const lq = new THREE.Quaternion(s.quat[0], s.quat[1], s.quat[2], s.quat[3]);
+    return { id: "real_" + s.semantic.replace(/\s+/g, "_") + "_" + i, semantic: s.semantic,
+             extent: s.extent, _lp: new THREE.Vector3(s.pos[0], s.pos[1], s.pos[2]), _lq: lq,
+             rotation: RS.eulerYXZ(THREE, lq), debug: {} };
+  });
+  const seg = RS.segmentRooms(THREE, surfaces);
+  assert.equal(seg.rooms.length, 2, "the known answer for this capture");
+
+  const hs = seg.rooms.map((r) => r.boundary.height).sort();
+  assert.ok(Math.abs(hs[0] - 2.42) < 0.005, `shorter room 2.42, got ${hs[0]}`);
+  assert.ok(Math.abs(hs[1] - 2.68) < 0.005, `taller room 2.68, got ${hs[1]}`);
+  assert.ok(hs[1] - hs[0] > 0.2, "a real 26 cm difference between rooms, which one height cannot carry");
+  seg.rooms.forEach((r) => {
+    assert.notEqual(r.boundary.height, 2.6);
+    assert.ok(r.boundary.size[0] > 3 && r.boundary.size[1] > 3, "a plausible domestic footprint");
+    assert.ok(r.boundary.polygon.length >= 3);
+  });
+});
