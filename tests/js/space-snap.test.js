@@ -1891,3 +1891,91 @@ test("refineRefs: the refinement never mutates the reference it was given", () =
   RS.refineRefs(refs, { w1: "room_1", w2: "room_2" }, [ROW("room_1", 0, 0, 0), ROW("room_2", 0.2, 0, 0.1)]);
   assert.equal(JSON.stringify(refs), before, "the seed is untouched");
 });
+
+// ---------------------------------------------------- roomResiduals: rotation, measured not applied
+
+// A square room's four walls as references, and the candidates the same room would produce after being
+// displaced by `t` and rotated by `thDeg` about its centre. `res` is the pre-fit distance, which only
+// feeds `before`.
+function roomPair(thDeg, tx, tz, skewOneWallDeg) {
+  const C = 5;                                    // room centre, off the origin so a rotation also translates
+  const walls = [
+    { id: "w_n", nyaw: 0,            x: C,     z: C + 2 },
+    { id: "w_s", nyaw: Math.PI,      x: C,     z: C - 2 },
+    { id: "w_e", nyaw: Math.PI / 2,  x: C + 2, z: C },
+    { id: "w_w", nyaw: -Math.PI / 2, x: C - 2, z: C },
+  ];
+  const th = thDeg * Math.PI / 180, ct = Math.cos(th), st = Math.sin(th);
+  const ref = walls.map((w) => ({ id: w.id, sem: "wall", orient: "vertical", ext: [4, 2.4],
+                                  nyaw: w.nyaw, pos: { x: w.x, y: 1.2, z: w.z } }));
+  // The candidate is the reference moved: a real room rotation turns each wall's NORMAL by the same
+  // angle, which is the only place a rectangular room's rotation is visible at all.
+  const residuals = walls.map((w, i) => {
+    const lx = w.x - C, lz = w.z - C;
+    const skew = (skewOneWallDeg && i === 0 ? skewOneWallDeg * Math.PI / 180 : 0);
+    return { id: w.id, res: 0.05, orient: "vertical", nyaw: w.nyaw - th - skew,
+             tx: C + (lx * ct - lz * st) - tx, ty: 1.2, tz: C + (lx * st + lz * ct) - tz };
+  });
+  return { ref, residuals, roomOf: Object.fromEntries(walls.map((w) => [w.id, "room_1"])) };
+}
+
+test("roomResiduals: a room rotated by a known angle has that angle recovered", () => {
+  const { ref, residuals, roomOf } = roomPair(1.5, 0, 0);
+  const [r] = RS.roomResiduals(THREE, residuals, ref, roomOf);
+  assert.ok(r.dyaw !== null, "yaw is fitted when the walls constrain it");
+  const deg = r.dyaw * 180 / Math.PI;
+  assert.ok(Math.abs(deg - 1.5) < 0.01, `recovered ${deg.toFixed(3)}°, expected 1.5`);
+  assert.ok(r.yawSd * 180 / Math.PI < 0.01, "every wall agrees, which is what a ROOM rotating looks like");
+  assert.ok(r.yawOk, "1.5° is a plausible room rotation, not a broken lock");
+});
+
+test("roomResiduals: a purely TRANSLATED room reports no rotation to speak of", () => {
+  // The guard against fitting noise: the extra degree of freedom must not invent a rotation where the
+  // room has simply moved, or every session would report one.
+  const { ref, residuals, roomOf } = roomPair(0, 0.08, 0.03);
+  const [r] = RS.roomResiduals(THREE, residuals, ref, roomOf);
+  assert.ok(Math.abs(r.dyaw * 180 / Math.PI) < 0.02, `no rotation, got ${r.dyaw}`);
+  assert.equal(r.yawOk, false, "a rotation smaller than its own spread is not a rotation");
+  assert.ok(Math.abs(r.dx - 0.08) < 1e-6 && Math.abs(r.dz - 0.03) < 1e-6, "the translation is unaffected");
+  assert.ok(r.after < 1e-6, "translation alone already explains it");
+});
+
+test("roomResiduals: an absurd rotation is reported but refused", () => {
+  const { ref, residuals, roomOf } = roomPair(20, 0, 0);
+  const [r] = RS.roomResiduals(THREE, residuals, ref, roomOf);
+  assert.ok(r.dyaw !== null, "still measured — the log is how a bad lock gets noticed");
+  assert.equal(r.yawOk, false, "but 20° is a broken lock, not a room that rotated");
+});
+
+test("roomResiduals: rotation is measured and NEVER applied", () => {
+  // The whole point of this increment. refineRefs moves rooms by translation only; if that ever stops
+  // being true it must be a decision someone made, not a line that drifted.
+  const { ref, residuals, roomOf } = roomPair(2.0, 0, 0);
+  const rows = RS.roomResiduals(THREE, residuals, ref, roomOf);
+  assert.ok(rows[0].yawOk, "a rotation the guards would accept");
+  const out = RS.refineRefs(ref, roomOf, rows.concat([
+    { room: "room_2", dx: 0, dz: 0, dy: 0.1, ok: true },
+  ]), { minSpreadM: 0.001 });
+  out.refs.forEach((r, i) => {
+    if (!r._orig) return;
+    assert.ok(Math.abs(r.nyaw - ref[i].nyaw) < 1e-12, "no reference normal is ever rotated");
+  });
+});
+
+test("roomResiduals: ONE wall paired with the wrong reference is not a rotated room", () => {
+  // The discriminator, and the reason the spread is reported beside the mean. A room that rotated turns
+  // every wall in it by the same angle; a single bad pairing drags the mean a little and the spread a
+  // lot. Without `yawSd` the two are the same number and a mismatch would read as a room rotation.
+  const { ref, residuals, roomOf } = roomPair(0, 0, 0, 12);   // one wall 12° out, the room square
+  const [r] = RS.roomResiduals(THREE, residuals, ref, roomOf);
+  assert.ok(Math.abs(r.dyaw * 180 / Math.PI) < 4, "the mean is dragged, but only by a quarter of it");
+  assert.ok(r.yawSd * 180 / Math.PI > 4, "and the spread gives it away");
+  assert.equal(r.yawOk, false, "refused: a disagreement wider than itself is not a rotation");
+});
+
+test("roomResiduals: a room with too few walls reports no yaw rather than a confident one", () => {
+  const { ref, residuals, roomOf } = roomPair(1.5, 0, 0);
+  const [r] = RS.roomResiduals(THREE, residuals.slice(0, 1), ref, roomOf);
+  assert.equal(r.dyaw, null, "one wall cannot tell a rotated room from a mismeasured one");
+  assert.equal(r.yawOk, false);
+});

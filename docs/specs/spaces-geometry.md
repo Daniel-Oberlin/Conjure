@@ -183,7 +183,7 @@ passthrough anyway, and the candidate vote runs ahead of this gate — it is wha
 vantage; the vote can lock 180° off. Distinguishing features (differently-sized walls, doors, wall-art)
 resolve it. This is the same class as the boundary-flip below.
 
-### 4.4 Per-room residuals — measured, applied nowhere
+### 4.4 Per-room residuals — translation applied behind a knob, rotation measured only
 
 §1's finding is that one rigid transform cannot fit a multi-room space: the map is locally non-rigid by up
 to ~9 cm. Registration still solves exactly one, so every room but the one the fit favours carries a
@@ -220,6 +220,26 @@ observed three times larger between one morning and one afternoon — and the un
 The guards (≥4 pairs, ≥2 walls, a non-degenerate solve, ≤0.25 m in x/z, ≤0.6 m in y, and the fit must
 reduce the room's residual) are evaluated on every fit and logged as `would_apply`, so the field data says
 whether the refinement would have been accepted rather than only what it computed.
+
+**Rotation is measured and not applied, and it is measured from the NORMALS.** The fit is translation-only
+because the residual it is built on cannot see a rotation: a wall's perpendicular offset is first-order
+blind to its own room turning. For an axis-aligned rectangular room every wall's ∂offset/∂θ is **exactly
+zero**, because each normal is perpendicular to that wall's offset from the room centre — rotate such a
+room and no wall moves off its own reference *plane*, the planes turn in place. A θ fitted from positions
+therefore reads ~0 on a square room and ill-conditioned noise on a nearly-square one, which is what a test
+of a known 1.5° rotation found when it recovered 0.75°.
+
+So `register` records each matched plane's `nyaw` carried through the trial yaw, and the per-room fit
+reports `dyaw` as the circular mean of reference-minus-candidate normal yaw, with **`yawSd` beside it**.
+The spread is what makes the mean readable: a room that genuinely rotated turns every wall in it by the
+same angle, so the spread is small; one wall paired with the wrong reference moves the mean a little and
+the spread a lot. `yaw_would_apply` requires both within 3° and the mean larger than its own spread —
+a disagreement wider than itself is not a rotation.
+
+This is the same measure-before-apply discipline the translation was held to, and for the same reason:
+translation-only leaves a median 3.8 mm across 58 settled fits, which is noise, but 8 of them leave over
+20 mm and one 89 mm. A per-room yaw is one of the few things that residue can be; a single bad pairing and
+a mis-lock are the others, and only the field data separates them.
 
 **Applying it — `SpaceSnap.refineRefs`, off unless `room_refine` is set.** A copy of the reference
 constellation with each room moved onto where this capture found it, passed to `assignRefs` in place of
@@ -865,7 +885,8 @@ it now confirms a measurement rather than an argument.
 | `level.census` / `.anomaly` | a floor/ceiling height moved >2 cm; a height moved relative to the rest of the space |
 | `track.reset` / `.lock` | reference-space recenter (boundary trip); lock lost or regained |
 | `room.error` | a rooms step threw — segmentation or the residual fit; once per distinct failure |
-| `room.residual` | a room's fit against the global transform first appears, moves >1 cm, or flips its verdict (§4.4) |
+| `room.residual` | a room's fit against the global transform first appears, moves >1 cm, or flips its verdict; carries `dyaw`/`yaw_sd` in degrees beside the translation (§4.4) |
+| `room.refine` | rooms were actually moved for identity — the spread that justified it and the common offset that was left to the global fit (§4.4) |
 | `void.establish` | a void world's canonical frame was established — wall count, held captures, `forced` (§4.1.2) |
 | `seed.add` / `.update` / `.prune` | the server's own view — a prune is where a surface's material is destroyed |
 | `mark` | the controller-button ground-truth probe (§10.3) |

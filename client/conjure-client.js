@@ -2267,6 +2267,13 @@
             // Reported beside the fit, never folded into it: §10.2's detector rests on registration not
             // touching height, so an applied per-room y would cancel what it measures.
             dy: r.dy == null ? null : +r.dy.toFixed(4),
+            // Rotation, in DEGREES because that is how anyone reads a room being askew, and measured from
+            // the normals — a wall's perpendicular offset cannot see its room rotate. `yaw_sd` is what
+            // separates a rotated room (every wall by the same angle) from one mismatched wall (the mean
+            // moves a little, the spread a lot), so neither number means anything without the other.
+            dyaw: r.dyaw == null ? null : +(r.dyaw * 180 / Math.PI).toFixed(3),
+            yaw_sd: r.yawSd == null ? null : +(r.yawSd * 180 / Math.PI).toFixed(3),
+            yaw_n: r.nyaw, yaw_would_apply: r.yawOk,
             would_apply: r.ok, applied: false,
           });
         });

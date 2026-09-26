@@ -199,7 +199,8 @@
       /** @type {Set<RefSurface>} */
       var claimed = new Set();   // distinct reference surfaces covered (extras/fragmentation don't inflate)
       var rawInl = 0;
-      /** @type {{id: string|undefined, res: number, dist: number, tx: number, ty: number, tz: number}[]} */
+      /** @type {{id: string|undefined, res: number, dist: number, tx: number, ty: number, tz: number,
+       *           nyaw: number, orient: string}[]} */
       var res = [];              // per-covered-plane residual + the reference's distance from origin (diag)
       cur.forEach(function (c) {
         var tp = c.pos.clone().applyMatrix4(Tmat), bd = INLIER_M;
@@ -208,9 +209,16 @@
         // `tx/ty/tz` is the CURRENT plane carried through the global transform — the paired point, kept as
         // plain numbers so it survives the worker's structured clone. Without it a per-room refinement
         // would have to redo the pairing, and a second copy of the matching rule is how the two drift.
+        // `nyaw` is the candidate's normal carried through this trial yaw — the ONE quantity a per-room
+        // rotation is visible in. A wall's perpendicular offset is first-order BLIND to its room rotating:
+        // for an axis-aligned rectangular room every wall's ∂offset/∂θ is exactly zero, because each
+        // normal is perpendicular to its own offset from the room centre. Rotate such a room and no wall
+        // moves away from its own reference plane at all; only the normals turn. So a rotation fitted from
+        // positions reads ~0 on a square room and unstable garbage on a nearly-square one.
         if (hit) { claimed.add(hit); rawInl++;
                    res.push({ id: hit.id, res: bd, dist: Math.hypot(hit.pos.x, hit.pos.z),
-                              tx: tp.x, ty: tp.y, tz: tp.z }); }
+                              tx: tp.x, ty: tp.y, tz: tp.z,
+                              nyaw: c.nyaw + theta, orient: c.orient }); }
       });
       var cov = claimed.size;
       if (!best || cov > best.cov) best = { Tmat: Tmat, cov: cov, inl: rawInl, res: res };
@@ -1518,6 +1526,15 @@
     return out;
   }
 
+  /** Signed angle into (−π, π]. `register` has its own copy scoped to the solve; this one serves the
+   *  per-room fit, where a yaw difference either side of ±π is the same small disagreement.
+   *  @param {number} a @returns {number} */
+  function wrapAngle(a) {
+    while (a > Math.PI) a -= 2 * Math.PI;
+    while (a < -Math.PI) a += 2 * Math.PI;
+    return a;
+  }
+
   /**
    * Per-ROOM residuals after a global registration — how far each room is from where one rigid transform
    * says it should be, and what small translation would close that gap.
@@ -1543,12 +1560,23 @@
    * one — so an applied per-room y would cancel exactly the quantity it measures.
    *
    * @param {THREE_NS} THREE
-   * @param {{id: string|undefined, res: number, tx: number, ty: number, tz: number}[]} residuals
+   * @param {{id: string|undefined, res: number, tx: number, ty: number, tz: number,
+   *          nyaw?: number, orient?: string}[]} residuals
    * @param {RefSurface[]} ref
    * @param {Record<string, string>} roomOf        reference surface id → room id
-   * @param {{minPairs?: number, maxM?: number, maxYM?: number}} [opts]
+   * `dyaw`/`yawSd` are MEASURED and never applied — the same discipline the translation was held to for
+   * two weeks before anything acted on it. They come from the NORMALS, because the perpendicular offset
+   * a translation is fitted from cannot see a room rotate at all (see the rotation block below).
+   *
+   * @param {THREE_NS} THREE
+   * @param {{id: string|undefined, res: number, tx: number, ty: number, tz: number,
+   *          nyaw?: number, orient?: string}[]} residuals
+   * @param {RefSurface[]} ref
+   * @param {Record<string, string>} roomOf        reference surface id → room id
+   * @param {{minPairs?: number, maxM?: number, maxYM?: number, maxYawDeg?: number}} [opts]
    * @returns {{room: string, n: number, nz: number, before: number, after: number,
-   *            dx: number, dz: number, dy: number|null, ok: boolean}[]}
+   *            dx: number, dz: number, dy: number|null, ok: boolean,
+   *            dyaw: number|null, yawSd: number|null, nyaw: number, yawOk: boolean}[]}
    */
   function roomResiduals(THREE, residuals, ref, roomOf, opts) {
     opts = opts || {};
@@ -1565,7 +1593,8 @@
       (groups[rid] = groups[rid] || []).push({ p: p, r: r });
     });
     /** @type {{room: string, n: number, nz: number, before: number, after: number,
-     *          dx: number, dz: number, dy: number|null, ok: boolean}[]} */
+     *          dx: number, dz: number, dy: number|null, ok: boolean,
+     *          dyaw: number|null, yawSd: number|null, nyaw: number, yawOk: boolean}[]} */
     var out = [];
     Object.keys(groups).sort().forEach(function (rid) {
       var g = groups[rid];
@@ -1595,12 +1624,57 @@
         after2 += ex * ex + ey * ey + ez * ez;
       });
       var after = Math.sqrt(after2 / g.length);
+
+      // --- Rotation: MEASURED from the NORMALS, and never applied (see refineRefs) ---------------
+      // Translation-only leaves a median 3.8 mm across 58 settled fits, which is noise — but 8 of them
+      // leave over 20 mm, worst 89 mm, and a per-room yaw is one of the few things that residue could be.
+      // The others are a single badly-matched pair and a genuine mis-lock, and a translation-only fit
+      // cannot tell the three apart. So the DOF is measured and reported, exactly as the translation was
+      // reported for two weeks before anything applied it.
+      //
+      // It is fitted from the normals and NOT from the positions, which is not a preference. A wall's
+      // perpendicular offset is first-order blind to its room rotating: for an axis-aligned rectangular
+      // room every wall's ∂offset/∂θ is exactly zero, since each normal is perpendicular to its own offset
+      // from the room centre. Rotate such a room and no wall moves off its own reference PLANE — the
+      // planes turn in place. A position-fitted θ therefore reads ~0 on a square room and ill-conditioned
+      // noise on a nearly-square one, which is the first thing the test of a known 1.5° rotation found.
+      //
+      // `yawSd` is what separates a rotated room from a mismatched wall: a real room rotation turns every
+      // wall in it by the same angle, so the spread is small. One wall paired with the wrong reference
+      // moves the mean a little and the spread a lot.
+      var sy2 = 0, cy2 = 0, nyw = 0;
+      g.forEach(function (m) {
+        var r = m.r, p = m.p;
+        if (r.orient === "horizontal" || p.nyaw == null) return;   // a floor says nothing about yaw
+        var e = wrapAngle(r.nyaw - p.nyaw);
+        sy2 += Math.sin(e); cy2 += Math.cos(e); nyw++;
+      });
+      var dyaw = /** @type {number|null} */ (null), yawSd = /** @type {number|null} */ (null);
+      if (nyw >= 2) {
+        var mean = Math.atan2(sy2 / nyw, cy2 / nyw);
+        var sd2 = 0;
+        g.forEach(function (m) {
+          var r = m.r, p = m.p;
+          if (r.orient === "horizontal" || p.nyaw == null) return;
+          var e = wrapAngle(wrapAngle(r.nyaw - p.nyaw) - mean);
+          sd2 += e * e;
+        });
+        dyaw = mean;
+        yawSd = Math.sqrt(sd2 / nyw);
+      }
       // Bounded SEPARATELY, because they fail differently. A large x/z delta is evidence of a bad global
       // lock; a large y is not — the floating-room displacement is genuinely unbounded (observed 3x
       // larger between one morning and one afternoon), and the unmerged correction's own 0.15 m ceiling
       // would have refused the very fault it was written for.
       var mag = Math.hypot(dx, dz);
+      // `yawOk` says only "this rotation would have been accepted had anything applied it": bounded,
+      // and an actual improvement on the translation alone. Past a couple of degrees a room has not
+      // rotated — the lock has gone wrong, and the global fit is the thing to distrust.
+      var MAXYAW = (opts.maxYawDeg != null ? opts.maxYawDeg : 3.0) * Math.PI / 180;
       out.push({ room: rid, n: g.length, nz: nv, before: before, after: after,
+                 dyaw: dyaw, yawSd: yawSd, nyaw: nyw,
+                 yawOk: dyaw != null && Math.abs(dyaw) <= MAXYAW && yawSd != null
+                        && yawSd <= MAXYAW && Math.abs(dyaw) > yawSd,
                  dx: dx, dz: dz, dy: dy,
                  // The guards a future APPLY would use, evaluated now so the log says whether the
                  // refinement would have been accepted — not merely what it computed.
