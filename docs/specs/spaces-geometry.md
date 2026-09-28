@@ -1044,7 +1044,7 @@ checked anywhere before. The probe needs no overlay and settles the displacement
 | `--inset-standoff` | 0.02 m | how far an inset sits in front of its wall plane |
 | `--reg-size-tol` / `--reg-min-cov` / `--reg-min-cov-frac` / `--reg-inlier-m` / `--reg-yaw-peaks` | 0.5 / 4 / 0.3 / 0.4 / 5 | registration acceptance |
 | `--wall-perp-tol` / `--wall-yaw-tol` / `--wall-overlap-slop` | 0.15 m / 30° / 0.3 m | `matchWall` identity tolerances |
-| `room_refine` / `room_refine_min_spread` | **off** / 0.02 m | match identity with a per-room delta (§4.4); the floor is room-to-room disagreement, not displacement |
+| `--room-refine` / `--room-refine-min-spread` | **off** / 0.02 m | match identity with a per-room delta (§4.4); the floor is room-to-room disagreement, not displacement |
 | `--drop-surface` | — | pretend a surface was not captured (exercise recovery solo) |
 | `--foveation` | 0 | GPU headroom; raising it cut the dropped-frame rate monotonically |
 | `--void-origin` | `centres` | a void world's canonical-frame origin basis (§4.1.3): wall centres or plane corners |

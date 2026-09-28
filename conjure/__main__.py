@@ -113,6 +113,17 @@ def main() -> None:
     reg.add_argument("--reg-yaw-peaks", type=int, default=5, metavar="N",
                      help="how many candidate room rotations to try when solving the guest's orientation "
                           "(default: 5). More ⇒ more robust to an ambiguous/noisy heading, slightly slower.")
+    reg.add_argument("--room-refine", action="store_true",
+                     help="match surface identity with a per-room delta instead of one transform for the "
+                          "whole space (docs/specs/spaces-geometry.md §4.4). OFF by default: it changes "
+                          "IDENTITY, which is what carries a user's styling, so a wrong refinement costs "
+                          "their data while a right one buys registration margin. Only a room's deviation "
+                          "from the common offset is applied — a whole-space settle is the global fit's "
+                          "business. Rotation is measured and never applied either way.")
+    reg.add_argument("--room-refine-min-spread", type=float, default=0.02, metavar="METERS",
+                     help="room-to-room disagreement below which no room is moved (default: 0.02). The "
+                          "measured median is 0.0032, so nothing moves on a healthy session; drop this to "
+                          "~0.001 to force the path to engage for a deliberate test.")
     reg.add_argument("--capture-interval", type=float, default=2.0, metavar="SECONDS",
                      help="how often a headset recaptures + re-registers the room, in seconds (default: 2.0). "
                           "Lower ⇒ the guest re-locks faster but churns more; higher ⇒ calmer, slower to recover.")
@@ -208,6 +219,8 @@ def main() -> None:
     os.environ["CONJURE_REG_SIZE_TOL"] = str(args.reg_size_tol)
     os.environ["CONJURE_REG_INLIER_M"] = str(args.reg_inlier_m)
     os.environ["CONJURE_REG_YAW_PEAKS"] = str(args.reg_yaw_peaks)
+    os.environ["CONJURE_ROOM_REFINE"] = "1" if args.room_refine else "0"
+    os.environ["CONJURE_ROOM_REFINE_MIN_SPREAD"] = str(args.room_refine_min_spread)
     os.environ["CONJURE_CAPTURE_INTERVAL"] = str(args.capture_interval)
     os.environ["CONJURE_APPLY_TOL_POS"] = str(args.apply_tol_pos)
     os.environ["CONJURE_APPLY_TOL_ROT_DEG"] = str(args.apply_tol_rot)
