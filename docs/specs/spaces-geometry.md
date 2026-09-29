@@ -221,9 +221,16 @@ Rendering is **not** gated. Drawing a surface slightly out is cheap and self-cor
 not, and holding the view would pay a per-session cost against the risk that is already harmless — and
 would still need a timeout, which is the failure this section exists to remove.
 
-`space.settle` logs the curve while it moves and both transitions, because the shape is what matters: the
-session above opened at 131 mm and reached 2 mm fifty seconds later, and a log recording only endpoints
-could not have shown that the damage happened at 2.8 s.
+`space.settle` logs the curve while it moves and both transitions, because the shape is what matters: a
+log recording only endpoints could not have shown that the 2026-09-29 damage happened at 2.8 s.
+
+**The thresholds are provisional, and the reason is worth stating.** `settle_rms` 4 mm was chosen against
+the only settle curve on record — the per-room *registration residual* of 2026-09-29, 131 mm decaying to
+2 mm over about fifty seconds. That is **distance-from-stored, which is not the quantity this gate
+measures**, and the whole argument above is that the two differ. Self-movement should be smaller and
+should fall faster, since it is a per-capture delta rather than an accumulated offset, but nobody has
+seen it yet: the probe is newer than any session. So the first device run with `space.settle` in the log
+sets these numbers, and until then 4 mm is a placeholder rather than a measurement.
 
 ### 4.4 Per-room residuals — translation applied behind a knob, rotation measured only
 
@@ -1134,8 +1141,8 @@ on are pinned in `surface-overlay.test.js` against a stubbed `window`/`document`
 
 **`client/world-model.js`** — `surfaceSig`, `surfaceMoved`, `surfacePoseMoved`, `surfaceShapeChanged`,
 `advanceSig`, `slewAlpha`, `slewSettled`, `eulerYXZQuat`, `holesAttr`, `spawnRight`, `avatarAim`,
-`hasFrameBasis`, `loadGate`, `selectGate`, `relocStep`, `relocHint`, `voidFrameGate`, `voidGateAdvance`,
-`voidGateInit`, `roomResidualGate`, `levelDeviation`.
+`hasFrameBasis`, `loadGate`, `selectGate`, `settleGate`, `relocStep`, `relocHint`, `voidFrameGate`,
+`voidGateAdvance`, `voidGateInit`, `roomResidualGate`, `levelDeviation`.
 
 **`client/space-worker.js`** — the off-thread `register` host.
 
