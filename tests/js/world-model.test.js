@@ -769,3 +769,52 @@ test("relocHint: the advice matches the CAUSE, and only a lost lock gets the ste
   assert.match(WM.relocHint("selecting").text, /space/i, "an unidentified space says so");
   assert.strictEqual(WM.relocHint(undefined).advise, true, "unknown cause keeps the old behaviour");
 });
+
+// ------------------------------------------------- settleGate (the 2026-09-29 wall loss)
+
+test("settleGate: needs a RUN of quiet captures, not one", () => {
+  // A settle passes through small values on its way down. One sample cannot tell "converged" from
+  // "momentarily crossing zero", and the whole point of this gate is to be sure before something
+  // irreversible happens.
+  let run = 0, settled = false;
+  for (const rms of [0.002, 0.002]) {
+    const g = WM.settleGate(run, settled, rms); run = g.run; settled = g.settled;
+    assert.equal(settled, false, "two quiet captures is not yet evidence");
+  }
+  const g = WM.settleGate(run, settled, 0.002);
+  assert.equal(g.settled, true, "the third makes the run");
+  assert.equal(g.became, true, "and it reports the transition exactly once");
+  assert.equal(WM.settleGate(g.run, g.settled, 0.002).became, null, "not again while it holds");
+});
+
+test("settleGate: one capture of real movement gives it up immediately", () => {
+  // Deliberately asymmetric. One capture of movement is enough to make a prune wrong; one quiet capture
+  // is not enough to make it right.
+  let g = WM.settleGate(3, true, 0.02);
+  assert.equal(g.settled, false, "it left at once");
+  assert.equal(g.run, 0, "and starts the run again from nothing");
+  assert.equal(g.became, false);
+});
+
+test("settleGate: nothing comparable is not the same as calm", () => {
+  // First capture of a session, or every plane replaced: absence of evidence must not accumulate toward
+  // permission to delete a wall.
+  const g = WM.settleGate(2, false, null);
+  assert.equal(g.run, 0);
+  assert.equal(g.settled, false);
+});
+
+test("settleGate: replaying 2026-09-29, nothing is settled when the wall was lost", () => {
+  // The session that pruned `real_wall_157`. Per-capture self-movement is not in that log, but the
+  // registration residual it drove is, and its shape is the point: the first captures are nowhere near
+  // still, and the gate must be shut for all of them. The wall was lost on the SECOND capture.
+  const curve = [0.131, 0.092, 0.067, 0.040, 0.031, 0.024, 0.019, 0.015, 0.013, 0.011,
+                 0.009, 0.008, 0.007, 0.006, 0.005, 0.002, 0.002, 0.002];
+  let run = 0, settled = false, firstSettledAt = -1;
+  curve.forEach((rms, i) => {
+    const g = WM.settleGate(run, settled, rms); run = g.run; settled = g.settled;
+    if (settled && firstSettledAt < 0) firstSettledAt = i;
+  });
+  assert.equal(firstSettledAt, 17, "settles only once the curve is genuinely flat");
+  assert.ok(firstSettledAt > 1, "and emphatically NOT at capture 1, where the wall was pruned");
+});

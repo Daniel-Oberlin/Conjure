@@ -476,6 +476,38 @@
   }
 
   /**
+   * Has the headset's own model stopped moving?
+   *
+   * `rms` is how far the DEVICE moved its own planes since the last capture — not how far they sit from
+   * our stored copy. The difference decides whether this gate can ever open: distance-from-stored stays
+   * large when the room genuinely changed, so a gate built on it holds for ever or needs a timeout, and
+   * a timeout is exactly what ate `real_wall_157` on 2026-09-29. Self-movement goes quiet as soon as the
+   * device stops revising, whatever the room did — and it needs no reference at all, so it works on a
+   * first capture, in a new space, and for a guest with nothing stored.
+   *
+   * A RUN of quiet captures, never one: a settle passes through small values on its way down, and one
+   * sample cannot tell "converged" from "momentarily crossing zero". `rms == null` (nothing comparable
+   * yet) resets rather than counts — absence of evidence is not calm.
+   *
+   * Leaving is immediate where arriving is patient, because the costs are not symmetric: one capture of
+   * real movement is enough to make a prune wrong, while one quiet capture is not enough to make it right.
+   *
+   * @param {number} run        consecutive quiet captures so far
+   * @param {boolean} settled   whether it currently counts as settled
+   * @param {number|null} rms   metres the device moved its own planes since the last capture
+   * @param {{quiet?: number, need?: number}} [opts]
+   * @returns {{run: number, settled: boolean, became: boolean|null}}  `became` is non-null only on a change
+   */
+  function settleGate(run, settled, rms, opts) {
+    opts = opts || {};
+    var quiet = opts.quiet != null ? opts.quiet : 0.004;
+    var need = opts.need != null ? opts.need : 3;
+    var next = (rms == null) ? 0 : (rms <= quiet ? (run || 0) + 1 : 0);
+    var now = next >= need;
+    return { run: next, settled: now, became: now === !!settled ? null : now };
+  }
+
+  /**
    * Is this capture complete enough to assign IDENTITY from? `detectedPlanes` is the persisted Room Setup
    * delivered wholesale rather than filling in as you look around, so a settled session sees essentially
    * all of it and a small fraction means the Quest has not finished restoring the room.
@@ -640,7 +672,7 @@
     return { dYaw: (a0 - a) * 180 / Math.PI, scale: r / r0 };
   }
 
-  return { hasFrameBasis: hasFrameBasis, levelDeviation: levelDeviation, roomResidualGate: roomResidualGate, loadGate: loadGate,
+  return { hasFrameBasis: hasFrameBasis, levelDeviation: levelDeviation, roomResidualGate: roomResidualGate, loadGate: loadGate, settleGate: settleGate,
            rotXZ: rotXZ, yawAboutPivot: yawAboutPivot, polarDrag: polarDrag,
            nest: nest, holesAttr: holesAttr, v3: v3, avatarAim: avatarAim, spawnRight: spawnRight,
            shouldSpawnGuest: shouldSpawnGuest, isCaptureAuthority: isCaptureAuthority,

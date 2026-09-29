@@ -403,6 +403,12 @@ class Settings:
     # Only a room's DEVIATION from the common offset is ever applied; a whole-space settle is the global
     # fit's business. Two device days put the median room-to-room disagreement at 3.2 mm — under the floor
     # below — and one session in sixteen at 78.6 mm, which is the raised-floor fault's shape.
+    # Settling (docs/specs/spaces-geometry.md §4.0c). How still the HEADSET'S OWN model has to be before
+    # the client will do work it cannot undo — minting a surface id, or letting one go absent. Measured as
+    # the RMS the device moved its own planes since the last capture, which asks "has it stopped revising?"
+    # rather than "does it agree with us?" — the second stays large when the room genuinely changed.
+    settle_rms: float = 0.004                        # m of per-capture self-movement counted as quiet
+    settle_run: int = 3                              # consecutive quiet captures before it counts as settled
     room_refine: bool = False                        # apply per-room deltas when matching identity
     room_refine_min_spread: float = 0.02             # m of room-to-room disagreement below which nothing moves
     capture_interval: float = 2.0                    # seconds between recaptures/re-registrations
@@ -634,6 +640,8 @@ def get_settings() -> Settings:
         reg_size_tol=float(os.environ.get("CONJURE_REG_SIZE_TOL", "0.5")),
         reg_inlier_m=float(os.environ.get("CONJURE_REG_INLIER_M", "0.4")),
         reg_yaw_peaks=int(os.environ.get("CONJURE_REG_YAW_PEAKS", "5")),
+        settle_rms=float(os.environ.get("CONJURE_SETTLE_RMS", "0.004")),
+        settle_run=int(os.environ.get("CONJURE_SETTLE_RUN", "3")),
         room_refine=os.environ.get("CONJURE_ROOM_REFINE", "0").strip().lower() not in ("0", "false", "no", "off", ""),
         room_refine_min_spread=float(os.environ.get("CONJURE_ROOM_REFINE_MIN_SPREAD", "0.02")),
         capture_interval=float(os.environ.get("CONJURE_CAPTURE_INTERVAL", "2.0")),
@@ -767,6 +775,8 @@ SETTABLE: dict[str, tuple[str, str]] = {
     "reg_size_tol":          ("client", "metres a detected plane may exceed its reference"),
     "reg_inlier_m":          ("client", "metres a plane may sit from a same-kind reference"),
     "reg_yaw_peaks":         ("client", "candidate room rotations tried when solving orientation"),
+    "settle_rms":            ("client", "m of per-capture self-movement below which the device model counts as quiet"),
+    "settle_run":            ("client", "consecutive quiet captures before the model counts as settled"),
     "room_refine":           ("client", "match identity with a per-room delta (piecewise-rigid); OFF by default"),
     "room_refine_min_spread": ("client", "m of room-to-room disagreement below which no room is moved"),
     "beam_timeout":          ("client", "seconds a controller beam lingers after the trigger"),
@@ -787,7 +797,7 @@ LIMITS: dict[str, tuple[float, float]] = {
     "foveation": (0.0, 1.0), "beam_trigger": (0.0, 1.0), "reg_min_cov_frac": (0.0, 1.0),
     "pose_tau": (0.0, 10.0), "geo_slice_ms": (0.0, 16.0), "capture_interval": (0.1, 60.0),
     "history_cap": (0, 10_000), "geometry_log_days": (0, 3650), "reg_min_cov": (0, 100),
-    "reg_yaw_peaks": (1, 64), "beam_timeout": (0.0, 600.0), "room_refine_min_spread": (0.0, 1.0),
+    "reg_yaw_peaks": (1, 64), "beam_timeout": (0.0, 600.0), "room_refine_min_spread": (0.0, 1.0), "settle_rms": (0.0, 1.0), "settle_run": (1, 60),
 }
 CHOICES: dict[str, tuple[str, ...]] = {
     "occlusion": ("off", "hands", "hands-solid"),

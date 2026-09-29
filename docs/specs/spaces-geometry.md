@@ -183,6 +183,48 @@ passthrough anyway, and the candidate vote runs ahead of this gate — it is wha
 vantage; the vote can lock 180° off. Distinguishing features (differently-sized walls, doors, wall-art)
 resolve it. This is the same class as the boundary-flip below.
 
+### 4.0c The settle gate — do not do the irreversible things while the device is still revising
+
+The two gates above ask *"can I see enough of the room?"* and *"which space is this?"*. Neither asks the
+question that decides whether a comparison can be trusted: **has the headset stopped moving its own
+planes?** On 2026-09-29 that gap cost a wall. The selection gate forced at 2.8 s (its patience is 8, and
+it records `forced` precisely so a forced pass is never mistaken for a healthy one); 19 ms later matching
+ran against a device model still ~13 cm from the stored one; `real_wall_157` missed the perpendicular gate
+by 4.6 cm; a new id was minted beside it and the original pruned, **carrying the grey the director had
+applied to it** — the one thing in a surface record that cannot be re-derived.
+
+The load gate could not have caught it. `detectedPlanes` is the persisted Room Setup delivered wholesale
+(§8), so "enough of the room" is satisfied in ~300 ms while the frame is still settling for the best part
+of a minute. The precondition it tests is met instantly by the very thing that makes the failure possible.
+
+**`WM.settleGate` measures the device against ITSELF** — the RMS its own planes moved since the last
+capture, keyed on the `XRPlane` object, which `detectedPlanes` returns identically while a plane stays
+tracked. Deliberately not distance-from-stored: that stays large when the room genuinely changed, so a
+gate built on it holds for ever or needs a timeout, and the timeout is what happened here. Self-movement
+goes quiet as soon as the device stops revising, whatever the room did, and it needs no reference at all —
+so it works on a first capture, in a new space, and for a guest with nothing stored.
+
+It takes a **run** of quiet captures (`settle_rms` 4 mm, `settle_run` 3) because a settle passes through
+small values on the way down, and it gives up settled status on a **single** capture of movement. The
+asymmetry is the point: one capture of movement is enough to make a prune wrong; one quiet capture is not
+enough to make it right.
+
+While unsettled, the client still registers, renders and posts — only the two irreversible things are
+withheld:
+
+| Withheld | Why |
+|---|---|
+| **absence** — an unmatched reference does not accumulate toward removal | the prune is what destroys styling. Not counted rather than counted-and-ignored: a tally that built through the settle would fire the instant it ended, which is the same bug with a delay |
+| **a mint reaching the POST** — a new id is still issued so this session can render and track the plane, but it is held out of the capture until the model is still | the same 13 cm that stops a wall matching invents one beside it; 2026-09-29 minted `_160` and `_161` in the capture that lost `_157`. A genuinely new surface arrives a few seconds later |
+
+Rendering is **not** gated. Drawing a surface slightly out is cheap and self-correcting; forgetting one is
+not, and holding the view would pay a per-session cost against the risk that is already harmless — and
+would still need a timeout, which is the failure this section exists to remove.
+
+`space.settle` logs the curve while it moves and both transitions, because the shape is what matters: the
+session above opened at 131 mm and reached 2 mm fifty seconds later, and a log recording only endpoints
+could not have shown that the damage happened at 2.8 s.
+
 ### 4.4 Per-room residuals — translation applied behind a knob, rotation measured only
 
 §1's finding is that one rigid transform cannot fit a multi-room space: the map is locally non-rigid by up
@@ -886,6 +928,7 @@ it now confirms a measurement rather than an argument.
 | `track.reset` / `.lock` | reference-space recenter (boundary trip); lock lost or regained |
 | `room.error` | a rooms step threw — segmentation or the residual fit; once per distinct failure |
 | `room.residual` | a room's fit against the global transform first appears, moves >1 cm, or flips its verdict; carries `dyaw`/`yaw_sd` in degrees beside the translation (§4.4) |
+| `space.settle` | the device's own model movement per capture while it is moving, and both transitions either side (§4.0c) |
 | `room.refine` | rooms were actually moved for identity — the spread that justified it and the common offset that was left to the global fit (§4.4) |
 | `void.establish` | a void world's canonical frame was established — wall count, held captures, `forced` (§4.1.2) |
 | `seed.add` / `.update` / `.prune` | the server's own view — a prune is where a surface's material is destroyed |
@@ -1044,6 +1087,7 @@ checked anywhere before. The probe needs no overlay and settles the displacement
 | `--inset-standoff` | 0.02 m | how far an inset sits in front of its wall plane |
 | `--reg-size-tol` / `--reg-min-cov` / `--reg-min-cov-frac` / `--reg-inlier-m` / `--reg-yaw-peaks` | 0.5 / 4 / 0.3 / 0.4 / 5 | registration acceptance |
 | `--wall-perp-tol` / `--wall-yaw-tol` / `--wall-overlap-slop` | 0.15 m / 30° / 0.3 m | `matchWall` identity tolerances |
+| `settle_rms` / `settle_run` | 0.004 m / 3 | how still the DEVICE's own model must be, and for how many captures, before a mint or a prune is allowed (§4.0c) |
 | `--room-refine` / `--room-refine-min-spread` | **off** / 0.02 m | match identity with a per-room delta (§4.4); the floor is room-to-room disagreement, not displacement |
 | `--drop-surface` | — | pretend a surface was not captured (exercise recovery solo) |
 | `--foveation` | 0 | GPU headroom; raising it cut the dropped-frame rate monotonically |

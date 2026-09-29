@@ -1610,6 +1610,12 @@
         this._lastDiag = null;      // last capture's frame (yaw/px/pz) — for the per-capture drift delta
         this._regRes = null;        // last register()'s per-wall residuals (--debug-registration probe)
         this._roomOf = null;        // ref id → room id from the LAST segmentation; feeds identity refinement
+        this._planeWas = new WeakMap();   // XRPlane → its last capture pose; the settling probe's memory
+        this._mintedUnsettled = {}; // ids minted before the model was still — withheld from the POST
+        this._modelChange = null;   // RMS the headset moved its OWN planes since the last capture (m)
+        this._settleRun = 0;        // consecutive quiet captures; `_settled` needs a RUN, not one sample
+        this._settled = false;
+        this._settleT0 = (window.performance && performance.now) ? performance.now() : 0;
         this._refSeq = 0;           // counter for minting brand-new surface ids
         // Client-owned model of what's in the room, for the POST gate (§7): only POST when this changes
         // structurally, so a settled room sends nothing. _known: id → last posted-frame surface record;
@@ -1734,6 +1740,11 @@
         // baseline, so carrying the old one over would report the switch itself as churn and an anomaly.
         this._miss = {}; this._everClaimed = {}; this._wasStyled = {};
         this._roomOf = null;        // a new world's partition is a new partition — never refine across one
+        // A new frame is a new settle: the planes are about to be re-posed wholesale, so whatever calm we
+        // had measured says nothing about the model we are about to be handed.
+        this._planeWas = new WeakMap(); this._modelChange = null; this._settleRun = 0; this._settled = false;
+        this._mintedUnsettled = {};
+        this._settleT0 = (window.performance && performance.now) ? performance.now() : 0;
         this._lastLevel = null; this._levelAlarm = {}; this._census = null; this._censusFloors = null;
         this._churnRing = []; this._loading = 0;
         // The void frame AND the gate's session memory: a world switch may be a switch to a different
@@ -2303,6 +2314,17 @@
       // (hide the virtual world + sky) with a headset-locked hint so you can safely step out of the play
       // boundary and back in — which forces the Quest to re-localize and lets registration re-lock.
       // Auto-restores the moment a confident lock returns.
+      // The settling curve, and the two transitions either side of it. Logged every capture while moving
+      // because the SHAPE is the point — 2026-09-29 opened at 131 mm and reached 2 mm fifty seconds later,
+      // and a log that recorded only the endpoints could not have shown that the damage happened at 2.8 s.
+      _geoLogSettle: function (became, rms) {
+        geoLog("space.settle", {
+          rms: rms == null ? null : +rms.toFixed(4),
+          run: this._settleRun || 0,
+          settled: became === null ? undefined : became,
+          since: this._settleT0 ? Math.round(performance.now() - this._settleT0) : undefined,
+        });
+      },
       _markLost:   function (time) { this._rlStep("lost", time); },
       _markLocked: function (time) { this._rlStep("ok", time); },
       // One place decides; WM.relocStep holds the rule (and its reasoning), this drives the DOM off a
@@ -2685,11 +2707,27 @@
 
         // Pass A — read every detected plane in the CURRENT refSpace (no world frame applied yet).
         var cur = [];
+        // SETTLING PROBE. How much the HEADSET'S OWN model moved since the last capture — not how far it
+        // sits from ours. That distinction is the whole point: distance-from-stored stays large when the
+        // room genuinely changed (you moved a bookcase), so a gate built on it holds for ever or needs a
+        // timeout, and the timeout is how a wall got eaten on 2026-09-29. Self-change goes quiet as soon
+        // as the headset stops revising, whatever the room did.
+        //
+        // Keyed on the XRPlane OBJECT, which `detectedPlanes` returns identically frame to frame while a
+        // plane stays tracked — so this needs no matching, no ids and no stored reference, and therefore
+        // works on a first capture, in a brand-new space, and for a guest who has nothing stored.
+        var moveSum = 0, moveN = 0;
         frame.detectedPlanes.forEach(function (plane) {
           var pose;
           try { pose = frame.getPose(plane.planeSpace, refSpace); } catch (e) { return; }
           if (!pose) return;
           var rp = pose.transform.position, ro = pose.transform.orientation;
+          var wasAt = self._planeWas.get(plane);
+          if (wasAt) {
+            var mdx = rp.x - wasAt.x, mdy = rp.y - wasAt.y, mdz = rp.z - wasAt.z;
+            moveSum += mdx * mdx + mdy * mdy + mdz * mdz; moveN++;
+          }
+          self._planeWas.set(plane, { x: rp.x, y: rp.y, z: rp.z });
           var quat = new THREE.Quaternion(ro.x, ro.y, ro.z, ro.w);
           var nrm = UP.clone().applyQuaternion(quat);       // the plane's normal (its local +Y), in refSpace
           var poly = plane.polygon || [];
@@ -2710,6 +2748,18 @@
         });
         if (!cur.length) return;
         if (JIT) this._jMark("passA");                      // read all detectedPlanes → cur
+
+        // Is the headset's model still moving? `settled` needs the change to be small AND to have STAYED
+        // small — one quiet capture in the middle of a settle proves nothing, and the run length is what
+        // separates "converged" from "passing through zero on the way somewhere else".
+        var mc = moveN ? Math.sqrt(moveSum / moveN) : null;
+        this._modelChange = mc;
+        var sg = WM.settleGate(this._settleRun, this._settled, mc,
+                               { quiet: +window.CONJURE_SETTLE_RMS || 0.004,
+                                 need: +window.CONJURE_SETTLE_RUN || 3 });
+        this._settleRun = sg.run; this._settled = sg.settled;
+        if (sg.became !== null) this._geoLogSettle(sg.became, mc);
+        else if (!sg.settled && mc != null) this._geoLogSettle(null, mc);   // the curve, while it is moving
 
         // Surface debug overlay (--debug-surface-overlay): draw the device's polygons and the rectangles we
         // derive from them, both in F_track. Hooked HERE, before the trust and load gates, deliberately —
@@ -3091,6 +3141,12 @@
           var sid = "real_" + c.sem.replace(/\s+/g, "_") + "_" + (self._refSeq++);
           var r = { id: sid, sem: c.sem, ext: c.ext.slice(), pos: lp.clone(), nyaw: cyaw, orient: c.orient };
           self._ref.push(r); claimed.add(r);
+          // A mint made while the model is still moving is a claim we are not entitled to make: the same
+          // 13 cm that stops a wall matching invents a new one beside it (2026-09-29 minted _160 and _161
+          // in the same capture that lost _157). It still gets an id so THIS session can render and track
+          // it, but it is withheld from the POST until the model is still — so it never reaches the space
+          // record, and a wall that is genuinely new simply arrives a few seconds later.
+          if (!self._settled) self._mintedUnsettled[sid] = 1;
           return sid;
         }
         // Pass B1 — WALLS + floor/ceiling first (insets need resolved wall ids). Walls get identity by
@@ -3356,6 +3412,13 @@
             }
             return;
           }
+          // A surface cannot be judged MISSING while the headset is still revising where its planes are.
+          // 2026-09-29: the selection gate forced at 2.8 s, matching ran against a model still 13 cm from
+          // ours, `real_wall_157` missed the perpendicular gate by 4.6 cm, and the wall the director had
+          // painted grey was pruned — carrying its styling, which is the one thing here that cannot be
+          // re-derived. Not counted rather than counted-and-ignored: a tally that builds through the
+          // settle would fire the instant it ends, which is the same bug with a delay.
+          if (!self2._settled) return;
           self2._absent[id] = (self2._absent[id] || 0) + 1;
           if (self2._absent[id] < 3) return;
           var gone = self2._known[id];
@@ -3408,7 +3471,13 @@
         if (!reasons.length) return;                                      // settled → nothing to POST
         var reason = reasons.join(", ");
 
-        var payload = Object.keys(self2._known).map(function (id) { return self2._known[id]; });
+        // Ids minted while the model was moving are held back until it is still. Once settled they either
+        // matched something real (and were never minted again) or they are a genuine new surface, and this
+        // releases them. Clearing on settle is what keeps a false mint out of the space record for good.
+        if (self2._settled) self2._mintedUnsettled = {};
+        var payload = Object.keys(self2._known)
+          .filter(function (id) { return !self2._mintedUnsettled[id]; })
+          .map(function (id) { return self2._known[id]; });
         self2._posted = {};
         payload.forEach(function (s) { self2._posted[s.id] = { position: s.position, rotation: s.rotation,
           extent: s.extent, holes: (s.holes || []).length, semantic: s.semantic }; });
