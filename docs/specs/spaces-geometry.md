@@ -209,6 +209,24 @@ small values on the way down, and it gives up settled status on a **single** cap
 asymmetry is the point: one capture of movement is enough to make a prune wrong; one quiet capture is not
 enough to make it right.
 
+**A sample only counts across a real interval, and that is not a detail** — the first version of this
+gate had no such rule and opened after **906 ms** on 2026-09-30, letting through exactly what it exists
+to prevent: `real_wall_19` (styled `#555555`) and `real_window_43` (styled `#00008b`) pruned, and Saka's
+anchor left one wall short so she moved rooms. It had read a movement of **exactly zero** and counted it
+as calm.
+
+It was not calm. During loading and selection the capture retries every ~300 ms rather than the usual 2 s,
+and the device does not republish plane poses that fast — so the probe compared two samples taken between
+updates. **Zero movement over 300 ms means no new data, not convergence**, and the refinement's own spread
+was still 64 mm at six seconds. So `WM.settleRms` refuses a verdict unless the pairs span at least
+`settle_gap_ms` (default: the capture interval), enough planes were compared, and the plane set has
+stopped growing — and the caller holds each plane's previous pose until the gap is wide enough rather than
+overwriting it every retry, or the baseline is refreshed faster than the device moves and the interval
+never opens.
+
+Zero *is* allowed to count once those hold: a converged device may legitimately republish identical poses,
+and refusing that would mean never settling, and so never recording a new surface again.
+
 While unsettled, the client still registers, renders and posts — only the two irreversible things are
 withheld:
 
@@ -1094,7 +1112,7 @@ checked anywhere before. The probe needs no overlay and settles the displacement
 | `--inset-standoff` | 0.02 m | how far an inset sits in front of its wall plane |
 | `--reg-size-tol` / `--reg-min-cov` / `--reg-min-cov-frac` / `--reg-inlier-m` / `--reg-yaw-peaks` | 0.5 / 4 / 0.3 / 0.4 / 5 | registration acceptance |
 | `--wall-perp-tol` / `--wall-yaw-tol` / `--wall-overlap-slop` | 0.15 m / 30° / 0.3 m | `matchWall` identity tolerances |
-| `settle_rms` / `settle_run` | 0.004 m / 3 | how still the DEVICE's own model must be, and for how many captures, before a mint or a prune is allowed (§4.0c) |
+| `settle_gap_ms` / `settle_rms` / `settle_run` | capture interval / 0.004 m / 3 | how still the DEVICE's own model must be, and for how many captures, before a mint or a prune is allowed (§4.0c) |
 | `--room-refine` / `--room-refine-min-spread` | **off** / 0.02 m | match identity with a per-room delta (§4.4); the floor is room-to-room disagreement, not displacement |
 | `--drop-surface` | — | pretend a surface was not captured (exercise recovery solo) |
 | `--foveation` | 0 | GPU headroom; raising it cut the dropped-frame rate monotonically |
@@ -1141,7 +1159,7 @@ on are pinned in `surface-overlay.test.js` against a stubbed `window`/`document`
 
 **`client/world-model.js`** — `surfaceSig`, `surfaceMoved`, `surfacePoseMoved`, `surfaceShapeChanged`,
 `advanceSig`, `slewAlpha`, `slewSettled`, `eulerYXZQuat`, `holesAttr`, `spawnRight`, `avatarAim`,
-`hasFrameBasis`, `loadGate`, `selectGate`, `settleGate`, `relocStep`, `relocHint`, `voidFrameGate`,
+`hasFrameBasis`, `loadGate`, `selectGate`, `settleGate`, `settleRms`, `relocStep`, `relocHint`, `voidFrameGate`,
 `voidGateAdvance`, `voidGateInit`, `roomResidualGate`, `levelDeviation`.
 
 **`client/space-worker.js`** — the off-thread `register` host.

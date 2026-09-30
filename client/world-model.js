@@ -476,6 +476,46 @@
   }
 
   /**
+   * Is this capture's plane movement EVIDENCE at all, or merely an absence of news?
+   *
+   * Written because the first version of this gate had no such rule and opened after 906 ms on
+   * 2026-09-30, letting through the two styled surfaces and three displaced objects it existed to
+   * protect. It read a movement of **exactly zero** and counted it as calm. It was not calm: during
+   * loading and selection the capture retries every ~300 ms rather than the usual 2 s, and the device
+   * does not republish plane poses that fast, so the probe compared two samples taken between updates.
+   * Zero movement over 300 ms means NO NEW DATA, not convergence — and the refinement's own spread was
+   * still 64 mm at six seconds, which is what the model was actually doing.
+   *
+   * So a sample must clear three bars before it counts, and the first is the one that mattered:
+   *
+   *   - `moveN` pairs must have been compared **across a real interval**. The caller holds each plane's
+   *     previous pose until the gap is wide enough, rather than overwriting it every retry — otherwise
+   *     the baseline is refreshed faster than the device moves and the gap never opens at all.
+   *   - **enough planes**, so one stale plane cannot speak for a room.
+   *   - the plane set is **not still growing**. 26 planes of an expected 67 at 1 ms and 66 by 300 ms is
+   *     the loading burst; nothing that arrives mid-burst says anything about whether the model is done.
+   *
+   * Zero IS allowed to count once those hold: a device that has converged may legitimately republish
+   * identical poses, and refusing that would mean never settling and never recording a new surface again.
+   *
+   * @param {number} moveSum   summed squared displacement over compared planes (m²)
+   * @param {number} moveN     how many planes were compared across a wide-enough gap
+   * @param {number} seen      planes in this capture
+   * @param {boolean} grew     the plane set is still filling in
+   * @param {{minPlanes?: number, minFrac?: number}} [opts]
+   * @returns {number|null}    RMS movement (m), or null for "no evidence either way"
+   */
+  function settleRms(moveSum, moveN, seen, grew, opts) {
+    opts = opts || {};
+    var minPlanes = opts.minPlanes != null ? opts.minPlanes : 4;
+    var minFrac = opts.minFrac != null ? opts.minFrac : 0.5;
+    if (grew) return null;
+    if (moveN < minPlanes) return null;
+    if (moveN < minFrac * (seen || 0)) return null;
+    return Math.sqrt(moveSum / moveN);
+  }
+
+  /**
    * Has the headset's own model stopped moving?
    *
    * `rms` is how far the DEVICE moved its own planes since the last capture — not how far they sit from
@@ -672,7 +712,7 @@
     return { dYaw: (a0 - a) * 180 / Math.PI, scale: r / r0 };
   }
 
-  return { hasFrameBasis: hasFrameBasis, levelDeviation: levelDeviation, roomResidualGate: roomResidualGate, loadGate: loadGate, settleGate: settleGate,
+  return { hasFrameBasis: hasFrameBasis, levelDeviation: levelDeviation, roomResidualGate: roomResidualGate, loadGate: loadGate, settleGate: settleGate, settleRms: settleRms,
            rotXZ: rotXZ, yawAboutPivot: yawAboutPivot, polarDrag: polarDrag,
            nest: nest, holesAttr: holesAttr, v3: v3, avatarAim: avatarAim, spawnRight: spawnRight,
            shouldSpawnGuest: shouldSpawnGuest, isCaptureAuthority: isCaptureAuthority,

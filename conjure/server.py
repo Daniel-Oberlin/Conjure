@@ -1616,6 +1616,7 @@ async def index() -> HTMLResponse:
                         f"window.CONJURE_REG={reg};window.CONJURE_CAPTURE_MS={cap_ms};"
                         f"window.CONJURE_APPLY_TOL={tol};window.CONJURE_GROUP_SURFACE_RELAY={gwr};"
                         f"window.CONJURE_WALL={wall};"
+                        f"window.CONJURE_SETTLE_GAP_MS={settings.settle_gap_ms};"
                         f"window.CONJURE_SETTLE_RMS={settings.settle_rms};"
                         f"window.CONJURE_SETTLE_RUN={settings.settle_run};"
                         f"window.CONJURE_ROOM_REFINE={'1' if settings.room_refine else '0'};"

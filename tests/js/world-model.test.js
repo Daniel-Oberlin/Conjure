@@ -818,3 +818,48 @@ test("settleGate: replaying 2026-09-29, nothing is settled when the wall was los
   assert.equal(firstSettledAt, 17, "settles only once the curve is genuinely flat");
   assert.ok(firstSettledAt > 1, "and emphatically NOT at capture 1, where the wall was pruned");
 });
+
+test("settleRms: a growing plane set is loading, not settling", () => {
+  // 26 planes of an expected 67 at 1 ms, 66 by 300 ms. Nothing measured inside that burst describes a
+  // model that has finished moving.
+  assert.equal(WM.settleRms(0, 40, 66, true), null, "still filling in ⇒ no verdict");
+  assert.ok(WM.settleRms(0.0001, 40, 66, false) !== null, "and a verdict once the set holds");
+});
+
+test("settleRms: one stale plane cannot speak for a room", () => {
+  assert.equal(WM.settleRms(0, 2, 60, false), null, "too few pairs compared");
+  assert.equal(WM.settleRms(0, 10, 60, false), null, "10 of 60 is not the room, it is a corner of it");
+  assert.ok(WM.settleRms(0, 40, 60, false) !== null, "most of the room, measured, counts");
+});
+
+test("settleRms: zero DOES count once the sample is real", () => {
+  // The opposite failure is as bad: a converged device may legitimately republish identical poses, and
+  // refusing that would mean never settling — so never recording a new surface again.
+  assert.equal(WM.settleRms(0, 40, 60, false), 0, "genuinely still, across a real interval and a real sample");
+});
+
+test("settleRms + settleGate: replaying 2026-09-30, the gate stays SHUT through the damage", () => {
+  // The session that lost real_wall_19 (#555555) and real_window_43 (#00008b), and left Saka's anchor
+  // one wall short so she moved rooms. The gate opened at 906 ms on three samples taken 300 ms apart
+  // during the loading burst — two of them reading exactly zero because the device had not republished.
+  //
+  // Same captures, the same way the device delivered them. What changes is that a sample only counts
+  // when it spans a real interval, so the burst produces no verdict at all.
+  const burst = [                       // ms since enter, planes seen, pairs measurable at a 2 s gap
+    { at: 1, seen: 26, pairs: 0 }, { at: 300, seen: 66, pairs: 0 },
+    { at: 604, seen: 66, pairs: 0 }, { at: 906, seen: 66, pairs: 0 },
+  ];
+  let run = 0, settled = false;
+  for (const c of burst) {
+    const grew = c.seen - (burst[burst.indexOf(c) - 1] || { seen: 0 }).seen > 1;
+    const rms = WM.settleRms(0, c.pairs, c.seen, grew);
+    assert.equal(rms, null, `no verdict at ${c.at} ms — nothing was measured across a real gap`);
+    const g = WM.settleGate(run, settled, rms); run = g.run; settled = g.settled;
+  }
+  assert.equal(settled, false, "so the gate is still shut at 906 ms, where it used to open");
+
+  // 3270 ms: the capture that minted, with the model demonstrably still moving (the refinement's own
+  // spread was 64 mm at six seconds). First real sample, and it is nowhere near quiet.
+  let g = WM.settleGate(run, settled, WM.settleRms(40 * 0.0646 * 0.0646, 40, 66, false));
+  assert.equal(g.settled, false, "and still shut when the wall was minted");
+});

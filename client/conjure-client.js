@@ -1612,6 +1612,7 @@
         this._roomOf = null;        // ref id → room id from the LAST segmentation; feeds identity refinement
         this._planeWas = new WeakMap();   // XRPlane → its last capture pose; the settling probe's memory
         this._mintedUnsettled = {}; // ids minted before the model was still — withheld from the POST
+        this._lastPlaneN = 0;       // plane count last capture; a growing set is still loading, not settling
         this._modelChange = null;   // RMS the headset moved its OWN planes since the last capture (m)
         this._settleRun = 0;        // consecutive quiet captures; `_settled` needs a RUN, not one sample
         this._settled = false;
@@ -1743,7 +1744,7 @@
         // A new frame is a new settle: the planes are about to be re-posed wholesale, so whatever calm we
         // had measured says nothing about the model we are about to be handed.
         this._planeWas = new WeakMap(); this._modelChange = null; this._settleRun = 0; this._settled = false;
-        this._mintedUnsettled = {};
+        this._mintedUnsettled = {}; this._lastPlaneN = 0;
         this._settleT0 = (window.performance && performance.now) ? performance.now() : 0;
         this._lastLevel = null; this._levelAlarm = {}; this._census = null; this._censusFloors = null;
         this._churnRing = []; this._loading = 0;
@@ -2717,17 +2718,25 @@
         // plane stays tracked — so this needs no matching, no ids and no stored reference, and therefore
         // works on a first capture, in a brand-new space, and for a guest who has nothing stored.
         var moveSum = 0, moveN = 0;
+        var SETTLE_GAP = +window.CONJURE_SETTLE_GAP_MS || CAPTURE_MS;   // a pose pair must span a real interval
         frame.detectedPlanes.forEach(function (plane) {
           var pose;
           try { pose = frame.getPose(plane.planeSpace, refSpace); } catch (e) { return; }
           if (!pose) return;
           var rp = pose.transform.position, ro = pose.transform.orientation;
+          // The baseline is REFRESHED ONLY WHEN IT IS MEASURED, and that is the whole correction. During
+          // loading and selection the capture retries every ~300 ms rather than the usual 2 s; overwriting
+          // the sample each time meant comparing two poses taken between device updates, reading exactly
+          // zero, and calling it calm — which opened the gate at 906 ms on 2026-09-30 and cost two styled
+          // surfaces. Holding the old pose until the gap is wide enough lets the interval grow instead.
           var wasAt = self._planeWas.get(plane);
-          if (wasAt) {
+          if (!wasAt) {
+            self._planeWas.set(plane, { x: rp.x, y: rp.y, z: rp.z, t: time });
+          } else if (time - wasAt.t >= SETTLE_GAP) {
             var mdx = rp.x - wasAt.x, mdy = rp.y - wasAt.y, mdz = rp.z - wasAt.z;
             moveSum += mdx * mdx + mdy * mdy + mdz * mdz; moveN++;
+            self._planeWas.set(plane, { x: rp.x, y: rp.y, z: rp.z, t: time });
           }
-          self._planeWas.set(plane, { x: rp.x, y: rp.y, z: rp.z });
           var quat = new THREE.Quaternion(ro.x, ro.y, ro.z, ro.w);
           var nrm = UP.clone().applyQuaternion(quat);       // the plane's normal (its local +Y), in refSpace
           var poly = plane.polygon || [];
@@ -2752,7 +2761,11 @@
         // Is the headset's model still moving? `settled` needs the change to be small AND to have STAYED
         // small — one quiet capture in the middle of a settle proves nothing, and the run length is what
         // separates "converged" from "passing through zero on the way somewhere else".
-        var mc = moveN ? Math.sqrt(moveSum / moveN) : null;
+        // Still filling in? 26 planes of an expected 67 at 1 ms and 66 by 300 ms is the loading burst, and
+        // nothing measured inside it describes a model that has finished moving.
+        var grew = cur.length - (this._lastPlaneN || 0) > 1;
+        this._lastPlaneN = cur.length;
+        var mc = WM.settleRms(moveSum, moveN, cur.length, grew);
         this._modelChange = mc;
         var sg = WM.settleGate(this._settleRun, this._settled, mc,
                                { quiet: +window.CONJURE_SETTLE_RMS || 0.004,

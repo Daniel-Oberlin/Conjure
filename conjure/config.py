@@ -407,6 +407,11 @@ class Settings:
     # the client will do work it cannot undo — minting a surface id, or letting one go absent. Measured as
     # the RMS the device moved its own planes since the last capture, which asks "has it stopped revising?"
     # rather than "does it agree with us?" — the second stays large when the room genuinely changed.
+    # A pose pair must span a REAL interval before it says anything: during loading the capture retries
+    # every ~300 ms and the device does not republish plane poses that fast, so a shorter comparison reads
+    # zero and means "no new data" rather than "converged". That read opened this gate at 906 ms on
+    # 2026-09-30 and cost two styled surfaces. Defaults to the capture interval.
+    settle_gap_ms: int = 0                           # 0 = use capture_interval
     settle_rms: float = 0.004                        # m of per-capture self-movement counted as quiet
     settle_run: int = 3                              # consecutive quiet captures before it counts as settled
     room_refine: bool = False                        # apply per-room deltas when matching identity
@@ -640,6 +645,7 @@ def get_settings() -> Settings:
         reg_size_tol=float(os.environ.get("CONJURE_REG_SIZE_TOL", "0.5")),
         reg_inlier_m=float(os.environ.get("CONJURE_REG_INLIER_M", "0.4")),
         reg_yaw_peaks=int(os.environ.get("CONJURE_REG_YAW_PEAKS", "5")),
+        settle_gap_ms=int(os.environ.get("CONJURE_SETTLE_GAP_MS", "0")),
         settle_rms=float(os.environ.get("CONJURE_SETTLE_RMS", "0.004")),
         settle_run=int(os.environ.get("CONJURE_SETTLE_RUN", "3")),
         room_refine=os.environ.get("CONJURE_ROOM_REFINE", "0").strip().lower() not in ("0", "false", "no", "off", ""),
@@ -775,6 +781,7 @@ SETTABLE: dict[str, tuple[str, str]] = {
     "reg_size_tol":          ("client", "metres a detected plane may exceed its reference"),
     "reg_inlier_m":          ("client", "metres a plane may sit from a same-kind reference"),
     "reg_yaw_peaks":         ("client", "candidate room rotations tried when solving orientation"),
+    "settle_gap_ms":         ("client", "ms a pose pair must span to count; 0 = the capture interval"),
     "settle_rms":            ("client", "m of per-capture self-movement below which the device model counts as quiet"),
     "settle_run":            ("client", "consecutive quiet captures before the model counts as settled"),
     "room_refine":           ("client", "match identity with a per-room delta (piecewise-rigid); OFF by default"),
