@@ -45,7 +45,12 @@ during a rooms fix where the only real question was whether the suite was green.
 
 ## Open — seen in the headset, not reproducible from files
 
-### Clip playback has not been run on a headset yet (2026-09-13)
+### ~~Clip playback has not been run on a headset yet~~ (2026-09-13) — RUN 2026-10-02
+
+**The body moves, and she blinks.** See *Device run 2026-10-02* below, and
+[`specs/figures.md`](../specs/figures.md) §8b. What remains open from the list underneath is the
+GENUINE-locomotion case (a clip that walks rather than sways) and `1_idle_speaking`'s missing audio.
+The rest of this section is kept because its reasoning is what the run tested.
 
 §8b landed with its endpoints smoke-tested against the real catalog — `jane_export`, `Teacher_v1` and
 `office-babe` each resolve `10_action` to their own clip, with the right voice, and the cross-rig
@@ -2759,6 +2764,72 @@ building once for all of them rather than once for this.
 
 Note the category added since: `held`. `only_body` now takes the beer too, which is right, and is one
 more thing a careless `only_body` removes without being asked.
+
+## Device run 2026-10-02 — clips, faces and the facial retarget, all watched at last
+
+The verification sequence that lived in `docs/plans/test-clips-and-faces.md` (now dissolved). Four
+things had been built and verified numerically or in Blender and **none seen on a headset**. All four
+work. The confirmations are in [`specs/figures.md`](../specs/figures.md) §8b/§8c/§8d/§8e; what follows
+is what did NOT work, plus two checks nobody ran.
+
+**The headline is that §8e's gate discriminates.** Office-babe → Barbie carried **78** facial bones and
+refused 2; a capture clip → Eve carried 5 and refused **64**. Same code, opposite answers, and Eve's
+face NOT moving is the pass. `FACE_REST_TOLERANCE` stays at 30.
+
+### Six defects, cheapest first
+
+1. **`neutral` on a `cc` rig is refused, and the message has a hole in it.** `neutral` is deliberately
+   the empty entry in the `cc` table — it means every target to zero — so `resolve` returns
+   `({}, [])`: succeeded, nothing to set. `server.py`'s `if not weights:` reads that as failure and
+   prints `cannot do .` with the name missing, because `skipped` is empty too. Benign in effect
+   (`clear=true` reaches the same face) and a false negative, which is the shape §2 existed to catch.
+   **Fix:** empty weights with no skips is a success meaning *clear*; empty weights WITH skips is the
+   real refusal. Three lines and a test. Saka is unaffected — VRM has a real `Fcl_ALL_Neutral`.
+
+2. **The five visemes are unadvertised.** `expressions.describe()` — and therefore
+   `inspect_figure`'s Face line — lists only the emotion vocabulary, so `aa`/`ee`/`ih`/`oh`/`ou` are
+   reachable and undiscoverable. A director reading the tool surface cannot learn they exist. Same
+   shape as 1: the surface under-reports what the runtime accepts.
+
+3. **An unknown request field is silently ignored.** `{"face": {...}}` instead of `{"expression": …}`
+   drops the key, leaves `expression` None, and answers with the generic *"pass an expression"* — so a
+   typo'd field and an empty body are indistinguishable. Pydantic can be told to reject extras.
+
+4. **`cc` `look_*` and the jaw drive CORRECTIVES, not the motion.** The big one. Alice's four `look_*`
+   morphs move her **eyelids only**; her eyeballs never leave centre because they are bone-driven
+   (`CC_Base_L_Eye`, `CC_Base_R_Eye`), and `Jaw_Open` is a lip corrective over `CC_Base_JawRoot`. The
+   displacements would have predicted it — 0.0018–0.0129 against `Eye_Blink` at 0.0143, lid-sized.
+   The spec's §8d said *"VRM aims the eyes with BONES, so that rig has no `look_*` morphs"*, which
+   implied CC aims them with morphs; corrected there. **So no figure in the corpus has a gaze
+   `set_expression` can drive.** Either `look_*` on a `cc` rig moves those bones, or it is refused the
+   way VRM's is — a word that resolves, stores and visibly does nothing is the silent degradation this
+   document keeps warning about.
+
+5. **`1_idle_speaking` carries no audio**, although other clips in the corpus do and their audio plays.
+   It is the clip that IS recorded lip sync (74.9% of its motion is `DEF-jaw_master`), so the jaw moves
+   and reads as speech with nothing to hear. Not diagnosed.
+
+6. **`smile: 0.4` is hard to tell from `joy` on Alice.** §2's third failure shape exactly: the
+   Character Creator emotion composites are the least-evidenced thing in the module and
+   `expressions.PROVENANCE` says so. A composite is a table entry and cheap to change — but changing it
+   wants a measurement, not a guess, and `check_regions`/`check_directions` pass on both as they stand.
+
+### Two checks nobody ran
+
+Recorded as untested rather than left to look like passes:
+
+- **Does an expression survive a reload?** It lives on the entity, so it should replay on the existing
+  patch/snapshot path — but that is an argument, not an observation, and it is the half a unit test
+  cannot reach.
+- **`pc_squint` is a no-op by measurement** (0.13° from rest). If it visibly does something, the travel
+  metric is lying and §8e's numbers want re-checking.
+
+### And one caveat the retarget reported rather than hid
+
+Eve's 21-bone inferred map **is not a chain** at `hips->spine` and `chest->left/rightShoulder`, so
+motion cannot compose through those joints and that part of her lags. Her body still performs. This is
+the same shifted-spine map recorded under *Where to pick up*; the rewrite said so at the point of use,
+which is the argument for the notes existing.
 
 ## Open questions
 

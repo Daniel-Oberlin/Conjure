@@ -667,6 +667,15 @@ figure leaning on a sink that is not there. The authored set is the default and 
 `all=true`. See
 [`decisions.md`](../decisions.md) §27.
 
+**Confirmed on device 2026-10-02 — the first time clip playback has been WATCHED rather than
+computed.** On a capture-set figure (`81b51a075b`), `1_idle` plays and the body reads correctly; **the
+face comes with it and she blinks**, which was the claim worth the trip, since that clip spends 9,031°
+on facial bones with `DEF-lid.T.L`/`.R` its top two movers and nothing here is retargeted;
+`1_idle_speaking` moves her jaw and reads as speech, as 74.9% of its motion being `DEF-jaw_master`
+predicts; and `stop` returns her to her pose rather than the clip's last frame. One defect found and
+not fixed: that clip carries **no audio** although others in the corpus do
+([`backlogs/figures.md`](../backlogs/figures.md)).
+
 ### 8c. Retargeting — a clip rewritten for a rig it was not authored for
 
 `conjure/retarget.py`, server-side, producing an ordinary clip. Until it existed, ten figures in the
@@ -781,6 +790,14 @@ the figure kept swinging because the cache still held the clip made before it.
 **The voice comes with it.** A rewritten clip is the same performance on another body, and the voice was
 recorded against the performance rather than against the skeleton.
 
+**Confirmed on device 2026-10-02, in both directions.** An office-babe clip (`64e47bd573`) rewritten
+onto Barbie (`81b51a075b`) performs indistinguishably from the same clip on its own figure — reported as
+*"the body works the same with barbie as it does with office babe"*. A capture-set clip onto **Eve
+Maccaro** (`fe4965ce0f`, a 21-bone inferred map) also moves her body, with the caveat the rewrite
+reported rather than hid: her map **is not a chain** at `hips->spine` and `chest->left/rightShoulder`,
+so motion cannot compose through those joints and that part of her lags. Said out loud at the point of
+use, which is the whole argument for the notes.
+
 ### 8d. The face — `figure-face`, and the two expression rigs
 
 A figure who blinks and looks at you is a different presence. Driving one is small: a morph weight is
@@ -808,6 +825,25 @@ letting whichever came last in a dict win would make the result depend on key or
 **A request a figure cannot meet is reported, never approximated.** VRM aims the eyes with BONES, so
 that rig has no `look_*` morphs at all; substituting a head turn would be a lie and returning nothing
 silently reads as the tool being broken.
+
+**But NEITHER rig aims its eyes with morphs, and this section used to imply otherwise** (measured on
+device 2026-10-02). Alice has the four `look_*` morphs and they move her **eyelids only** — her
+eyeballs never leave centre, because they are bone-driven too (`CC_Base_L_Eye`, `CC_Base_R_Eye`), and
+the morphs are the lid shapes that accompany a gaze rather than the gaze. The displacements say so and
+would have predicted it: 0.0018–0.0129 against `Eye_Blink` at 0.0143, i.e. lid-sized. Her jaw is the
+same story — `Jaw_Open` is a lip corrective over `CC_Base_JawRoot`, so `aa` resolves and stores
+correctly and visibly does almost nothing. **So no figure in the corpus has a gaze `set_expression` can
+drive.** Aiming eyes needs the bone path; until it exists, `look_*` on a `cc` rig is honest about its
+weights and misleading about its effect ([`backlogs/figures.md`](../backlogs/figures.md)).
+
+**Confirmed on device 2026-10-02**, on both faces: `blink` shuts both eyes and they STAY shut; `joy`
+reads as joy; `clear` returns to rest; a `surprised` + `aa` request composes into one face rather than
+whichever key came last; and `look_left` on Saka is **refused in words**, which is the branch a silent
+no-op would have hidden. `look_left` also settles a convention — **it means the figure's OWN left**, the
+same handedness the bone words already use, so a side word never needs qualifying anywhere in the
+vocabulary. Two defects found, both in the backlog: `neutral` on a `cc` rig is the empty entry and the
+endpoint misreports that as a refusal with the name missing, and `smile` at 0.4 was hard to tell from
+`joy` on Alice — the composites are the least-evidenced thing in the module and `PROVENANCE` says so.
 
 Its own component and not a property of `figure`, for the reason `figure-parts` is: `figure` refuses to
 act without a humanoid map and an anatomical frame, and a face needs neither.
@@ -929,6 +965,23 @@ The figures that gain nothing are blocked on a different problem: Daz spells an 
 `eyelidUpper.L`, Character Creator `lEyelidUpper`, Rigify `DEF-lid.T.L`. Carrying between families
 needs a name map, and the local-rest gate cannot justify one — across two different rig builds the
 rests disagree by construction, so the check that makes this safe would refuse it.
+
+**Confirmed on device 2026-10-02, and the gate DISCRIMINATES rather than permits** — which is the
+result worth having, because a gate that passed everything would have told us nothing:
+
+| direction | carried | refused | observed |
+|---|---|---|---|
+| office-babe → Barbie (14.0° median) | **78** | 2, at 34° | the carried face looks no different from the source performance |
+| capture set → Eve Maccaro (143° median) | 5 | **64** | her body moves, her face does not |
+
+Same code, same `retarget_rev 8`, opposite answers. The two Barbie dropped are `DEF-lid.T.L/R.003` —
+four degrees past tolerance, and the TERTIARY lid bones whose primaries carried, so nothing a lid needs
+was lost. Eve came out at 64 of 69 refused against a prediction of ~63, and **her face not moving is
+the pass**: carried by name alone her lids would have swung backwards while every count claimed success.
+
+**`FACE_REST_TOLERANCE` therefore stays at 30.** The open question when this landed was whether the
+carried faces look poor at the top of the range; they do not, there is no bad bone in the carried set to
+exclude, and lowering it would start costing real bones at 14° — the median that carries.
 
 ## 8. The runtime — the `figure` component
 
