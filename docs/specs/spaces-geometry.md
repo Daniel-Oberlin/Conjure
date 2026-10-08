@@ -984,7 +984,10 @@ it now confirms a measurement rather than an argument.
 | `seed.prune_refused` / `.merge_forced` | the server declined a destructive post (unvoted capturer, or >50% of an established space); or stood the unvoted guard down after `_MERGE_PATIENCE` |
 | `level.census` / `.anomaly` | a floor/ceiling height moved >2 cm; a height moved relative to the rest of the space |
 | `track.reset` / `.lock` | reference-space recenter (boundary trip); lock lost or regained |
+| `space.loading` / `.loaded` | the load gate holds for a half-present space, then releases — planes seen against expected, and captures held (§4.0a) |
+| `space.selecting` / `.selected` | the selection gate holds while it cannot say which space this is, then resolves — or gives up, which it records as `forced` (§4.0b) |
 | `room.error` | a rooms step threw — segmentation or the residual fit; once per distinct failure |
+| `room.empty` | segmentation returned no rooms at all, with the per-semantic tally and how many surfaces lacked a pose — the shape of a silent segmentation failure |
 | `room.residual` | a room's fit against the global transform first appears, moves >1 cm, or flips its verdict; carries `dyaw`/`yaw_sd` in degrees beside the translation (§4.4) |
 | `space.hold` | the reason identity work is being withheld, on every change — `moving`, `forced`, `coverage`, `residual` or none (§4.0c) |
 | `churn.provisional_dropped` | how many ids minted on a bad frame were discarded when the model settled (§4.0c) |
@@ -1194,9 +1197,9 @@ on are pinned in `surface-overlay.test.js` against a stubbed `window`/`document`
 `twistAbout`, `solveSym3`, `cond2`.
 
 **`client/world-model.js`** — `surfaceSig`, `surfaceMoved`, `surfacePoseMoved`, `surfaceShapeChanged`,
-`advanceSig`, `slewAlpha`, `slewSettled`, `eulerYXZQuat`, `holesAttr`, `spawnRight`, `avatarAim`,
+`advanceSig`, `slewAlpha`, `slewSettled`, `holesAttr`, `spawnRight`, `avatarAim`,
 `hasFrameBasis`, `loadGate`, `selectGate`, `settleGate`, `settleRms`, `discardProvisional`, `mayMutateIdentity`, `relocStep`, `relocHint`, `voidFrameGate`,
-`voidGateAdvance`, `voidGateInit`, `roomResidualGate`, `levelDeviation`.
+`voidGateAdvance`, `voidGateInit`, `roomResidualGate`, `levelDeviation`; internals `eulerYXZQuat`.
 
 **`client/space-worker.js`** — the off-thread `register` host.
 
