@@ -988,3 +988,22 @@ number cannot say which one failed. The log already distinguishes them, which is
 it precisely so a forced pass is never mistaken for a healthy one (§4.0b), and `s_x1ggz0` forced on
 2026-10-08 before minting eleven surfaces. Suppressing irreversible work on a forced pass was proposed on
 2026-09-29 and overtaken by the settle gate; it remains the cheapest of these three.
+
+### The erosion of 2026-09-29 → 10-08 left damage a script can only partly repair
+
+`scripts/repair_stranded.py` reports it and fixes the one category that is safely fixable.
+
+| | count | repairable |
+|---|---|---|
+| **dead anchors** — under two walls left, so `solve_anchor` cannot place the content at all | 6 | **yes** — re-authored from the content's own pose against the walls that exist, the same call a grab-and-release makes |
+| degraded anchors — a wall or floor gone, still solvable on what remains | 4 | yes, same way |
+| images pinned to a missing wall-art surface (`meta.on_surface`) | 7 | **no** — which picture belongs on which wall is a visual judgement, and a guess would hang it somewhere plausible and wrong |
+| styling destroyed with a pruned surface | 14 | **no** — the colour is in the geometry log, but the surface is gone under every id and matching it to whatever replaced it needs the room in front of you |
+
+Two things worth keeping from running it. **Not all of this is the recent regression**: five figures
+(`grace`, `alice`, `akari`, `office-babe`, `saka`) anchor to `real_floor_30` and walls in the 25–73 range,
+which predate the gate work entirely — the space has been drifting away from its worlds for a while, and
+the settle-gate bug accelerated an existing problem rather than creating it. And **the kitchen's floor
+pointer is not damage**: `room_3.floor` reads `real_floor_171`, a false mint, but the room kept its *name*
+through surface-set overlap and the pointer refreshed to the floor that now exists, which is the designed
+behaviour. What was lost there is the floor's colour (`#3b1f0e`), not the room's identity.
