@@ -135,6 +135,26 @@ Candidate fixes, cheapest first:
   saved the whole diagnosis.
 - **A re-home endpoint** — the original entry above. Solves this too, and more.
 
+#### A second route in, 2026-10-08: delete every space
+
+The same closed loop, reached without going anywhere. Clearing all spaces on an *established* install
+leaves worlds that say `'<void>'`, and from there nothing can mint the first space again — every new
+world adopts `VOID` because `_space_for_new_world` asks `_no_space()`, which **flattens `UNSET` and
+`VOID` into one answer** and so cannot tell "no space because the user chose outdoor" from "no space
+because none exists". The log reads: selection ran, forced twice (`held: 8, forced: true`), then gave up
+to `void.establish` and stopped attempting selection at all.
+
+A *fresh* install never hits it, which is why both routes took so long to surface: boot mints its world
+with `adopt_space=False`, leaving the `space` key **absent** — the `UNSET` this entry already identifies
+as "the single state that would have relocated them".
+
+**The manual escape, for when it happens again:** stop the server (it autosaves) and delete
+`environment.space` from one world. It activates as `UNSET`, selection resolves "no match", and the
+server mints a space. Done 2026-10-08 for `wld_c2998b63ca`.
+
+That makes the first candidate fix above — let the void branch mint on no-match — look cheaper than it
+did, since the alternative is a state users can reach by tidying up.
+
 ### A space minted before the space is scanned is born empty, and can never match again
 
 Establish at a new location *before* capturing anything and the "somewhere new" path mints a
