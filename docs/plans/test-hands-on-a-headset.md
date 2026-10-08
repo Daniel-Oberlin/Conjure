@@ -74,15 +74,15 @@ and `grab`, the beams and the surface overlay all moved onto `acting()`.
 **Put the controllers down.** With controllers in hand there is nothing to synthesise, and every test
 below passes for the wrong reason.
 
-| do | expect | because |
-|---|---|---|
-| hold a hand up, relaxed | **a beam from your index finger** | `controller-beams` keys off `armed()`, and a hand resolves actions now. The first thing that proves the layer sees the hand at all |
-| keep it up and wait | the beam **goes out** after ~10 s | `armed()` lingers for `beam_timeout` after the last pull. A beam that never goes out means a *resting* hand is reading a pull |
-| pinch at an object | `grab` **highlights** it | `select` binds `["trigger", "pinch"]` |
-| make a fist at an object and move your hand | it **comes with you** | `grab: ["grip", "grasp"]` — so it is the fist that drags, not the pinch |
-| **make a fist near water** | it does **not** ripple | the gesture exclusion. Measured before the fix: a fist read `pinch` 0.77 *and* `grasp` 0.80, so closing your hand fired both |
-| **point at an object** | it is **not** grabbed | the same fault the other way: `grasp` was the mean of four fingers, so three curled fingers grabbed while you pointed |
-| pick the controllers back up and grab something | exactly as before | **no module changed** to gain any of this, which is the payoff claim |
+| do | expect | because | observed |
+|---|---|---|---|
+| hold a hand up, relaxed | **a beam from your index finger** | `controller-beams` keys off `armed()`, and a hand resolves actions now. The first thing that proves the layer sees the hand at all | |
+| keep it up and wait | the beam **goes out** after ~10 s | `armed()` lingers for `beam_timeout` after the last pull. A beam that never goes out means a *resting* hand is reading a pull | |
+| pinch at an object | `grab` **highlights** it | `select` binds `["trigger", "pinch"]` | |
+| make a fist at an object and move your hand | it **comes with you** | `grab: ["grip", "grasp"]` — so it is the fist that drags, not the pinch | |
+| **make a fist near water** | it does **not** ripple | the gesture exclusion. Measured before the fix: a fist read `pinch` 0.77 *and* `grasp` 0.80, so closing your hand fired both | |
+| **point at an object** | it is **not** grabbed | the same fault the other way: `grasp` was the mean of four fingers, so three curled fingers grabbed while you pointed | |
+| pick the controllers back up and grab something | exactly as before | **no module changed** to gain any of this, which is the payoff claim | |
 
 **The one number worth reading.** With `--debug-log` on, `temp/conjure.log` gets a line per hand:
 
@@ -117,14 +117,14 @@ proximity test survives only as a stale-client fallback.
 
 Conjure a water picture. Controllers down.
 
-| do | expect | because |
-|---|---|---|
-| touch the water with your **index fingertip** | ripples, from that point | the migration. `touchDepth` is 5 cm, so it triggers before you reach the plane |
-| drag your fingertip across it | a continuous stroke | `_segment` interpolates between frames; a dotted line means frames are being dropped, not that contact is wrong |
-| touch it with a **knuckle**, or the back of your hand | **nothing** | the query is restricted to `index-finger-tip`, so behaviour is identical to what it replaced. **This is the acceptance test**: if the whole hand ripples, the `joints` option is not being applied and the migration silently changed behaviour |
-| hold a fingertip 10 cm off it | nothing | outside `touchDepth` |
-| pick up a controller and pull the trigger at it | ripples, as always | the ray path is untouched |
-| grab the water's frame and drag it past your other hand | it does **not** ripple while dragging | `opts.owner: "water"` defers to whoever holds the pointer |
+| do | expect | because | observed |
+|---|---|---|---|
+| touch the water with your **index fingertip** | ripples, from that point | the migration. `touchDepth` is 5 cm, so it triggers before you reach the plane | |
+| drag your fingertip across it | a continuous stroke | `_segment` interpolates between frames; a dotted line means frames are being dropped, not that contact is wrong | |
+| touch it with a **knuckle**, or the back of your hand | **nothing** | the query is restricted to `index-finger-tip`, so behaviour is identical to what it replaced. **This is the acceptance test**: if the whole hand ripples, the `joints` option is not being applied and the migration silently changed behaviour | |
+| hold a fingertip 10 cm off it | nothing | outside `touchDepth` | |
+| pick up a controller and pull the trigger at it | ripples, as always | the ray path is untouched | |
+| grab the water's frame and drag it past your other hand | it does **not** ripple while dragging | `opts.owner: "water"` defers to whoever holds the pointer | |
 
 **Two things nothing here tests, said rather than implied:**
 
@@ -150,12 +150,12 @@ disagreeing about whether the runtime supplies a radius is worth chasing, not wo
 
 Worn and corrected twice already, so this is only what that session did not cover.
 
-| do | expect | because |
-|---|---|---|
-| wear a pair, then **reload the page** | still worn, both hands | the state is on the entity ([`decisions.md`](../decisions.md) §30), so it replays from the snapshot. A per-client setting could not do this, and this is the claim that justified the fork |
-| `wear <id> --hand off` | the hand is back **where it was placed**, and grabbable again | unwearing restores the anchor and drops the `grab` exemption |
-| wear with `--occlusion hands` | a log line, and your real hand showing through the model | the two features defeat each other by construction. Documented, not fixed — the point is that it now *says so* instead of looking like a transparency bug |
-| dial `wear --tip-out off`, then `radius`, while wearing | the fingertips change, no reload | the component reads `tipOut` per frame and has no `update` handler |
+| do | expect | because | observed |
+|---|---|---|---|
+| wear a pair, then **reload the page** | still worn, both hands | the state is on the entity ([`decisions.md`](../decisions.md) §30), so it replays from the snapshot. A per-client setting could not do this, and this is the claim that justified the fork | |
+| `wear <id> --hand off` | the hand is back **where it was placed**, and grabbable again | unwearing restores the anchor and drops the `grab` exemption | |
+| wear with `--occlusion hands` | a log line, and your real hand showing through the model | the two features defeat each other by construction. Documented, not fixed — the point is that it now *says so* instead of looking like a transparency bug | |
+| dial `wear --tip-out off`, then `radius`, while wearing | the fingertips change, no reload | the component reads `tipOut` per frame and has no `update` handler | |
 
 **Dissolves to:** `specs/figures.md` §8f.
 
