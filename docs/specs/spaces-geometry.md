@@ -227,13 +227,34 @@ never opens.
 Zero *is* allowed to count once those hold: a converged device may legitimately republish identical poses,
 and refusing that would mean never settling, and so never recording a new surface again.
 
+**A withheld mint is discarded, not released** (`WM.discardProvisional`), and the first version got this
+wrong at some cost. It released them when the gate opened, reasoning that a provisional id "either matched
+something real or is a genuine new surface". It does neither: it is an id invented on a bad frame, and the
+frame improving does not make it true. On 2026-10-08 eleven such ids were withheld correctly at 2.8 s and
+promoted nine seconds later, growing the seed **68 → 78** against a device that only ever reported **66**
+planes. A dozen surfaces could then never be matched again, and the churn that eventually pruned them took
+styled neighbours with it — `real_floor_10`, `real_shelf_29`, `real_wall_22` — and left `real_floor_171`,
+one of the false mints, as the kitchen's defining floor.
+
+So they are dropped from the constellation at the settle transition, **before that capture's matching
+runs**, and the planes they stood for are re-matched against the good frame in the same capture. They
+almost always answer to the reference they should have matched first time. `churn.provisional_dropped`
+records how many.
+
+**What this gate does not ask is whether the FIT is good.** It measures the device against itself, so a
+calm device with a stale transform passes — which is what 2026-10-08 also showed: plane movement of
+0.3–2.8 mm while mints missed by 0.42 m and 0.53 m perpendicular, a 2.6 m along-wall gap and a floor 0.62 m
+out. Heavy rendering load is how that state arises: the capture runs in the render loop, and that session
+starved it to gaps of 13.6 s, 10.0 s, 18.0 s and 43.4 s against a 2 s cadence, with five `track.reset`s and
+a forced selection. Gating on registration health as well is open ([`backlogs/spaces-geometry.md`](../backlogs/spaces-geometry.md)).
+
 While unsettled, the client still registers, renders and posts — only the two irreversible things are
 withheld:
 
 | Withheld | Why |
 |---|---|
 | **absence** — an unmatched reference does not accumulate toward removal | the prune is what destroys styling. Not counted rather than counted-and-ignored: a tally that built through the settle would fire the instant it ended, which is the same bug with a delay |
-| **a mint reaching the POST** — a new id is still issued so this session can render and track the plane, but it is held out of the capture until the model is still | the same 13 cm that stops a wall matching invents one beside it; 2026-09-29 minted `_160` and `_161` in the capture that lost `_157`. A genuinely new surface arrives a few seconds later |
+| **a mint reaching the POST** — a new id is still issued so this session can render and track the plane, but it is held out of the capture, and **discarded when the model settles** rather than released | the same 13 cm that stops a wall matching invents one beside it; 2026-09-29 minted `_160` and `_161` in the capture that lost `_157`. A genuinely new surface arrives a few seconds later |
 
 Rendering is **not** gated. Drawing a surface slightly out is cheap and self-correcting; forgetting one is
 not, and holding the view would pay a per-session cost against the risk that is already harmless — and
@@ -953,6 +974,7 @@ it now confirms a measurement rather than an argument.
 | `track.reset` / `.lock` | reference-space recenter (boundary trip); lock lost or regained |
 | `room.error` | a rooms step threw — segmentation or the residual fit; once per distinct failure |
 | `room.residual` | a room's fit against the global transform first appears, moves >1 cm, or flips its verdict; carries `dyaw`/`yaw_sd` in degrees beside the translation (§4.4) |
+| `churn.provisional_dropped` | how many ids minted on a bad frame were discarded when the model settled (§4.0c) |
 | `space.settle` | the device's own model movement per capture while it is moving, and both transitions either side (§4.0c) |
 | `room.refine` | rooms were actually moved for identity — the spread that justified it and the common offset that was left to the global fit (§4.4) |
 | `void.establish` | a void world's canonical frame was established — wall count, held captures, `forced` (§4.1.2) |
@@ -1159,7 +1181,7 @@ on are pinned in `surface-overlay.test.js` against a stubbed `window`/`document`
 
 **`client/world-model.js`** — `surfaceSig`, `surfaceMoved`, `surfacePoseMoved`, `surfaceShapeChanged`,
 `advanceSig`, `slewAlpha`, `slewSettled`, `eulerYXZQuat`, `holesAttr`, `spawnRight`, `avatarAim`,
-`hasFrameBasis`, `loadGate`, `selectGate`, `settleGate`, `settleRms`, `relocStep`, `relocHint`, `voidFrameGate`,
+`hasFrameBasis`, `loadGate`, `selectGate`, `settleGate`, `settleRms`, `discardProvisional`, `relocStep`, `relocHint`, `voidFrameGate`,
 `voidGateAdvance`, `voidGateInit`, `roomResidualGate`, `levelDeviation`.
 
 **`client/space-worker.js`** — the off-thread `register` host.

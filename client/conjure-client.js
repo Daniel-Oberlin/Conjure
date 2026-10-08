@@ -2771,6 +2771,20 @@
                                { quiet: +window.CONJURE_SETTLE_RMS || 0.004,
                                  need: +window.CONJURE_SETTLE_RUN || 3 });
         this._settleRun = sg.run; this._settled = sg.settled;
+        // Settled just now ⇒ RE-DECIDE every id minted on the bad frame instead of promoting it. Dropping
+        // them here, before this capture's matching runs, means the planes they stood for are re-matched
+        // against the good frame in this very capture — and almost always answer to the reference they
+        // should have matched first time. Releasing them instead is what grew the seed 68 → 78 against a
+        // device reporting 66 planes, and the prune that eventually followed took styled neighbours and
+        // the kitchen's defining floor with it.
+        if (sg.became === true) {
+          var dp = WM.discardProvisional(this._ref, this._mintedUnsettled);
+          this._ref = dp.ref;
+          var self0 = this;
+          dp.dropped.forEach(function (id) { delete self0._known[id]; delete self0._absent[id]; });
+          if (dp.dropped.length) geoLog("churn.provisional_dropped", { n: dp.dropped.length });
+          this._mintedUnsettled = {};
+        }
         if (sg.became !== null) this._geoLogSettle(sg.became, mc);
         else if (!sg.settled && mc != null) this._geoLogSettle(null, mc);   // the curve, while it is moving
 
@@ -3484,10 +3498,8 @@
         if (!reasons.length) return;                                      // settled → nothing to POST
         var reason = reasons.join(", ");
 
-        // Ids minted while the model was moving are held back until it is still. Once settled they either
-        // matched something real (and were never minted again) or they are a genuine new surface, and this
-        // releases them. Clearing on settle is what keeps a false mint out of the space record for good.
-        if (self2._settled) self2._mintedUnsettled = {};
+        // Withheld while the model moves, and DISCARDED when it stops (see the settle block in Pass A) —
+        // never released. A mint made on a bad frame does not become true when the frame improves.
         var payload = Object.keys(self2._known)
           .filter(function (id) { return !self2._mintedUnsettled[id]; })
           .map(function (id) { return self2._known[id]; });

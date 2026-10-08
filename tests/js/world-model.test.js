@@ -863,3 +863,34 @@ test("settleRms + settleGate: replaying 2026-09-30, the gate stays SHUT through 
   let g = WM.settleGate(run, settled, WM.settleRms(40 * 0.0646 * 0.0646, 40, 66, false));
   assert.equal(g.settled, false, "and still shut when the wall was minted");
 });
+
+test("discardProvisional: a mint made on a bad frame is dropped, not promoted", () => {
+  // 2026-10-08. Eleven ids minted at 2.8 s on a bad frame were WITHHELD correctly and then released nine
+  // seconds later when the gate opened — straight into the space record. The seed grew 68 -> 78 against a
+  // device reporting 66 planes, so a dozen surfaces could never match again, and the churn that pruned
+  // them took styled neighbours and the kitchen's defining floor with it.
+  const ref = [
+    { id: "real_wall_5" }, { id: "real_floor_10" },        // the real constellation
+    { id: "real_wall_170" }, { id: "real_floor_171" },     // minted at 2.8 s on a 0.5 m-out frame
+    { id: "real_wall_172" },
+  ];
+  const out = WM.discardProvisional(ref, { real_wall_170: 1, real_floor_171: 1, real_wall_172: 1 });
+  assert.deepEqual(out.ref.map((r) => r.id), ["real_wall_5", "real_floor_10"], "only the real ones survive");
+  assert.deepEqual(out.dropped.sort(), ["real_floor_171", "real_wall_170", "real_wall_172"]);
+});
+
+test("discardProvisional: nothing provisional is a no-op, and the array is not mutated", () => {
+  const ref = [{ id: "real_wall_5" }, { id: "real_floor_10" }];
+  const out = WM.discardProvisional(ref, {});
+  assert.deepEqual(out.dropped, []);
+  assert.equal(out.ref.length, 2);
+  assert.equal(ref.length, 2, "the caller's constellation is left alone until it assigns the result");
+});
+
+test("discardProvisional: real_floor_171 never gets the chance to become a room's identity", () => {
+  // The worst consequence of the release: `room_3`'s defining floor is now real_floor_171, a false mint
+  // promoted to the anchor that room identity falls back on. It can only reach the space record by being
+  // posted, and it can only be posted by surviving this.
+  const out = WM.discardProvisional([{ id: "real_floor_171" }], { real_floor_171: 1 });
+  assert.deepEqual(out.ref, [], "it does not reach the POST, so it cannot reach the room record");
+});

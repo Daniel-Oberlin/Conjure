@@ -961,3 +961,30 @@ branch): refuses the seed, establishes fresh, and the space file gets its walls 
 **To revive:** `git merge deadlock-breaker` (it's exactly `main` + the one commit).
 
 ---
+
+### The settle gate asks whether the DEVICE is still, not whether the FIT is good
+
+`WM.settleGate` (§4.0c) measures the device against itself — has it stopped revising its own plane poses.
+That is the right question for "is this model still moving", and it is deliberately not
+distance-from-stored, which stays large when the room genuinely changed. But it leaves a state open that
+2026-10-08 walked straight into: **a calm device with a stale transform**. Plane movement read 0.3–2.8 mm
+while mints were missing by 0.42 m and 0.53 m perpendicular, with a 2.6 m along-wall gap and a floor
+0.62 m out. The device had stopped moving; our fit was simply wrong.
+
+**Heavy rendering load is how it gets there.** The capture runs inside the render loop, so a session with
+several complex models starved it to gaps of 13.6 s, 10.0 s, 18.0 s and **43.4 s** against a 2 s cadence,
+with five `track.reset`s and a forced selection. `register` runs off-thread; a starved reply leaves the
+client matching on a stale `Tmat`, and nothing in the current gate notices.
+
+What a fix would read instead, all already computed: `register`'s coverage (`cov=n/m`) and its residuals,
+both in `track.lock`'s stat today, and the per-room residual of §4.4. A fit whose coverage has collapsed or
+whose residual is tens of centimetres should block the irreversible work the same way a moving model does.
+
+Not built, and deliberately separate from the settle gate rather than folded into it: "has the device
+stopped moving" and "do we agree with the device" are two questions, and a gate that answers them with one
+number cannot say which one failed. The log already distinguishes them, which is how this was diagnosed.
+
+**Also open from the same session:** `forced` is still not consulted anywhere. The selection gate records
+it precisely so a forced pass is never mistaken for a healthy one (§4.0b), and `s_x1ggz0` forced on
+2026-10-08 before minting eleven surfaces. Suppressing irreversible work on a forced pass was proposed on
+2026-09-29 and overtaken by the settle gate; it remains the cheapest of these three.

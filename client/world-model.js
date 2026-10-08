@@ -476,6 +476,35 @@
   }
 
   /**
+   * Throw away the ids minted while the model was moving, the moment it stops.
+   *
+   * The first version of this RELEASED them instead, on the reasoning that a provisional mint "either
+   * matched something real or is a genuine new surface". That is wrong, and 2026-10-08 is what it costs:
+   * eleven ids minted at 2.8 s on a bad frame were withheld, then promoted into the space record nine
+   * seconds later when the gate opened. The seed grew 68 → 78 while the device only ever reported 66
+   * planes, so a dozen surfaces could never be matched again — and the churn that eventually pruned them
+   * took genuine styled neighbours with it, including the kitchen's defining floor. One of the false mints
+   * is now that room's identity anchor.
+   *
+   * A mint made on a bad frame does not become true when the frame improves. It has to be **re-decided**:
+   * drop it, let the next match run against the good frame, and mint again only if the plane still
+   * answers to nothing. By then it almost always matches the reference it should have matched first time.
+   *
+   * @param {{id?: string}[]} ref            the reference constellation
+   * @param {Record<string, any>} provisional  ids minted while unsettled
+   * @returns {{ref: {id?: string}[], dropped: string[]}}
+   */
+  function discardProvisional(ref, provisional) {
+    var drop = provisional || {};
+    var dropped = /** @type {string[]} */ ([]);
+    var kept = (ref || []).filter(function (r) {
+      if (r && r.id && drop[r.id]) { dropped.push(r.id); return false; }
+      return true;
+    });
+    return { ref: kept, dropped: dropped };
+  }
+
+  /**
    * Is this capture's plane movement EVIDENCE at all, or merely an absence of news?
    *
    * Written because the first version of this gate had no such rule and opened after 906 ms on
@@ -712,7 +741,7 @@
     return { dYaw: (a0 - a) * 180 / Math.PI, scale: r / r0 };
   }
 
-  return { hasFrameBasis: hasFrameBasis, levelDeviation: levelDeviation, roomResidualGate: roomResidualGate, loadGate: loadGate, settleGate: settleGate, settleRms: settleRms,
+  return { hasFrameBasis: hasFrameBasis, levelDeviation: levelDeviation, roomResidualGate: roomResidualGate, loadGate: loadGate, settleGate: settleGate, settleRms: settleRms, discardProvisional: discardProvisional,
            rotXZ: rotXZ, yawAboutPivot: yawAboutPivot, polarDrag: polarDrag,
            nest: nest, holesAttr: holesAttr, v3: v3, avatarAim: avatarAim, spawnRight: spawnRight,
            shouldSpawnGuest: shouldSpawnGuest, isCaptureAuthority: isCaptureAuthority,
