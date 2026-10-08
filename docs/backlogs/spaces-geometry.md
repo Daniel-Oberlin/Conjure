@@ -962,7 +962,13 @@ branch): refuses the seed, establishes fresh, and the space file gets its walls 
 
 ---
 
-### The settle gate asks whether the DEVICE is still, not whether the FIT is good
+### ~~The settle gate asks whether the DEVICE is still, not whether the FIT is good~~ — **built 2026-10-08**
+
+**Done.** `WM.mayMutateIdentity` now asks all three questions — settled, not forced, fit healthy — and
+`space.hold` names which one refused. Knobs `fit_min_cov` (0.6) and `fit_max_resid` (0.08 m), both
+provisional like the settle thresholds and for the same reason: no device session has produced the
+numbers yet. The analysis below is kept because it is the argument the fix rests on.
+
 
 `WM.settleGate` (§4.0c) measures the device against itself — has it stopped revising its own plane poses.
 That is the right question for "is this model still moving", and it is deliberately not
@@ -984,7 +990,7 @@ Not built, and deliberately separate from the settle gate rather than folded int
 stopped moving" and "do we agree with the device" are two questions, and a gate that answers them with one
 number cannot say which one failed. The log already distinguishes them, which is how this was diagnosed.
 
-**Also open from the same session:** `forced` is still not consulted anywhere. The selection gate records
+**`forced` is now consulted** (2026-10-08), as part of the same predicate. Was: The selection gate records
 it precisely so a forced pass is never mistaken for a healthy one (§4.0b), and `s_x1ggz0` forced on
 2026-10-08 before minting eleven surfaces. Suppressing irreversible work on a forced pass was proposed on
 2026-09-29 and overtaken by the settle gate; it remains the cheapest of these three.

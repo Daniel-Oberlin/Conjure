@@ -1613,6 +1613,9 @@
         this._planeWas = new WeakMap();   // XRPlane → its last capture pose; the settling probe's memory
         this._mintedUnsettled = {}; // ids minted before the model was still — withheld from the POST
         this._lastPlaneN = 0;       // plane count last capture; a growing set is still loading, not settling
+        this._selForced = false;    // selection ran out of patience rather than resolving
+        this._mayMutate = false;    // may this capture mint or let a surface go absent?
+        this._heldWhy = undefined;  // last reason it could not, so the log reports CHANGES
         this._modelChange = null;   // RMS the headset moved its OWN planes since the last capture (m)
         this._settleRun = 0;        // consecutive quiet captures; `_settled` needs a RUN, not one sample
         this._settled = false;
@@ -1745,6 +1748,7 @@
         // had measured says nothing about the model we are about to be handed.
         this._planeWas = new WeakMap(); this._modelChange = null; this._settleRun = 0; this._settled = false;
         this._mintedUnsettled = {}; this._lastPlaneN = 0;
+        this._selForced = false; this._mayMutate = false; this._heldWhy = undefined;
         this._settleT0 = (window.performance && performance.now) ? performance.now() : 0;
         this._lastLevel = null; this._levelAlarm = {}; this._census = null; this._censusFloors = null;
         this._churnRing = []; this._loading = 0;
@@ -2786,6 +2790,28 @@
           this._mintedUnsettled = {};
         }
         if (sg.became !== null) this._geoLogSettle(sg.became, mc);
+
+        // May this capture do what it cannot undo? Settling says the DEVICE stopped moving; it says
+        // nothing about whether our transform explains the room, and 2026-10-08 came apart in exactly
+        // that gap. Coverage and residual are already computed by `register` — read them rather than
+        // trusting the device's calm on its own.
+        var res = this._regRes || [], covFrac = null, resid = null;
+        if (this._ref && this._ref.length) covFrac = res.length / this._ref.length;
+        if (res.length) {
+          var rs = 0;
+          res.forEach(function (r) { rs += (r.res || 0); });
+          resid = rs / res.length;
+        }
+        var may = WM.mayMutateIdentity(
+          { settled: !!this._settled, forced: !!this._selForced, covFrac: covFrac, resid: resid },
+          { minCov: +window.CONJURE_FIT_MIN_COV || 0.6, maxResid: +window.CONJURE_FIT_MAX_RESID || 0.08 });
+        this._mayMutate = may.ok;
+        if (may.why !== this._heldWhy) {
+          this._heldWhy = may.why;
+          geoLog("space.hold", { why: may.why, settled: !!this._settled, forced: !!this._selForced,
+                                 cov: covFrac == null ? null : +covFrac.toFixed(3),
+                                 resid: resid == null ? null : +resid.toFixed(4) });
+        }
         else if (!sg.settled && mc != null) this._geoLogSettle(null, mc);   // the curve, while it is moving
 
         // Surface debug overlay (--debug-surface-overlay): draw the device's polygons and the rectangles we
@@ -3009,6 +3035,10 @@
           this.lastPost = time - RETRY_MS; return;          // no _markLost: we are not lost, we are looking
         }
         if (this._selecting) {
+          // A forced pass is selection giving up, not selection succeeding. Remembered so the
+          // irreversible work can refuse it (WM.mayMutateIdentity) — on 2026-10-08 s_x1ggz0 forced
+          // and then minted eleven surfaces, and nothing had ever read this flag.
+          this._selForced = (selGate === "forced");
           geoLog("space.selected", { held: this._selecting, forced: selGate === "forced" || undefined });
           debugLog("sel", "selection resolved after " + this._selecting + " held capture(s)"
             + (selGate === "forced" ? " (FORCED — selection never resolved)" : ""), true);
@@ -3173,7 +3203,7 @@
           // in the same capture that lost _157). It still gets an id so THIS session can render and track
           // it, but it is withheld from the POST until the model is still — so it never reaches the space
           // record, and a wall that is genuinely new simply arrives a few seconds later.
-          if (!self._settled) self._mintedUnsettled[sid] = 1;
+          if (!self._mayMutate) self._mintedUnsettled[sid] = 1;
           return sid;
         }
         // Pass B1 — WALLS + floor/ceiling first (insets need resolved wall ids). Walls get identity by
@@ -3445,7 +3475,7 @@
           // painted grey was pruned — carrying its styling, which is the one thing here that cannot be
           // re-derived. Not counted rather than counted-and-ignored: a tally that builds through the
           // settle would fire the instant it ends, which is the same bug with a delay.
-          if (!self2._settled) return;
+          if (!self2._mayMutate) return;
           self2._absent[id] = (self2._absent[id] || 0) + 1;
           if (self2._absent[id] < 3) return;
           var gone = self2._known[id];

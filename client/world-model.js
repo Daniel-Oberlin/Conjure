@@ -476,6 +476,48 @@
   }
 
   /**
+   * May this capture do the things it cannot undo — mint a surface id, or let one go absent?
+   *
+   * One predicate with several reasons, because three scattered flags cannot say which one refused, and
+   * the whole value of the 2026-09/10 churn campaign was that the log could tell the causes apart.
+   *
+   * `settled` alone is not enough, and that is the lesson of 2026-10-08. It asks whether the DEVICE has
+   * stopped revising its planes — a good question, and the only one the first version asked. But a calm
+   * device can be paired with a transform that is simply wrong: that session read plane movement of
+   * 0.3–2.8 mm while mints were missing their references by 0.42 and 0.53 m, with a 2.6 m along-wall gap.
+   * The device had settled; our fit had not. Heavy rendering load is how it happens — the capture runs in
+   * the render loop, and complex models starved it to gaps of up to 43 s against a 2 s cadence, leaving
+   * matching on a stale `Tmat` that nothing noticed.
+   *
+   * So three questions, each answerable from numbers already computed:
+   *
+   *   - **settled** — has the device stopped moving its own planes (`settleGate`)?
+   *   - **not forced** — did space selection RESOLVE, or did it run out of patience and shrug? The gate
+   *     records `forced` precisely so a forced pass is never mistaken for a healthy one (§4.0b), and on
+   *     2026-10-08 `s_x1ggz0` forced and then minted eleven surfaces. Nothing had ever read the flag.
+   *   - **fit** — does `register` actually explain the room? Coverage below `minCov` means most of the
+   *     reference went unmatched; a mean residual past `maxResid` means the matches it did find are poor.
+   *
+   * Reversible work is unaffected: registering, rendering and posting all continue. Only the two
+   * operations that destroy user data wait, because drawing a surface in the wrong place for a few seconds
+   * costs nothing and forgetting one costs a colour that cannot be re-derived.
+   *
+   * @param {{settled: boolean, forced: boolean, covFrac: number|null, resid: number|null}} s
+   * @param {{minCov?: number, maxResid?: number}} [opts]
+   * @returns {{ok: boolean, why: string|null}}  `why` names the FIRST reason it refused
+   */
+  function mayMutateIdentity(s, opts) {
+    opts = opts || {};
+    var minCov = opts.minCov != null ? opts.minCov : 0.6;
+    var maxResid = opts.maxResid != null ? opts.maxResid : 0.08;
+    if (!s.settled) return { ok: false, why: "moving" };
+    if (s.forced) return { ok: false, why: "forced" };
+    if (s.covFrac != null && s.covFrac < minCov) return { ok: false, why: "coverage" };
+    if (s.resid != null && s.resid > maxResid) return { ok: false, why: "residual" };
+    return { ok: true, why: null };
+  }
+
+  /**
    * Throw away the ids minted while the model was moving, the moment it stops.
    *
    * The first version of this RELEASED them instead, on the reasoning that a provisional mint "either
@@ -741,7 +783,7 @@
     return { dYaw: (a0 - a) * 180 / Math.PI, scale: r / r0 };
   }
 
-  return { hasFrameBasis: hasFrameBasis, levelDeviation: levelDeviation, roomResidualGate: roomResidualGate, loadGate: loadGate, settleGate: settleGate, settleRms: settleRms, discardProvisional: discardProvisional,
+  return { hasFrameBasis: hasFrameBasis, levelDeviation: levelDeviation, roomResidualGate: roomResidualGate, loadGate: loadGate, settleGate: settleGate, settleRms: settleRms, discardProvisional: discardProvisional, mayMutateIdentity: mayMutateIdentity,
            rotXZ: rotXZ, yawAboutPivot: yawAboutPivot, polarDrag: polarDrag,
            nest: nest, holesAttr: holesAttr, v3: v3, avatarAim: avatarAim, spawnRight: spawnRight,
            shouldSpawnGuest: shouldSpawnGuest, isCaptureAuthority: isCaptureAuthority,

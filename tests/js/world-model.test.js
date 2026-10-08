@@ -894,3 +894,42 @@ test("discardProvisional: real_floor_171 never gets the chance to become a room'
   const out = WM.discardProvisional([{ id: "real_floor_171" }], { real_floor_171: 1 });
   assert.deepEqual(out.ref, [], "it does not reach the POST, so it cannot reach the room record");
 });
+
+// ---------------------------------------- mayMutateIdentity (one predicate, several reasons)
+
+const FIT_OK = { settled: true, forced: false, covFrac: 0.97, resid: 0.004 };
+
+test("mayMutateIdentity: a healthy capture may mint and prune", () => {
+  const g = WM.mayMutateIdentity(FIT_OK);
+  assert.equal(g.ok, true);
+  assert.equal(g.why, null);
+});
+
+test("mayMutateIdentity: a FORCED selection is a shrug, not a yes", () => {
+  // 2026-10-08, s_x1ggz0: the gate ran out of patience, recorded `forced`, and eleven surfaces were
+  // minted 1.7 s later. The flag exists so a forced pass is never mistaken for a healthy one; until now
+  // nothing read it.
+  const g = WM.mayMutateIdentity({ ...FIT_OK, forced: true });
+  assert.equal(g.ok, false);
+  assert.equal(g.why, "forced", "and it says WHICH reason, so the log can tell the causes apart");
+});
+
+test("mayMutateIdentity: a calm device with a bad fit is refused", () => {
+  // The hole the first version left. That session read plane movement of 0.3-2.8 mm — settled by any
+  // measure — while mints missed their references by 0.42 and 0.53 m. The device had stopped moving;
+  // the transform was wrong.
+  assert.equal(WM.mayMutateIdentity({ ...FIT_OK, resid: 0.17 }).why, "residual");
+  assert.equal(WM.mayMutateIdentity({ ...FIT_OK, covFrac: 0.33 }).why, "coverage");
+});
+
+test("mayMutateIdentity: movement outranks the rest, so the log names the root cause", () => {
+  const g = WM.mayMutateIdentity({ settled: false, forced: true, covFrac: 0.1, resid: 0.9 });
+  assert.equal(g.why, "moving", "the first reason reported is the most fundamental one");
+});
+
+test("mayMutateIdentity: unknown fit is not treated as a bad one", () => {
+  // Before the first register there is no coverage and no residual. Absent evidence must not block for
+  // ever — `settled` and `forced` still have to pass, and those are the cheap guards.
+  const g = WM.mayMutateIdentity({ settled: true, forced: false, covFrac: null, resid: null });
+  assert.equal(g.ok, true);
+});

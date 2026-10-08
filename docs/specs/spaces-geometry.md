@@ -241,12 +241,24 @@ runs**, and the planes they stood for are re-matched against the good frame in t
 almost always answer to the reference they should have matched first time. `churn.provisional_dropped`
 records how many.
 
-**What this gate does not ask is whether the FIT is good.** It measures the device against itself, so a
-calm device with a stale transform passes — which is what 2026-10-08 also showed: plane movement of
-0.3–2.8 mm while mints missed by 0.42 m and 0.53 m perpendicular, a 2.6 m along-wall gap and a floor 0.62 m
-out. Heavy rendering load is how that state arises: the capture runs in the render loop, and that session
-starved it to gaps of 13.6 s, 10.0 s, 18.0 s and 43.4 s against a 2 s cadence, with five `track.reset`s and
-a forced selection. Gating on registration health as well is open ([`backlogs/spaces-geometry.md`](../backlogs/spaces-geometry.md)).
+**Settling is one of three questions, not the whole test** (`WM.mayMutateIdentity`). It asks whether the
+device stopped moving, and a calm device can still be paired with a transform that is simply wrong —
+2026-10-08 read plane movement of 0.3–2.8 mm while mints missed by 0.42 m and 0.53 m perpendicular, with a
+2.6 m along-wall gap and a floor 0.62 m out. The device had settled; the fit had not. Heavy rendering load
+is how that arises: the capture runs in the render loop, and that session starved it to gaps of 13.6 s,
+10.0 s, 18.0 s and **43.4 s** against a 2 s cadence, with five `track.reset`s.
+
+| asked | refuses when | why it is separate |
+|---|---|---|
+| **settled** | the device is still revising its planes | the model is moving, so any comparison is a snapshot of a moving target |
+| **not forced** | selection ran out of patience instead of resolving (§4.0b) | the gate records `forced` so it is never mistaken for a healthy pass; `s_x1ggz0` forced on 2026-10-08 and minted eleven surfaces 1.7 s later, and nothing had ever read the flag |
+| **fit** | coverage below `fit_min_cov` (0.6) or mean residual above `fit_max_resid` (0.08 m) | the device may be calm while our transform does not explain the room |
+
+One predicate with a named reason rather than three flags, because the value of this whole campaign has
+been that the log can tell the causes apart: `space.hold` records `why` on every change, so a session that
+never mints says which of the three was responsible. The reasons are ordered most-fundamental first, so a
+capture that is both moving and forced reports `moving`. An unknown fit — before the first `register` —
+does not block: absent evidence must not hold for ever, and `settled`/`forced` still have to pass.
 
 While unsettled, the client still registers, renders and posts — only the two irreversible things are
 withheld:
@@ -974,6 +986,7 @@ it now confirms a measurement rather than an argument.
 | `track.reset` / `.lock` | reference-space recenter (boundary trip); lock lost or regained |
 | `room.error` | a rooms step threw — segmentation or the residual fit; once per distinct failure |
 | `room.residual` | a room's fit against the global transform first appears, moves >1 cm, or flips its verdict; carries `dyaw`/`yaw_sd` in degrees beside the translation (§4.4) |
+| `space.hold` | the reason identity work is being withheld, on every change — `moving`, `forced`, `coverage`, `residual` or none (§4.0c) |
 | `churn.provisional_dropped` | how many ids minted on a bad frame were discarded when the model settled (§4.0c) |
 | `space.settle` | the device's own model movement per capture while it is moving, and both transitions either side (§4.0c) |
 | `room.refine` | rooms were actually moved for identity — the spread that justified it and the common offset that was left to the global fit (§4.4) |
@@ -1134,6 +1147,7 @@ checked anywhere before. The probe needs no overlay and settles the displacement
 | `--inset-standoff` | 0.02 m | how far an inset sits in front of its wall plane |
 | `--reg-size-tol` / `--reg-min-cov` / `--reg-min-cov-frac` / `--reg-inlier-m` / `--reg-yaw-peaks` | 0.5 / 4 / 0.3 / 0.4 / 5 | registration acceptance |
 | `--wall-perp-tol` / `--wall-yaw-tol` / `--wall-overlap-slop` | 0.15 m / 30° / 0.3 m | `matchWall` identity tolerances |
+| `fit_min_cov` / `fit_max_resid` | 0.6 / 0.08 m | the fit half of §4.0c: coverage and mean residual `register` must reach before a mint or a prune |
 | `settle_gap_ms` / `settle_rms` / `settle_run` | capture interval / 0.004 m / 3 | how still the DEVICE's own model must be, and for how many captures, before a mint or a prune is allowed (§4.0c) |
 | `--room-refine` / `--room-refine-min-spread` | **off** / 0.02 m | match identity with a per-room delta (§4.4); the floor is room-to-room disagreement, not displacement |
 | `--drop-surface` | — | pretend a surface was not captured (exercise recovery solo) |
@@ -1181,7 +1195,7 @@ on are pinned in `surface-overlay.test.js` against a stubbed `window`/`document`
 
 **`client/world-model.js`** — `surfaceSig`, `surfaceMoved`, `surfacePoseMoved`, `surfaceShapeChanged`,
 `advanceSig`, `slewAlpha`, `slewSettled`, `eulerYXZQuat`, `holesAttr`, `spawnRight`, `avatarAim`,
-`hasFrameBasis`, `loadGate`, `selectGate`, `settleGate`, `settleRms`, `discardProvisional`, `relocStep`, `relocHint`, `voidFrameGate`,
+`hasFrameBasis`, `loadGate`, `selectGate`, `settleGate`, `settleRms`, `discardProvisional`, `mayMutateIdentity`, `relocStep`, `relocHint`, `voidFrameGate`,
 `voidGateAdvance`, `voidGateInit`, `roomResidualGate`, `levelDeviation`.
 
 **`client/space-worker.js`** — the off-thread `register` host.

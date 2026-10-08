@@ -414,6 +414,11 @@ class Settings:
     settle_gap_ms: int = 0                           # 0 = use capture_interval
     settle_rms: float = 0.004                        # m of per-capture self-movement counted as quiet
     settle_run: int = 3                              # consecutive quiet captures before it counts as settled
+    # Fit health, read beside `settle_*` before the client does anything irreversible (§4.0c). Settling
+    # asks whether the DEVICE stopped moving; these ask whether our transform actually explains the room.
+    # 2026-10-08 showed the two come apart: plane movement of 0.3-2.8 mm while mints missed by 0.42 m.
+    fit_min_cov: float = 0.6                         # fraction of the reference `register` must cover
+    fit_max_resid: float = 0.08                      # m, mean residual over the covered planes
     room_refine: bool = False                        # apply per-room deltas when matching identity
     room_refine_min_spread: float = 0.02             # m of room-to-room disagreement below which nothing moves
     capture_interval: float = 2.0                    # seconds between recaptures/re-registrations
@@ -645,6 +650,8 @@ def get_settings() -> Settings:
         reg_size_tol=float(os.environ.get("CONJURE_REG_SIZE_TOL", "0.5")),
         reg_inlier_m=float(os.environ.get("CONJURE_REG_INLIER_M", "0.4")),
         reg_yaw_peaks=int(os.environ.get("CONJURE_REG_YAW_PEAKS", "5")),
+        fit_min_cov=float(os.environ.get("CONJURE_FIT_MIN_COV", "0.6")),
+        fit_max_resid=float(os.environ.get("CONJURE_FIT_MAX_RESID", "0.08")),
         settle_gap_ms=int(os.environ.get("CONJURE_SETTLE_GAP_MS", "0")),
         settle_rms=float(os.environ.get("CONJURE_SETTLE_RMS", "0.004")),
         settle_run=int(os.environ.get("CONJURE_SETTLE_RUN", "3")),
@@ -781,6 +788,8 @@ SETTABLE: dict[str, tuple[str, str]] = {
     "reg_size_tol":          ("client", "metres a detected plane may exceed its reference"),
     "reg_inlier_m":          ("client", "metres a plane may sit from a same-kind reference"),
     "reg_yaw_peaks":         ("client", "candidate room rotations tried when solving orientation"),
+    "fit_min_cov":           ("client", "fraction of the reference register must cover before a mint or prune"),
+    "fit_max_resid":         ("client", "m of mean fit residual above which identity work waits"),
     "settle_gap_ms":         ("client", "ms a pose pair must span to count; 0 = the capture interval"),
     "settle_rms":            ("client", "m of per-capture self-movement below which the device model counts as quiet"),
     "settle_run":            ("client", "consecutive quiet captures before the model counts as settled"),
@@ -804,7 +813,7 @@ LIMITS: dict[str, tuple[float, float]] = {
     "foveation": (0.0, 1.0), "beam_trigger": (0.0, 1.0), "reg_min_cov_frac": (0.0, 1.0),
     "pose_tau": (0.0, 10.0), "geo_slice_ms": (0.0, 16.0), "capture_interval": (0.1, 60.0),
     "history_cap": (0, 10_000), "geometry_log_days": (0, 3650), "reg_min_cov": (0, 100),
-    "reg_yaw_peaks": (1, 64), "beam_timeout": (0.0, 600.0), "room_refine_min_spread": (0.0, 1.0), "settle_rms": (0.0, 1.0), "settle_run": (1, 60),
+    "reg_yaw_peaks": (1, 64), "beam_timeout": (0.0, 600.0), "room_refine_min_spread": (0.0, 1.0), "settle_rms": (0.0, 1.0), "fit_min_cov": (0.0, 1.0), "fit_max_resid": (0.0, 2.0), "settle_run": (1, 60),
 }
 CHOICES: dict[str, tuple[str, ...]] = {
     "occlusion": ("off", "hands", "hands-solid"),
