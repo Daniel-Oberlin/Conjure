@@ -1,8 +1,9 @@
 # Plan — hands: models you wear, and hands as input
 
-**Status:** **all phases built** 2026-09-17 — 0 and 2 read on device; 3 and 4 untried ·
-**Opened:** 2026-09-14 · **blocked from dissolving** by
-[`test-hands-on-a-headset.md`](./test-hands-on-a-headset.md)
+**Status:** **all phases built** 2026-09-17, and **all four now read on device** 2026-10-16 ·
+**Opened:** 2026-09-14 · **UNBLOCKED** — `test-hands-on-a-headset.md` ran and dissolved, so this file
+can dissolve too. Confirmations landed in `specs/input.md` §2–§4 and §10, `specs/figures.md` §8f and
+`specs/dynamics.md` §6; two defects and one deliberate skip are in `backlogs/input.md`.
 
 **This file is temporary.** A plan spans areas that the specs and backlogs deliberately keep apart, so
 it exists to hold one sequence across them while it is being executed. Each phase names where its

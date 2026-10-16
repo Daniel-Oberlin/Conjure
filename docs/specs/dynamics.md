@@ -286,6 +286,10 @@ What a module needs from it is three lines:
 - declare those actions in `module.json` `actions` (§4);
 - check `p.availableTo("<yourmodule>")` before acting, and `claim`/`release` around a gesture.
 
+**`water`'s hand path is `ConjureContact`** ([`specs/input.md` §10](./input.md)), and its own
+proximity test survives only as a fallback for a client served a stale `conjure-contact.js`. Confirmed
+on device 2026-10-16: ripples from a fingertip, nothing from a knuckle.
+
 ---
 
 ## 7. Placement and anchors

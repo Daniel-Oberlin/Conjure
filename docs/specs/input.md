@@ -147,6 +147,20 @@ If injection is absent the file falls back to `{select: [trigger, pinch], grab: 
 
 ---
 
+**Confirmed on device 2026-10-16 — the first time a tracked hand has resolved an action on
+hardware.** A raised hand arms a beam, so the layer sees the hand at all; it goes out after ~10 s and
+comes back on use. `pinch` highlights and resizes through `select`; a fist drags through `grasp`, so it
+is the fist that moves a thing and not the pinch. Both halves of the gesture exclusion hold: a **fist
+near water does not ripple it** (before the exclusion a fist read `pinch` 0.77 *and* `grasp` 0.80, so
+closing your hand fired both), and **pointing does not grab** (before it, `grasp` was the mean of four
+fingers, so three curled fingers grabbed while you pointed). Picking the controllers back up behaves
+exactly as before, with **no module changed** to gain any of it — which was the payoff claim.
+
+One expectation corrected rather than confirmed: a hand's ray is `src.targetRaySpace`, the platform's
+own aim ray, which originates near the **wrist** and points where the hand points. Finger curl does not
+steer it and never could. §4 below has always said this; a test plan that asked for "a beam from your
+index finger" sent someone hunting in working code.
+
 ## 4. Reading pointers
 
 - `ConjurePointers.list(sceneEl)` — every pointer this frame (controllers *and* tracked hands), `[]`
@@ -404,5 +418,16 @@ gets UV-ready local coordinates, having deleted the proximity half of its own `_
 `index-finger-tip` so the behaviour is **identical** to what it replaced — the query returns every bone
 that reaches the water, which is better and is a different feature, and widening it is deleting one
 option deliberately.
+
+**Confirmed on device 2026-10-16.** A fingertip ripples the water from the point of contact and
+triggers before reaching the plane (`touchDepth` 5 cm); a dragged fingertip draws a continuous stroke,
+so frames are not being dropped between samples; a fingertip held 10 cm off does nothing. **The
+acceptance test passes: a knuckle or the back of the hand does nothing**, so `opts.joints` really is
+restricting the query to `index-finger-tip` and the migration did not quietly widen what counts as a
+touch. The controller ray path is untouched and still ripples.
+
+`opts.owner`'s remaining claim — that the hand *doing the dragging* does not ripple what it drags — was
+**deliberately not tested** and is recorded as untested in [`backlogs/input.md`](../backlogs/input.md).
+What was tested is its complement: a **free** second hand touching the surface ripples, correctly.
 
 ---

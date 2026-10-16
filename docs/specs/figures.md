@@ -1170,6 +1170,25 @@ faces — `dir` lists assets and `inspect_figure` answers for one already placed
 **Not verified on a headset.** The arithmetic is tested against a fake skeleton in `tests/js/` and the
 extraction in `tests/test_hands.py`; the XR read itself needs the device.
 
+**Confirmed on device 2026-10-16.** A worn pair **survives a page reload** — still worn, both hands —
+which is the claim that justified putting the state on the entity rather than in a per-client setting
+([`decisions.md`](../decisions.md) §30): a preference could not have replayed it from the snapshot.
+`--tip-out` and `--tip-thumb` are dialled **live, with no reload**, because this component reads
+`tipOut` per frame and has no `update` handler, so A-Frame replacing `this.data` leaves the skeleton,
+the bind pose and the captured rest intact.
+
+The occlusion conflict announces itself, after a fix: `--occlusion hands` carves passthrough exactly
+where a worn hand draws, so your real hand shows through the model. Both warnings were reading the
+server's `--occlusion` and not the resolved mode, so with the mode set from the URL the conflict
+happened silently — see [`specs/occlusion.md`](./occlusion.md).
+
+**And `--hand off` had to be fixed to keep its promise.** Taking a hand off patches `hand: ""` and
+nothing else; the tick returned on the empty value before reaching `_restore()`, leaving every bone
+frozen at the last pose it was driven to — reported as *"the hands remain exactly where they were when
+the command was executed"*. The entity transform had never moved; the bones had. Having no `update`
+handler is what makes a live dial cheap and is also why a change that needed reacting to went
+unnoticed: where a component opts out of `update`, the tick is the only place to see one.
+
 ## 9. How a figure gets here
 
 Two out-of-band ingest paths, and **both moved to [`specs/captures.md`](./captures.md)** on 2026-09-13:

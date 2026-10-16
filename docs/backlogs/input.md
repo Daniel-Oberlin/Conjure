@@ -59,6 +59,26 @@ on that and would be cheap to check the next time anyone else puts the headset o
 Nothing depends on either: `off` and a flat millimetre figure both remain, and no code branches on the
 answer. Worth a minute when the opportunity arises and not worth arranging.
 
+## UNTESTED by choice — does the DRAGGING hand ripple what it drags?
+
+The one claim in `opts.owner` that the 2026-10-16 run did not exercise, skipped deliberately rather
+than missed.
+
+`grab` claims the pointer it drags with (`CP.claim(key, "grab")`, `grab.js:1033`, and again on a
+corner-handle press at 1045), and `ConjureContact` skips any pointer another owner holds. So the
+untested half is: **while a hand is dragging the water, that same hand must not ripple it.** Performing
+it means fist-grabbing the picture and sweeping it across your own hand, which is awkward enough that
+it was not worth the trip; the pinch-to-resize path exercises the same claim with a less curled finger
+if anyone wants it.
+
+The complement **was** tested and passes: a free second hand touching the surface ripples, correctly —
+the gate is per-pointer, not global. The original test row expected the opposite and was wrong
+(see `specs/input.md` §10, which now says so).
+
+Low risk: the arbitration is one shared predicate (`availableTo`) that every other consumer of the
+layer uses and that `conjure-pointers` unit-tests directly. What is unverified is this consumer wired
+to it on hardware, not the predicate.
+
 ## FIXED 2026-10-16 — taking a hand off left it frozen where your hand was
 
 `wear <id> --hand off` restored nothing. Reported from the headset as *"the hands remain exactly where
@@ -82,7 +102,7 @@ is one boolean check.
 
 ## FIXED 2026-10-16 — the occlusion warnings read the wrong source
 
-Found while running [`plans/test-hands-on-a-headset.md`](../plans/test-hands-on-a-headset.md) §4, and
+Found while running the hands-on-a-headset plan (since dissolved; see `git log -- docs/plans/`) §4, and
 it is the row's own rationale breaking: the conflict between a **worn** hand and `--occlusion hands` is
 documented rather than fixed, so the whole value of that row is that the conflict **announces itself**
 instead of reading as a transparency bug. It did not announce itself.
