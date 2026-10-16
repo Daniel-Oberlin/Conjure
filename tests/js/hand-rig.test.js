@@ -395,3 +395,39 @@ test("the THUMB takes its own coefficient, and that is anatomy rather than a pre
     assert.ok(Math.abs(self._tipOut("thumb-tip", f) - 0.0105) < 1e-9, bad);
   }
 });
+
+test("taking the hand OFF puts the skeleton back, rather than freezing it where it last was", () => {
+  // `--hand off` patches `hand` to "" and this component has NO `update` handler — deliberately, since
+  // that is what lets `--tip-out` be dialled live without re-running `init`. So nothing else notices
+  // the change, and the tick is the only place that can act on it. Before the fix it returned on the
+  // empty `hand` before reaching `_restore`, leaving every bone frozen at the last pose it was driven
+  // to. Reported from the headset as "the hands remain exactly where they were when the command was
+  // executed" — the entity never moved, but the bones had.
+  const { self, bones } = rig();
+  self._collect();
+  const placed = JOINTS.map((n) => bones[n].position.clone());
+  self._s = 1.2;
+  self._drive(frame(0.041));
+  assert.ok(bones.wrist.position.distanceTo(placed[0]) > 1e-4, "it moved, or the test proves nothing");
+
+  self.data.hand = "";                       // what `wear <id> --hand off` writes
+  self.tick();                               // no XR needed: the unworn branch returns before it asks
+
+  JOINTS.forEach((n, i) => {
+    assert.ok(bones[n].position.distanceTo(placed[i]) < 1e-9,
+      `${n} stayed where it was driven instead of going back to rest`);
+  });
+});
+
+test("an unworn tick is idempotent, so restoring every frame costs nothing", () => {
+  const { self, bones } = rig();
+  self._collect();
+  self._drive(frame(0.041));
+  self.data.hand = "";
+  self.tick();
+  const after = JOINTS.map((n) => bones[n].position.clone());
+  self.tick(); self.tick();
+  JOINTS.forEach((n, i) => {
+    assert.ok(bones[n].position.distanceTo(after[i]) < 1e-12, `${n} moved on a second unworn tick`);
+  });
+});

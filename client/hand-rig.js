@@ -343,7 +343,14 @@
 
     tick: function () {
       var want = (this.data.hand || "").toLowerCase();
-      if (!want) return;
+      // TAKEN OFF: put the skeleton back on its rest pose before bailing. `--hand off` patches `hand`
+      // to "" and this component has no `update` handler — deliberately, since that is what lets
+      // `--tip-out` be dialled live without re-running `init` — so nothing else notices the change.
+      // Without this the tick returned here and left every bone frozen at the last pose it was driven
+      // to, which on device read as "the hands remain exactly where they were when the command was
+      // executed" rather than back where they were placed. `_restore` is idempotent, so this is one
+      // boolean check per tick while unworn.
+      if (!want) { this._restore(); return; }
       var sc = this.el.sceneEl, xr = sc.renderer && sc.renderer.xr, frame = sc.frame;
       var refSpace = xr && xr.getReferenceSpace && xr.getReferenceSpace();
       var session = xr && xr.getSession && xr.getSession();

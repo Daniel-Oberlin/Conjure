@@ -59,6 +59,27 @@ on that and would be cheap to check the next time anyone else puts the headset o
 Nothing depends on either: `off` and a flat millimetre figure both remain, and no code branches on the
 answer. Worth a minute when the opportunity arises and not worth arranging.
 
+## FIXED 2026-10-16 — taking a hand off left it frozen where your hand was
+
+`wear <id> --hand off` restored nothing. Reported from the headset as *"the hands remain exactly where
+they were when the command was executed, probably not where they were originally placed"*, which is
+exactly right and names the cause better than it knew: the entity transform never moved, but the BONES
+had, so the mesh rendered at the last tracked pose.
+
+`/figure/hand` with `off` patches `{"components.hand-rig": {"hand": ""}}` and nothing else — correctly,
+since the position is the component's business. But `hand-rig.tick()` opened with `if (!want) return;`
+and `_restore()` sat below it, so the one case that most wants a restore was the one that could never
+reach it. `_restore()` was only called from `remove()` and from the `LOST_MS` tracking-loss timeout.
+
+**The fix is `if (!want) { this._restore(); return; }`** — `_restore` is idempotent, so an unworn tick
+is one boolean check.
+
+> **The row that passed and the row that failed are the same design decision.** `hand-rig` has no
+> `update` handler, deliberately: that is what lets `--tip-out` be dialled live without re-running
+> `init`, which is its own row in the same phase and passes. It is also why a state change that
+> genuinely needs reacting to went unnoticed. Where a component opts out of `update`, every such change
+> has to be picked up in the tick — there is nowhere else for it to be seen.
+
 ## FIXED 2026-10-16 — the occlusion warnings read the wrong source
 
 Found while running [`plans/test-hands-on-a-headset.md`](../plans/test-hands-on-a-headset.md) §4, and
