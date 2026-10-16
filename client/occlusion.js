@@ -78,6 +78,15 @@
     return q || (MODES[g] ? g : "off");                              // URL override → injected default → off
   }
 
+  // ONE source for "which occlusion mode is actually on", because there are three readers and there
+  // were two answers. `hand-rig` and `hands-fit` both warn that the hand occluder carves passthrough
+  // exactly where their hand draws, and both read `window.CONJURE_OCCLUSION` directly — which is the
+  // SERVER's `--occlusion` and knows nothing about `?occlusion=`. Measured on device 2026-10-16: the
+  // occluder ran in `hands` from the URL (`handsSeen=2 meshes_filled=2`) while both warnings believed
+  // it was off and said nothing, so the conflict they exist to name went unannounced and looked exactly
+  // like the transparency bug they were written to pre-empt.
+  window.ConjureOcclusionMode = resolveMode;
+
   // Mirror to console AND the server log (POST /client_log → temp/conjure.log), like conjure-client's
   // debugLog — headset-side console is invisible, so status has to reach the terminal.
   function log(msg) {

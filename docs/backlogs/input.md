@@ -59,6 +59,37 @@ on that and would be cheap to check the next time anyone else puts the headset o
 Nothing depends on either: `off` and a flat millimetre figure both remain, and no code branches on the
 answer. Worth a minute when the opportunity arises and not worth arranging.
 
+## FIXED 2026-10-16 — the occlusion warnings read the wrong source
+
+Found while running [`plans/test-hands-on-a-headset.md`](../plans/test-hands-on-a-headset.md) §4, and
+it is the row's own rationale breaking: the conflict between a **worn** hand and `--occlusion hands` is
+documented rather than fixed, so the whole value of that row is that the conflict **announces itself**
+instead of reading as a transparency bug. It did not announce itself.
+
+Three readers, two answers:
+
+| reader | read | saw |
+|---|---|---|
+| `occlusion.js` `resolveMode()` | `?occlusion=` → `window.CONJURE_OCCLUSION` → `off` | **`hands`** |
+| `hand-rig.js` | `window.CONJURE_OCCLUSION` only | `off` |
+| `hands-fit.js` | `window.CONJURE_OCCLUSION` only | `off` |
+
+With the server started without `--occlusion` and the mode set per-client by `?occlusion=hands`, the
+occluder genuinely ran — `[occlusion] handsSeen=2 meshes_filled=2` in the log — carving passthrough
+exactly where the worn hands drew, while both warnings believed occlusion was off and said nothing. The
+symptom on the headset is a worn hand you can see your own hand through, with nothing explaining it:
+precisely the failure the warning exists to pre-empt.
+
+**Fixed** by publishing the resolved mode once (`window.ConjureOcclusionMode`, set at load in
+`occlusion.js`, which is loaded before both consumers) and having both warnings call it. A fallback to
+the old global is kept so a stale cached script degrades rather than throws.
+
+> **One fact, three readers, two sources.** The same shape as the catalog revision stamp and the
+> unstyled surfaces: the bug is never in the fact, it is in how many places decide it independently.
+> `?occlusion=` was added as a per-client override and the two warnings were written before it existed,
+> so neither was wrong when written — which is exactly why a resolved value belongs in one place rather
+> than a resolution rule belonging in three.
+
 ## Three unshared readers of XR joints
 
 `client/occlusion.js` builds a 25-joint hand mesh from `frame.getJointPose` directly;

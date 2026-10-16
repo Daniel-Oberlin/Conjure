@@ -353,7 +353,8 @@
 
       log("mode=" + this.mode + " — spheres at the REPORTED radius; triad is +X red, "
         + "-Y green (out of the palm), -Z blue (along the bone, away from the wrist)");
-      var occ = (window.CONJURE_OCCLUSION == null ? "" : String(window.CONJURE_OCCLUSION)).toLowerCase();
+      var occ = window.ConjureOcclusionMode ? window.ConjureOcclusionMode()
+              : (window.CONJURE_OCCLUSION == null ? "" : String(window.CONJURE_OCCLUSION)).toLowerCase();
       if (occ === "hands" || occ === "hands-solid") {
         log("! --occlusion " + occ + " is also on: the hand occluder carves depth exactly where this "
           + "overlay draws, so joints will disappear behind your real hand. Use ?occlusion=off to look.");

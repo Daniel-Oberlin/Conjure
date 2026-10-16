@@ -110,7 +110,8 @@
       // REAL hand shows through the virtual one. The two features defeat each other by construction
       // and neither is wrong; said out loud because the symptom — a worn hand you can see your own
       // hand through — reads as a transparency bug (docs/plans/hands.md, Open).
-      var occ = (window.CONJURE_OCCLUSION == null ? "" : String(window.CONJURE_OCCLUSION)).toLowerCase();
+      var occ = window.ConjureOcclusionMode ? window.ConjureOcclusionMode()
+              : (window.CONJURE_OCCLUSION == null ? "" : String(window.CONJURE_OCCLUSION)).toLowerCase();
       if (occ === "hands" || occ === "hands-solid") {
         log("! --occlusion " + occ + " is on: it carves passthrough exactly where this hand draws, so "
           + "your real hand will show through the model. ?occlusion=off to wear it properly.");

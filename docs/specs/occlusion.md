@@ -36,6 +36,14 @@ the per-material path being avoided, so hard edges are accepted globally.
 with the existing `?hands=` toggle). Resolution order is **URL override → injected default → off**;
 a junk override is ignored rather than fatal.
 
+**`occlusion.js` publishes the RESOLVED mode as `window.ConjureOcclusionMode()`, and that is the one
+source any other reader uses.** Two of them exist: `hand-rig` and `hands-fit` each warn that the hand
+occluder carves passthrough exactly where their hand draws. Both read the injected
+`window.CONJURE_OCCLUSION` directly until 2026-10-16, which is the SERVER's `--occlusion` and knows
+nothing about `?occlusion=` — so with the mode set from the URL the occluder ran while both warnings
+believed it was off and stayed silent. Resolving the mode in one place is what keeps the next reader
+from making the same mistake.
+
 | Mode | What the pre-pass writes |
 |---|---|
 | **`off`** | nothing. Virtual always over passthrough. Default. |
