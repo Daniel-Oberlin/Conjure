@@ -76,15 +76,15 @@ below passes for the wrong reason.
 
 | do | expect | because | observed |
 |---|---|---|---|
-| hold a hand up, relaxed | **a beam from your index finger** | `controller-beams` keys off `armed()`, and a hand resolves actions now. The first thing that proves the layer sees the hand at all | |
-| keep it up and wait | the beam **goes out** after ~10 s | `armed()` lingers for `beam_timeout` after the last pull. A beam that never goes out means a *resting* hand is reading a pull | |
-| pinch at an object | `grab` **highlights** it | `select` binds `["trigger", "pinch"]` | |
-| make a fist at an object and move your hand | it **comes with you** | `grab: ["grip", "grasp"]` — so it is the fist that drags, not the pinch | |
-| **make a fist near water** | it does **not** ripple | the gesture exclusion. Measured before the fix: a fist read `pinch` 0.77 *and* `grasp` 0.80, so closing your hand fired both | |
-| **point at an object** | it is **not** grabbed | the same fault the other way: `grasp` was the mean of four fingers, so three curled fingers grabbed while you pointed | |
-| pick the controllers back up and grab something | exactly as before | **no module changed** to gain any of this, which is the payoff claim | |
+| hold a hand up, relaxed | **a beam from your index finger** | `controller-beams` keys off `armed()`, and a hand resolves actions now. The first thing that proves the layer sees the hand at all | Beams appear, but they are not coming exactly from my index finger.  They are generally pointed where my arms point, originating close to the palm of my hand and below my index finger. moving my wrist affects them the most, but not even completely.  Moving fingers does not adjust the beams at all.  |
+| keep it up and wait | the beam **goes out** after ~10 s | `armed()` lingers for `beam_timeout` after the last pull. A beam that never goes out means a *resting* hand is reading a pull | They do go out after about 10s, and they come back on if I move my hand significantly, though it is unclear to me exactly what is determining when they come back and how still I need to be to keep them off |
+| pinch at an object | `grab` **highlights** it | `select` binds `["trigger", "pinch"]` | I can pull the corners of a model to resize it while I am pinching. |
+| make a fist at an object and move your hand | it **comes with you** | `grab: ["grip", "grasp"]` — so it is the fist that drags, not the pinch | this works as described |
+| **make a fist near water** | it does **not** ripple | the gesture exclusion. Measured before the fix: a fist read `pinch` 0.77 *and* `grasp` 0.80, so closing your hand fired both | it does not ripple |
+| **point at an object** | it is **not** grabbed | the same fault the other way: `grasp` was the mean of four fingers, so three curled fingers grabbed while you pointed |  it is not grabbed |
+| pick the controllers back up and grab something | exactly as before | **no module changed** to gain any of this, which is the payoff claim | works as expected |
 
-**The one number worth reading.** With `--debug-log` on, `temp/conjure.log` gets a line per hand:
+**The one number worth reading.** Client diagnostics go to `temp/conjure.log` by **default** (`debug_log` is True; `CONJURE_DEBUG_LOG=0` turns them off). There is no `--debug-log` flag — passing one makes the server refuse to start, which reads as "I cannot get the log" when you already have it. A line per hand:
 
 ```
 [pointers] hand left:hand — 25/25 joints, pinch/grasp/poke 0.00/0.00/0.00; straightness index 0.94 …
@@ -119,12 +119,12 @@ Conjure a water picture. Controllers down.
 
 | do | expect | because | observed |
 |---|---|---|---|
-| touch the water with your **index fingertip** | ripples, from that point | the migration. `touchDepth` is 5 cm, so it triggers before you reach the plane | |
-| drag your fingertip across it | a continuous stroke | `_segment` interpolates between frames; a dotted line means frames are being dropped, not that contact is wrong | |
-| touch it with a **knuckle**, or the back of your hand | **nothing** | the query is restricted to `index-finger-tip`, so behaviour is identical to what it replaced. **This is the acceptance test**: if the whole hand ripples, the `joints` option is not being applied and the migration silently changed behaviour | |
-| hold a fingertip 10 cm off it | nothing | outside `touchDepth` | |
-| pick up a controller and pull the trigger at it | ripples, as always | the ray path is untouched | |
-| grab the water's frame and drag it past your other hand | it does **not** ripple while dragging | `opts.owner: "water"` defers to whoever holds the pointer | |
+| touch the water with your **index fingertip** | ripples, from that point | the migration. `touchDepth` is 5 cm, so it triggers before you reach the plane | It does trigger before I reach the pane |
+| drag your fingertip across it | a continuous stroke | `_segment` interpolates between frames; a dotted line means frames are being dropped, not that contact is wrong | it is continuous not dropped |
+| touch it with a **knuckle**, or the back of your hand | **nothing** | the query is restricted to `index-finger-tip`, so behaviour is identical to what it replaced. **This is the acceptance test**: if the whole hand ripples, the `joints` option is not being applied and the migration silently changed behaviour | nothing happens with knuckele or other fingertip |
+| hold a fingertip 10 cm off it | nothing | outside `touchDepth` | nothing happens with fingertip further away |
+| pick up a controller and pull the trigger at it | ripples, as always | the ray path is untouched | works as expected with the controller |
+| grab the water's frame and drag it past your other hand | it does **not** ripple while dragging | `opts.owner: "water"` defers to whoever holds the pointer | I dragged the water picture frame and moved it so that it was dragging against my pointer finger tip and it did riopple, not as expected |
 
 **Two things nothing here tests, said rather than implied:**
 
@@ -150,12 +150,138 @@ disagreeing about whether the runtime supplies a radius is worth chasing, not wo
 
 Worn and corrected twice already, so this is only what that session did not cover.
 
+### Getting a pair on
+
+A hand has to be **placed** before it can be worn, and nothing else in the CLI places a library model,
+so `wear` does both. One command is the whole setup:
+
+```
+.venv/bin/python -m conjure.ctl wear --pair
+```
+
+That places both hands as `hand_left` and `hand_right` and wears them — those are the entity ids the
+table below wants. `--hand auto` is implied and is almost always right: which hand a model IS was
+**measured from its geometry** at import, not read from the `_L` in its name.
+
+**It matches on MATERIAL NAMES, not on order, and that matters here.** The catalog holds five hand
+files and only one of them is a pair:
+
+| asset | label | side | materials |
+|---|---|---|---|
+| `b8f676bea0758536.glb` | VR_hand_L | left | `ArmsVR, FingernailsVR` ← **the pair** |
+| `f586068580143caa.glb` | VR_hand_R | right | `ArmsVR, FingernailsVR` ← **the pair** |
+| `4494f48be0fd8cfb.glb` | VR_hand_L | left | `ArmsAR, FingernailsAR` — orphaned AR left |
+| `119aad62cfc6f256.glb` | VR_hand_R | right | `New Material` |
+| `5a36d74c3bc4b802.glb` | VR_hand_R | right | **none** |
+
+Taking the first of each side puts the materials-less right beside a textured left, which reads as a
+broken import rather than as two files that were never a pair. If `--pair` prints *"no matching pair"*,
+the catalog has not been refreshed — go back to §1.
+
+To see the list without placing anything, or to do it a side at a time:
+
+```
+.venv/bin/python -m conjure.ctl wear                                               # what is there to wear
+.venv/bin/python -m conjure.ctl wear b8f676bea0758536.glb --place --name hand_left
+.venv/bin/python -m conjure.ctl wear f586068580143caa.glb --place --name hand_right
+```
+
+`--place` is what says "this id is a LIBRARY asset, place it first". Without it the id is read as an
+**entity** that is already in the scene — which is the form the `--hand off` row below uses.
+
+### Taking them off
+
+**`wear` with no arguments is also how you find out what is on.** It lists every PLACED hand with its
+entity id, its measured side, and whether it is worn:
+
+```
+placed, and wearable right now:
+  hand_left              left   VR_hand_L              WORN on the left
+  hand_right             right  VR_hand_R              WORN on the right
+```
+
+Wearing does not consume the model, it **occupies** it, so taking it off puts it back exactly where it
+was placed. **`--hand off` needs the entity id**, and there is **no bulk off** — one command per hand:
+
+```
+.venv/bin/python -m conjure.ctl wear hand_left  --hand off
+.venv/bin/python -m conjure.ctl wear hand_right --hand off
+```
+
+A bare `wear --hand off` with no id does **not** take everything off; it falls through and just prints
+the list. Note the asymmetry, because it is easy to assume otherwise: `--tip-out` with no id adjusts
+EVERY worn hand, while `--hand off` with no id adjusts none. If the ids are not `hand_left`/`hand_right`
+— they only are when `--pair` placed them — read them off the list above.
+
 | do | expect | because | observed |
 |---|---|---|---|
-| wear a pair, then **reload the page** | still worn, both hands | the state is on the entity ([`decisions.md`](../decisions.md) §30), so it replays from the snapshot. A per-client setting could not do this, and this is the claim that justified the fork | |
-| `wear <id> --hand off` | the hand is back **where it was placed**, and grabbable again | unwearing restores the anchor and drops the `grab` exemption | |
-| wear with `--occlusion hands` | a log line, and your real hand showing through the model | the two features defeat each other by construction. Documented, not fixed — the point is that it now *says so* instead of looking like a transparency bug | |
-| dial `wear --tip-out off`, then `radius`, while wearing | the fingertips change, no reload | the component reads `tipOut` per frame and has no `update` handler | |
+| wear a pair, then **reload the page** | still worn, both hands | the state is on the entity ([`decisions.md`](../decisions.md) §30), so it replays from the snapshot. A per-client setting could not do this, and this is the claim that justified the fork | still worn after refresh |
+| `wear <id> --hand off` | the hand is back **where it was placed**, and grabbable again | unwearing restores the anchor and drops the `grab` exemption | the hands remain exactly where they were when the command was executed, probably not where they were originally placed |
+| `?occlusion=hands` — see **The occlusion conflict** below for the order | **your real hand visible through the virtual one**, and solid again at `?occlusion=off` | the two features defeat each other by construction. Documented, not fixed — the point is that it now *says so* instead of looking like a transparency bug | **PASSES, after a fix.** Real hand visible through the model, confirmed by eye, and the warning lands once per hand. **It did not warn at first:** `hand-rig` and `hands-fit` read `window.CONJURE_OCCLUSION` (the SERVER's `--occlusion`, `off` here) while `occlusion.js` resolved `?occlusion=hands` from the URL — so the occluder ran (`handsSeen=2 meshes_filled=2`) and both warnings stayed silent, which is the transparency bug this row exists to pre-empt. Fixed 2026-10-16: the resolved mode is published once as `window.ConjureOcclusionMode()` and both read it. See `backlogs/input.md` |
+| dial `wear --tip-out off`, then `radius`, while wearing | the fingertips change, no reload | the component reads `tipOut` per frame and has no `update` handler | works as expected |
+
+### Dialling the fingertips
+
+Load `?hands=fit` with **no** `?occlusion=` — the model wants to be solid so you can see its tips, and
+the overlay draws a sphere at each joint's reported radius as a reference. Controllers down, pair worn.
+Then run these three **with no reload between them**, which is the actual claim:
+
+```
+.venv/bin/python -m conjure.ctl wear --tip-out off       # 0 — where `wear --pair` leaves you
+.venv/bin/python -m conjure.ctl wear --tip-out radius    # one tip radius out, per finger
+.venv/bin/python -m conjure.ctl wear --tip-thumb 0.8     # the thumb alone; the offset is untouched
+```
+
+No id, deliberately: `--tip-out` with no id adjusts **every worn hand**. (That is the one bulk path
+here — `--hand off` needs an id per hand.)
+
+**Expectations are exact, because the radii are measured.** This wearer's tips, from the `?hands=fit`
+read: thumb **0.88**, index **0.66**, middle **0.66**, ring **0.62**, pinky **0.54** cm. So:
+
+| command | `temp/conjure.log` should read | by eye |
+|---|---|---|
+| `--tip-out off` | `tipOut=off … 0.0/0.0/0.0/0.0/0.0mm` | **nothing changes** — the baseline, not a test |
+| `--tip-out radius` | `tipOut=radius thumb×1 → ~8.8/6.6/6.6/6.2/5.4mm` | tips extend 5–9 mm; thumb most, pinky least |
+| `--tip-thumb 0.8` | `tipOut=radius thumb×0.8 → ~7.0/6.6/6.6/6.2/5.4mm` | **only the thumb** retracts, ~1.8 mm |
+
+These are small — half a centimetre at most, under 2 mm for the thumb. The usable visual judgement is
+whether the model's fingertips stop falling **short** of your real ones at `radius`, and whether the
+thumb stops **overshooting** at `0.8`.
+
+**The log will NOT show the dial, so do not wait for it.** `_report` is gated on `this._said` and fires
+once per wearing, at the first tracked frame — the millimetres above are what it would print *if* that
+value had been set before the hand was first tracked. Dialling live changes the hand and emits nothing,
+so an unchanged `tipOut=0` line means only that the report already ran. Your eye is the only instrument
+for this row; the numbers say what size of change to look for, not what to read back.
+
+**What makes it pass or fail is cruder than the numbers: each command must take effect with no reload.**
+The component reads `tipOut` per frame and has no `update` handler, so A-Frame replacing `this.data`
+does not re-run `init` and the skeleton, bind pose and captured rest all survive a dial. If a change
+only appears after a reload, the row fails whatever the millimetres say.
+
+### The occlusion conflict
+
+`--occlusion` is a **server** flag, but there is a per-client override in the URL — use that: no
+restart, and the worn hands survive it.
+
+**The order matters, and getting it wrong looks exactly like the feature failing to warn.**
+
+1. **Wear the pair.** `.venv/bin/python -m conjure.ctl wear --pair`
+2. **Put the controllers DOWN.** Occlusion needs tracked hands. With controllers up you get
+   `[occlusion] no tracked hands; inputSources=[]` and nothing else happens at all.
+3. **Reload the headset** at `http://<lan>:8080/tunnel?occlusion=hands`
+
+Wearing *after* the page has loaded will not do it either: `hand-rig`'s `init()` reads
+`window.CONJURE_OCCLUSION` **once**, so the hand has to be worn before the component initialises. Wear,
+then reload — not load, then wear.
+
+Leave `?hands=fit` **off** for this one. `hands-fit.js` carries its own copy of the same warning, so with
+both on you read two conflict messages and an overlay whose joints also vanish behind your real hand.
+
+**What you judge, by eye:** your real hand showing through the virtual one, and the model going solid
+again at `?occlusion=off`. The matching `[hand-rig] ! --occlusion hands is on …` line lands in
+`temp/conjure.log` once per hand — that is a check for whoever is at the terminal, not something to go
+hunting for in the headset.
 
 **Dissolves to:** `specs/figures.md` §8f.
 
