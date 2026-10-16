@@ -370,6 +370,11 @@ because that was the only one published. Three modules would have been three ans
 every other consumer of this layer follows — `grab` holding a pointer mid-drag must not also be
 rippling the water it is dragging past.
 
+**The gate is PER-POINTER, not global, and that is worth saying out loud.** `grab` claims only the
+pointer it drags with, so a **free** second hand whose fingertip genuinely touches the surface still
+ripples, and should: nothing is holding it. Read as "no ripples while anything is being dragged" it
+looks broken when it is working — which is how it was first read on device (2026-10-16).
+
 **Capsules, not points.** A fingertip *joint* can be outside a volume while the finger is inside it:
 joints are ~25 mm apart and the flesh ~8 mm thick, so a point test leaves a centimetre of finger that
 touches nothing — and a thin volume is exactly where that gap falls, which is exactly where `water`
