@@ -60,7 +60,7 @@ to passthrough, with no frame-transform bookkeeping.
 
 It is not dead, just demoted. In a captured space it drives **no render transform**. It is used for:
 
-1. **Id correspondence** — the transform that lets `matchRef` pair live planes with reference surfaces.
+1. **Id correspondence** — the transform that lets `assignRefs` / `matchInset` pair live planes with reference surfaces.
 2. **Head pose in F_ref** — `presenceTick` applies `T · camera_F_track` so the server's `gaze` /
    `view_relative` ("the wall in front of me") resolves in the shared frame.
 3. **Skybox heading** — `_pinSky` applies `T⁻¹`'s rotation so the sky holds a consistent space-relative
@@ -85,9 +85,12 @@ pipeline must use it or the result is silently wrong.
 
 **Normal semantics:** captured surface normals point **outward from the space**, so the interior-facing
 direction is `−normal`. **Wall-art is the exception** — its live normal may arrive *inward*, roughly
-180° from its host wall. Consumers compensate (`_face_interior`, and `matchRef`'s coincident-flip fallback)
-rather than the convention being normalised at ingest; see
-[`backlogs/worlds-surfaces.md`](../backlogs/worlds-surfaces.md).
+180° from its host wall. Consumers compensate (`_face_interior` on the server; `hostWallFor` and
+`snapInsets` test `|dot|` rather than `dot`) rather than the convention being normalised at ingest; see
+[`backlogs/worlds-surfaces.md`](../backlogs/worlds-surfaces.md). Inset **identity** never reads the
+normal at all (§6.1), which is why the coincident-flip fallback the old centroid matcher carried for
+wall art was dead code from 2026-07-24 and was deleted on 2026-10-17 — this paragraph described it as
+load-bearing for nearly three months after it stopped being called.
 
 ---
 
@@ -159,6 +162,16 @@ space that has genuinely *shrunk* could never reach the threshold, and holding f
 posting the removal — the wall-less-seed deadlock in a new costume ([backlog](../backlogs/spaces-geometry.md)).
 After `LOAD_PATIENCE` captures it proceeds and says so, so a forced pass is never mistaken for a healthy one.
 
+**This gate holds the render and the vote; it no longer stands alone for identity.** The identity
+question it was built for — *does this capture account for enough of the reference?* — is asked again,
+better, by `mayMutateIdentity`'s coverage test (§4.0c), which measures `register`'s actual pairings
+against the live reference rather than a plane count, and so also catches the case a count cannot see: a
+full capture paired to the wrong reference. The two tests used to share the number 0.6 by coincidence;
+they still do, and only the fit test decides whether a surface may be minted or pruned. A forced pass here
+needs no second flag because a capture that forces through with a third of the room fails coverage on
+its own. The seed floor below which there is "nothing to compare against" is `space_min_surfaces` (8) —
+the same setting that sizes the server's prune guard (§8), because both ask whether a seed is a room yet.
+
 **A failed registration doubles as a "you are not in this space" signal.** A genuinely different space
 cannot consistently cover ≥4 reference surfaces, which is exactly what `selectSpace` exploits for space
 selection ([`specs/spaces.md §6`](./spaces.md)). The caveat worth stating: *different space* and *bad
@@ -178,6 +191,15 @@ So `WM.selectGate` **holds** every capture while selection is unresolved (`await
 no lost-marking. Nothing is hidden that was not already hidden, because that window is blanked to
 passthrough anyway, and the candidate vote runs ahead of this gate — it is what resolves the hold. After
 `8` held captures it returns `forced`, the same deadlock escape `loadGate` has, and says so.
+
+**Forced is sticky.** Once patience runs out, every capture passes as forced until the vote lands, and
+`_selForced` is cleared only when it does. The first version reset the hold counter on the forced pass,
+which re-armed the hold: eight held captures, one forced pass, eight more — a one-in-nine duty cycle,
+and since the irreversible work refused the one, identity was withheld for the whole run. That is the
+deadlock the escape hatch exists to prevent, rebuilt one layer up. What a forced pass may do is decided
+in §4.0c: no prunes, and mints only into a space that has no seed yet. `space.selected` fires once with
+`forced: true` at the transition and once more, with `afterForced`, when selection finally resolves.
+The no-match vote commits at `space_min_walls` (6) verticals, the same floor the void frame gate uses.
 
 **Known limit — symmetry.** A symmetric room with equal opposite walls is genuinely ambiguous from one
 vantage; the vote can lock 180° off. Distinguishing features (differently-sized walls, doors, wall-art)
@@ -251,7 +273,7 @@ is how that arises: the capture runs in the render loop, and that session starve
 | asked | refuses when | why it is separate |
 |---|---|---|
 | **settled** | the device is still revising its planes | the model is moving, so any comparison is a snapshot of a moving target |
-| **not forced** | selection ran out of patience instead of resolving (§4.0b) | the gate records `forced` so it is never mistaken for a healthy pass; `s_x1ggz0` forced on 2026-10-08 and minted eleven surfaces 1.7 s later, and nothing had ever read the flag |
+| **not forced** | selection ran out of patience instead of resolving (§4.0b) — **refuses prunes always, and mints unless the space has no seed** | the gate records `forced` so it is never mistaken for a healthy pass; `s_x1ggz0` forced on 2026-10-08 and minted eleven surfaces 1.7 s later into a seeded space, and nothing had ever read the flag |
 | **fit** | coverage below `fit_min_cov` (0.6) or mean residual above `fit_max_resid` (0.08 m) | the device may be calm while our transform does not explain the room |
 
 One predicate with a named reason rather than three flags, because the value of this whole campaign has
@@ -260,13 +282,39 @@ never mints says which of the three was responsible. The reasons are ordered mos
 capture that is both moving and forced reports `moving`. An unknown fit — before the first `register` —
 does not block: absent evidence must not hold for ever, and `settled`/`forced` still have to pass.
 
+**The predicate answers mint and prune separately**, and `forced` is where the two part. A forced
+selection means *we do not know which space this is*. A prune under that doubt removes a surface from a
+record we may not be standing in, and a mint into a seeded space adds a stranger's wall to it — both
+refused. But a mint into an **empty** seed invents nothing about anyone else's room: the only record it
+can reach is the one this session is the first to write. The first version refused that too, and with
+the sticky-forced fault above it produced a space that could never be captured at all. Coverage and
+residual still apply to a seedless mint, measured against this session's own constellation. `space.hold`
+carries `mint` and `prune` as separate booleans beside `why`, plus `seeded`, the live reference count and
+how many of it `register` matched, so the verdict can be re-derived from the line.
+
+**Coverage is measured against the live reference.** `_ref` keeps an entry after its surface has gone,
+so that a surface which comes back keeps its number (§8), and a denominator that counted those would let
+coverage decay with every prune until the gate shut for good on a healthy room. Entries whose absence
+counter has crossed the line are left out of the count.
+
 While unsettled, the client still registers, renders and posts — only the two irreversible things are
 withheld:
 
 | Withheld | Why |
 |---|---|
 | **absence** — an unmatched reference does not accumulate toward removal | the prune is what destroys styling. Not counted rather than counted-and-ignored: a tally that built through the settle would fire the instant it ended, which is the same bug with a delay |
-| **a mint reaching the POST** — a new id is still issued so this session can render and track the plane, but it is held out of the capture, and **discarded when the model settles** rather than released | the same 13 cm that stops a wall matching invents one beside it; 2026-09-29 minted `_160` and `_161` in the capture that lost `_157`. A genuinely new surface arrives a few seconds later |
+| **a mint reaching the POST** — a new id is still issued so this session can render and track the plane, but it is held out of the capture, and **discarded when the model settles** rather than released | the same 13 cm that stops a wall matching invents one beside it; 2026-09-29 minted `_160` and `_161` in the capture that lost `_157`. A genuinely new surface arrives a few seconds later. `churn.mint` carries `held: true` for these, so a surface that never reaches the seed can be traced to the capture that minted it |
+
+**There is one absence counter** (`WM.absenceStep`, `ABSENT_N` = 3), and every consequence of a surface
+not being seen reads it: the element leaves the render, the owner drops the id from its POST set, and
+the log writes `miss`/`regain` — all on the same capture, never one without the others. There used to be
+three — the DOM's, the post model's and the churn log's, each with its own three-miss rule — and only the
+post model's was gated on the settle, so a guest's render and the owner's record could disagree about
+whether a wall existed, and the log needed a fourth map to stay quiet about reference entries that had
+never matched. The cost of gating the render too is that a genuinely removed surface stays drawn until
+the device is still: a ghost wall in passthrough for a few seconds, cheap and self-correcting, against a
+prune that is neither. An element whose id has no reference entry at all — a provisional id discarded at
+the settle transition — is dropped at once, since nothing can ever be captured under it again.
 
 Rendering is **not** gated. Drawing a surface slightly out is cheap and self-correcting; forgetting one is
 not, and holding the view would pay a per-session cost against the risk that is already harmless — and
@@ -545,7 +593,8 @@ tolerance-fudging:
   where surfaces actually meet, independent of scan coverage. A wall's **centroid** is a scan artifact.
   So anything that must agree across devices is defined by distances to intersections.
 - **Wall identity by plane, not centroid.** `matchWall` keys on normal + perpendicular offset with an
-  along-line overlap guard. Floors and ceilings keep `matchRef`; insets use `matchInset`.
+  along-line overlap guard. Floors and ceilings go by centroid and semantic inside a 0.5 m radius, the
+  horizontal rule of the same `matchCost`; insets use `matchInset`.
 - **Identity is assigned globally, not first-come.** All non-inset planes are scored against all
   references (`matchCost`) and paired best-first (`assignRefs`) — cheapest pair, then cheapest of what
   remains. Taking the nearest free reference *as each plane arrives* makes identity depend on the order
@@ -566,7 +615,7 @@ The thresholds are named and exposed (`--reg-size-tol`, `--reg-min-cov`, `--reg-
 ### 4.3 The linchpin risk
 
 With geometry local and placement plane-relative, **correctness hinges on each client mapping its local
-surfaces to the right shared ids.** A bad lock or a `matchRef` swap now puts content on the *wrong local
+surfaces to the right shared ids.** A bad lock or an identity swap now puts content on the *wrong local
 wall* and resolves anchors against the *wrong reference planes*. Identity correspondence is the thing to
 get right, and the thing to watch whenever two maps genuinely differ.
 
@@ -716,7 +765,8 @@ local walls and folds it into the render set, so it draws and can host content. 
   raw anchor depth.
 - **Walls and floors are excluded.** They are the *basis* of the anchor system — planes, not points — and
   a wall's absence perturbs everyone's nearest-wall set. Missing-wall recovery is a separate, harder problem.
-- **Live detection wins the moment it is available**, and the id is re-inherited via `matchRef`.
+- **Live detection wins the moment it is available**, and the id is re-inherited through the ordinary
+  matchers (`matchInset` for an inset).
 
 `--drop-surface SEMANTIC|ID[,…]` makes the client pretend it did not capture matching surfaces, so this
 is exercisable with one headset.
@@ -742,11 +792,15 @@ relocalization, **without re-minting** — and therefore without losing its dire
   anti-parallel faces of a room partition — and a co-facing rule *cannot* break that tie, because an
   inset's live normal may be inward. `hostWallFor` derives it geometrically when unrecorded, using
   `|dot|` and a within-width test.
-- **Duplicate guard.** `dupInsetIds` finds same-semantic, same-host insets whose stored centres sit
-  within 0.25 m — closer than two real insets could be — and shadows the non-canonical id
-  deterministically. Without it, a `matchInset` miss can mint a twin, the two ids oscillate faster than
-  the removal debounce, and recovery re-materialises whichever the capture did not claim: a flickering
-  visual duplicate.
+- **Duplicate guard — for twins already in the data, not new ones.** `dupInsetIds` finds same-semantic,
+  same-host insets whose stored centres sit within 0.25 m — closer than two real insets could be — and
+  shadows the non-canonical id deterministically, so recovery does not re-materialise the shadow beside
+  its canonical twin as a flickering duplicate. The twins it was built for were minted while inset
+  identity keyed off the *seed* (the first bullet above), and that path was replaced the same day
+  (2026-07-24); with identity resolving against `_ref`, a `matchInset` miss mints once and then matches
+  its own entry, so a new twin should not arise. What remains is twins already persisted in live spaces,
+  which feature branches share. The guard therefore logs `churn.inset_twin` once per shadow it finds; a
+  log that stays silent across a few weeks of sessions is the evidence to retire it on.
 
 ---
 
@@ -783,8 +837,10 @@ The owner pushes **only when the shared model genuinely changes**. Per-centimetr
 round-trips.
 
 **Structural triggers:** a surface added; a surface confirmed removed; a semantic reclassification; a
-**large move** beyond ~0.5 m or 20° (real furniture moved or a re-scan, not drift) — which prints and
-logs, because it is rare and attention-worthy; an opening-count change; a styling or content edit; a
+**large move** beyond `struct_move_m` / `struct_rot_deg` (0.5 m / 20°: real furniture moved or a re-scan,
+not drift) — which prints and logs, because it is rare and attention-worthy. The two numbers are one
+setting, injected into the client's post gate and read by the server's seed gate, so a change the client
+posts is a change the server will count; they used to be separate copies. Then an opening-count change; a styling or content edit; a
 boundary change; a room segmentation the server has not acknowledged (otherwise a space that is already
 fully captured never sends its rooms at all, since every other trigger is a change to the *surfaces*).
 
@@ -800,8 +856,10 @@ space-activation env, boundary, and on-surface image re-anchors.
 
 **Client post-gating:** the owner keeps an authoritative known-set seeded from the persisted seed on
 entry and POSTs only on a structural change, so **a settled space sends no `/space/capture` traffic at all**.
-Removal confidence lives on the client (a 3-capture debounce), so a surface missing from a post is
-genuinely gone and the server prunes it at once — no server-side absence counter.
+Removal confidence lives on the client — the one absence counter of §4.0c, three counted captures, with
+the count withheld while the device is unsettled or the fit unhealthy — so a surface missing from a post
+is genuinely gone and the server prunes it at once; no server-side absence counter. The reference entry
+is kept after the prune so a surface that returns re-matches its old id and keeps its number.
 
 Surfaces with content pinned to them (`anchored`) are **never pruned**, so a photo's host id cannot
 orphan.
@@ -820,12 +878,14 @@ neither can change a match or lose data by firing:
   as the client's load gate (§4.0a), because a capture source that never votes (the CLI, a desktop client)
   would otherwise disable pruning for ever and let the seed rot with no symptom.
 - **Refuse a wholesale prune.** A post deleting more than half an *established* space is likelier a bug
-  than a room that lost half its surfaces. The size floor (`_PRUNE_GUARD_MIN`) matters as much as the
+  than a room that lost half its surfaces. The size floor (`space_min_surfaces`) matters as much as the
   ratio: a room's structural shell alone is six surfaces, so below that a space is not established and
   losing most of it is ordinary. The floor sits at **8**, two above that shell, because a space holding
   exactly its six walls is still mid-capture and guarding it would refuse the ordinary churn of a room
-  still being discovered. A coarse backstop only — it would **not** have caught 2026-09-09, which
-  pruned 25 of 86 (~29%).
+  still being discovered. It is the same setting the client's load gate reads for "is there a seed to
+  compare against" (§4.0a), defined once in `config.py` and injected — "how many surfaces make a space"
+  was answered 3, 6, 6, 8 and 8 in five places before. A coarse backstop only — it would **not** have
+  caught 2026-09-09, which pruned 25 of 86 (~29%).
 
 Both log `seed.prune_refused`, and only when something was actually refused.
 
@@ -833,7 +893,12 @@ Both log `seed.prune_refused`, and only when something was actually refused.
 
 There is **no time-based establish-then-freeze**. An earlier design held a ~20 s establishing window and
 then froze static surfaces; it is gone, along with `_ESTABLISH_SECS`, `_STATIC_SEMANTICS` and
-`_static_frozen`. Clients render locally, so there is nothing shared to stabilise.
+`_static_frozen`. Clients render locally, so there is nothing shared to stabilise — which was the
+rationale given when it was removed (2026-07-21), and it covered only half of what the window did. The
+other half, keeping early-capture decisions out of the seed, came back on the client over September and
+October as the load, settle and fit gates of §4.0a–c: evidence-based and transient where the window was
+timed and permanent, so better in kind, but the same concern. See
+[decisions.md §32](../decisions.md).
 
 **Authority** is the space owner; `/space/capture` is owner-only. An idle authority is taken over after
 `_AUTH_TTL` so a reconnecting owner is not locked out.
@@ -976,8 +1041,9 @@ it now confirms a measurement rather than an argument.
 | Event | Fires when |
 |---|---|
 | `space.enter` | first capture in a world — role, `_ref`/seed sizes, count per semantic, and `build`: the newest client-script mtime the browser actually loaded, so a log can be checked against the files on disk |
-| `churn.miss` / `.regain` | a known id goes unmatched (n=1..3), or returns before the debounce |
-| `churn.mint` / `.hide` / `.prune` | a fresh id is minted; the element is removed after 3 misses; the id leaves the POST set |
+| `churn.miss` / `.regain` | a reference id was not captured (n=1..3, `gone: true` on the third); `ever` says whether it was captured at all this session, separating a surface lost mid-session from a seed entry never seen since entry; or it returns before the debounce |
+| `churn.mint` / `.hide` / `.prune` | a fresh id is minted (`id`, and `held: true` if it will be withheld from the seed); the element is removed — `why: absent` on the capture the one counter crosses 3, or `why: untracked` at once for an id with no reference entry; the id leaves the POST set, on that same capture |
+| `churn.inset_twin` | a seed carries two ids for one physical inset and `dupInsetIds` shadowed one — once per shadow per session; silence over weeks is the evidence to retire the guard (§6.1) |
 | `churn.restyle_lost` | an id that used to render with a material now renders bare |
 | `churn.pair_held` | a door face's absence was excused because the other face of the same doorway was visible this capture (`sameDoorway`) — logged once per episode |
 | `churn.assign_contested` | a plane did not get its own cheapest reference because another plane wanted it more (`assignRefs`) — the audit trail for a wrong match, which emits nothing else |
@@ -985,11 +1051,11 @@ it now confirms a measurement rather than an argument.
 | `level.census` / `.anomaly` | a floor/ceiling height moved >2 cm; a height moved relative to the rest of the space |
 | `track.reset` / `.lock` | reference-space recenter (boundary trip); lock lost or regained |
 | `space.loading` / `.loaded` | the load gate holds for a half-present space, then releases — planes seen against expected, and captures held (§4.0a) |
-| `space.selecting` / `.selected` | the selection gate holds while it cannot say which space this is, then resolves — or gives up, which it records as `forced` (§4.0b) |
+| `space.selecting` / `.selected` | the selection gate holds while it cannot say which space this is, then resolves — or gives up, which it records once as `forced: true`, and again with `afterForced` when the vote finally lands (§4.0b) |
 | `room.error` | a rooms step threw — segmentation or the residual fit; once per distinct failure |
 | `room.empty` | segmentation returned no rooms at all, with the per-semantic tally and how many surfaces lacked a pose — the shape of a silent segmentation failure |
 | `room.residual` | a room's fit against the global transform first appears, moves >1 cm, or flips its verdict; carries `dyaw`/`yaw_sd` in degrees beside the translation (§4.4) |
-| `space.hold` | the reason identity work is being withheld, on every change — `moving`, `forced`, `coverage`, `residual` or none (§4.0c) |
+| `space.hold` | the identity verdict, on every change: `why` (`moving`, `forced`, `coverage`, `residual` or none) with `mint` and `prune` answered separately, `seeded`, and the live reference count against how many `register` matched (§4.0c) |
 | `churn.provisional_dropped` | how many ids minted on a bad frame were discarded when the model settled (§4.0c) |
 | `space.settle` | the device's own model movement per capture while it is moving, and both transitions either side (§4.0c) |
 | `room.refine` | rooms were actually moved for identity — the spread that justified it and the common offset that was left to the global fit (§4.4) |
@@ -1014,12 +1080,12 @@ centroid slides metres along the wall between captures, so centroid-ranking woul
 the other end as "never detected" — the most misleading thing this could say. Candidates wildly off in
 facing or plane are discarded as *other walls*, not failed matches.
 
-**The explanation must come from the matcher that ran.** Identity dispatches three ways — insets
-(`INSET_SEMS`: door, window, wall art) through `matchInset`, other verticals through `matchWall`,
-horizontals through `matchRef` — so the diagnosis dispatches the same three ways, or it describes a
-comparison that never happened. `explainNoMatch` covers the second and third; **`explainInsetNoMatch` and
-`explainInsetMint` cover the first**, in `matchInset`'s own terms (host wall, reconstructed along-slot,
-0.4 m tolerance) rather than a wall's facing and perpendicular offset.
+**The explanation must come from the matcher that ran.** Identity dispatches two ways — insets
+(`INSET_SEMS`: door, window, wall art) through `matchInset`, everything else through `matchCost` (a plane
+rule for verticals, a centroid radius for horizontals) — so the diagnosis dispatches the same ways, or it
+describes a comparison that never happened. `explainNoMatch` covers the second with both of its rules;
+**`explainInsetNoMatch` and `explainInsetMint` cover the first**, in `matchInset`'s own terms (host wall,
+reconstructed along-slot, 0.4 m tolerance) rather than a wall's facing and perpendicular offset.
 
 This is not hypothetical tidiness. Every inset churn line logged before 2026-09-24 was explained with
 `matchWall`'s gates, and insets are **69%** of all recorded churn — so the majority of the evidence read as
@@ -1151,6 +1217,8 @@ checked anywhere before. The probe needs no overlay and settles the displacement
 | `--reg-size-tol` / `--reg-min-cov` / `--reg-min-cov-frac` / `--reg-inlier-m` / `--reg-yaw-peaks` | 0.5 / 4 / 0.3 / 0.4 / 5 | registration acceptance |
 | `--wall-perp-tol` / `--wall-yaw-tol` / `--wall-overlap-slop` | 0.15 m / 30° / 0.3 m | `matchWall` identity tolerances |
 | `fit_min_cov` / `fit_max_resid` | 0.6 / 0.08 m | the fit half of §4.0c: coverage and mean residual `register` must reach before a mint or a prune |
+| `space_min_surfaces` / `space_min_walls` | 8 / 6 | how many surfaces make a space — one setting for the load gate's seed floor and the server's prune guard (surfaces), and for the void frame gate and the no-match vote (walls); injected into the client |
+| `struct_move_m` / `struct_rot_deg` | 0.5 m / 20° | what counts as a structural move rather than drift — one setting for the client's post gate and the server's seed gate (§8) |
 | `settle_gap_ms` / `settle_rms` / `settle_run` | capture interval / 0.004 m / 3 | how still the DEVICE's own model must be, and for how many captures, before a mint or a prune is allowed (§4.0c) |
 | `--room-refine` / `--room-refine-min-spread` | **off** / 0.02 m | match identity with a per-room delta (§4.4); the floor is room-to-room disagreement, not displacement |
 | `--drop-surface` | — | pretend a surface was not captured (exercise recovery solo) |
@@ -1183,7 +1251,7 @@ with a golden test like `plane_anchor`'s.
 
 **`client/space-snap.js`** — pure geometry, `THREE` passed in, unit-tested:
 
-`register`, `selectSpace`, `canonicalFrame`, `surfaceToRef`, `matchRef`, `matchWall`, `matchInset`,
+`register`, `selectSpace`, `canonicalFrame`, `surfaceToRef`, `matchWall`, `matchInset`,
 `matchCost`, `assignRefs`, `sameDoorway`, `dupInsetIds`, `wallCorners`, `authorInsetAnchor`,
 `reconstructInset`, `insetAlong`, `hostWallFor`, `joinCorners`, `sealWalls`, `snapInsets`, `eulerYXZ`,
 `yawOf`, `heightCensus`, `explainNoMatch`, `explainInsetNoMatch`, `explainInsetMint`, `floorUnder`,
@@ -1216,7 +1284,7 @@ on are pinned in `surface-overlay.test.js` against a stubbed `window`/`document`
 | void frame establish + hold | `client/conjure-client.js` the `isVoidWorld` branch; `_onReset` invalidates it |
 | content placement | `client/conjure-client.js` `_placeContent` |
 | recovery | `client/conjure-client.js` `_recoverMissing` |
-| geometry event log — client | `client/conjure-client.js` `geoLog` / `_logChurn` / `_logLevel` / `_markProbe` |
+| geometry event log — client | `client/conjure-client.js` `geoLog` / `_trackAbsence` / `_logLevel` / `_markProbe` |
 | geometry event log — sink | `conjure/server.py` `_glog`, `_geo_prune`, `/geometry_log` |
 
 **Tests:** `tests/js/space-snap.test.js` (synthetic rooms plus `fixtures/golden-space.json`, a real

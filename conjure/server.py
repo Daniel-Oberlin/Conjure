@@ -1618,6 +1618,13 @@ async def index() -> HTMLResponse:
                         f"window.CONJURE_WALL={wall};"
                         f"window.CONJURE_FIT_MIN_COV={settings.fit_min_cov};"
                         f"window.CONJURE_FIT_MAX_RESID={settings.fit_max_resid};"
+                        # One definition for both sides of the wire: how many surfaces make a space, and
+                        # what counts as a structural move. The server reads the same settings in
+                        # ingest_capture, so the client's post gate and the server's seed gate agree.
+                        f"window.CONJURE_SPACE_MIN_SURFACES={settings.space_min_surfaces};"
+                        f"window.CONJURE_SPACE_MIN_WALLS={settings.space_min_walls};"
+                        f"window.CONJURE_STRUCT_MOVE_M={settings.struct_move_m};"
+                        f"window.CONJURE_STRUCT_ROT_DEG={settings.struct_rot_deg};"
                         f"window.CONJURE_SETTLE_GAP_MS={settings.settle_gap_ms};"
                         f"window.CONJURE_SETTLE_RMS={settings.settle_rms};"
                         f"window.CONJURE_SETTLE_RUN={settings.settle_run};"
@@ -3576,11 +3583,10 @@ def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
 # new capturer then TAKES IT OVER. Safe because /space/capture is already owner-only (middleware), so only the
 # active world's owner ever reaches here — the guard is just against two of their live headsets at once.
 _AUTH_TTL = 6.0                       # seconds (~3 capture cycles) an idle authority holds before takeover
-#: Below this many stored surfaces the >50% prune guard does not apply — a room's structural shell alone is
-#: six (four walls, floor, ceiling), so a smaller space is not established and losing most of it is normal.
-#: Set two above that shell rather than at it: a space holding exactly its six walls and nothing else is
-#: still mid-capture, and guarding it would refuse the ordinary churn of a room still being discovered.
-_PRUNE_GUARD_MIN = 8
+#: Below `settings.space_min_surfaces` stored surfaces the >50% prune guard does not apply — a room's
+#: structural shell alone is six (four walls, floor, ceiling), so a smaller space is not established and
+#: losing most of it is normal. The number lives in config.py because the client's load gate asks the same
+#: question of the same seed, and the two used to carry separate copies.
 _authority_ts: float = 0.0            # server time of the last accepted capture from the current authority
 # NOTE (local-first, docs/specs/spaces-geometry.md §2): the old ESTABLISH-then-FREEZE machinery (a timed
 # window that committed the static shell as a coherent set then froze it) is gone. It existed to stabilize
@@ -3602,8 +3608,8 @@ def _ang_delta_deg(a: list, b: list) -> float:
 # cm-drift — so the stored reference constellation stays stable (clients render their own live geometry
 # regardless). Per-cm jitter of the owner's re-registered posts (Tmat re-solves each capture, amplified by
 # distance) used to sail through the old cm-level gate and rewrite ~a quarter of the seed every 2 s.
-_LARGE_MOVE_M = 0.5        # a surface must move/resize this far (m) to count as a real relocation, not drift
-_LARGE_ROT_DEG = 20.0      # ...or rotate this far (deg) — a wall genuinely re-oriented, not registration wobble
+# The thresholds are `settings.struct_move_m` / `settings.struct_rot_deg`, injected into the client so
+# its `_structMoved` post gate applies the very same numbers.
 
 
 def _surface_changes(e: dict, s) -> list[str]:
@@ -3625,17 +3631,18 @@ def _surface_changes(e: dict, s) -> list[str]:
     t = e.get("transform") or {}
     comps = (e.get("components") or {}).get("surface") or {}
     out: list[str] = []
+    move_m, rot_deg = settings.struct_move_m, settings.struct_rot_deg
     if s.semantic != (e.get("meta") or {}).get("semantic"):
         out.append("semantic")
     if s.holes is not None and len(s.holes) != len(comps.get("holes") or []):
         out.append("holes")
-    if s.position is not None and _dist3(s.position, t.get("position") or [0, 0, 0]) > _LARGE_MOVE_M:
+    if s.position is not None and _dist3(s.position, t.get("position") or [0, 0, 0]) > move_m:
         out.append("position")
-    if s.rotation is not None and _ang_delta_deg(s.rotation, t.get("rotation") or [0, 0, 0]) > _LARGE_ROT_DEG:
+    if s.rotation is not None and _ang_delta_deg(s.rotation, t.get("rotation") or [0, 0, 0]) > rot_deg:
         out.append("rotation")
     if s.extent is not None:
         ee = comps.get("extent")
-        if ee is None or abs(s.extent[0] - ee[0]) > _LARGE_MOVE_M or abs(s.extent[1] - ee[1]) > _LARGE_MOVE_M:
+        if ee is None or abs(s.extent[0] - ee[0]) > move_m or abs(s.extent[1] - ee[1]) > move_m:
             out.append("extent")
     return out
 
@@ -3643,7 +3650,7 @@ def _surface_changes(e: dict, s) -> list[str]:
 def _surface_update_set(s, aspects) -> dict:
     """The `update`-op `set` for a re-captured surface — **only the aspects that actually changed**.
 
-    A pose is written when the surface genuinely moved (past `_LARGE_MOVE_M`) or was resized, never as a
+    A pose is written when the surface genuinely moved (past `struct_move_m`) or was resized, never as a
     side effect of an unrelated edit. The corner-relative inset anchors (`along`/`vertical`) ride the pose
     for the same reason: they are derived from the capture's geometry, so refreshing them from an untrusted
     one is how inset identity starts churning (§6.1)."""
@@ -3725,7 +3732,7 @@ async def ingest_capture(req: CaptureUpdate) -> dict:
             # The capturer has not voted since the space was unclaimed, so it may not yet be aligned to
             # the stored geometry. Add, never remove, until it has.
             veto = "capturer has not voted since the space was unclaimed"
-        elif len(existing) >= _PRUNE_GUARD_MIN and len(doomed) > len(existing) / 2:
+        elif len(existing) >= settings.space_min_surfaces and len(doomed) > len(existing) / 2:
             # A post that deletes more than half an ESTABLISHED space is likelier a bug — an unaligned
             # frame, a partial capture, a client mid-relocalization — than a room that genuinely lost half
             # its surfaces. The cost of being wrong is asymmetric: refusing leaves stale geometry that the

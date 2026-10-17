@@ -16,7 +16,7 @@
  */
 
 /**
- * Constellation form — what register()/matchRef()/canonicalFrame() consume (a compact plane).
+ * Constellation form — what register()/matchCost()/canonicalFrame() consume (a compact plane).
  * @typedef {Object} RefSurface
  * @property {string} [id]
  * @property {string} sem                                semantic ("wall", "window", …)
@@ -289,42 +289,14 @@
     return best;
   }
 
-  // Assign a detected plane to the reference surface it re-inherits its id from (conjure-client Pass B).
-  // Same semantic, nearest CENTER within 0.5 m — but ALSO SAME-FACING. Two parallel walls that share a
-  // partition are the two faces of one wall (one per room): their centers sit ~0.5 m apart and their
-  // normals point OPPOSITE. A center-only match can therefore swap them — a new-room wall grabbing the
-  // old-room wall's id (and colour/style), the old wall then grabbing the new one — especially when
-  // capture noise nudges a center toward the wrong face. Requiring the normals to agree (within ~60°,
-  // cos > 0.5) keeps the two faces distinct. `claimed` is the Set of refs already taken this pass; returns
-  // the chosen ref, or null ⇒ a genuinely new surface. (Only vertical faces are normal-gated; a floor and
-  // ceiling are already separated by semantic + height.)
-  /**
-   * @param {{pos: Vec3, nyaw: number, sem: string, orient: string}} cand
-   * @param {RefSurface[]} refs
-   * @param {Set<RefSurface>} [claimed]   refs already taken this pass
-   * @returns {RefSurface|null}
-   */
-  function matchRef(cand, refs, claimed) {
-    // Prefer the nearest SAME-FACING reference within 0.5 m. If none faces the same way, fall back to a
-    // near-COINCIDENT (<0.15 m) antiparallel one — the SAME physical surface seen with an opposite normal.
-    // This is REQUIRED for wall art: a mounted picture is an object whose live normal faces the viewer
-    // (INWARD), 180° from the wall's outward orientation it's stored with — so its own detection looks
-    // antiparallel to its ref and would re-mint a new id every session without this. The two faces of a
-    // partition wall sit ~0.4 m apart (not coincident), so they stay DISTINCT — the id-swap fix is intact.
-    /** @type {RefSurface|null} */
-    var same = null;
-    /** @type {RefSurface|null} */
-    var flip = null;
-    var dSame = 0.5, dFlip = 0.15;
-    refs.forEach(function (r) {
-      if (r.sem !== cand.sem || (claimed && claimed.has(r))) return;
-      var d = cand.pos.distanceTo(r.pos);
-      var antiparallel = cand.orient === "vertical" && r.orient === "vertical" && Math.cos(cand.nyaw - r.nyaw) < 0.5;
-      if (!antiparallel && d < dSame) { dSame = d; same = r; }
-      else if (antiparallel && d < dFlip) { dFlip = d; flip = r; }
-    });
-    return same || flip;
-  }
+  // There is no centroid matcher for verticals any more. `matchRef` (same semantic, nearest centre within
+  // 0.5 m, same-facing, with a coincident-antiparallel fallback for wall art) was the first identity rule,
+  // and its history is worth one paragraph because the spec and a memory file still described its flip
+  // fallback as load-bearing long after it was not: wall art moved to `matchInset` (host wall + slot,
+  // normal-independent) on 2026-07-24, horizontals moved to `matchCost` on 2026-09-24, and from then on
+  // nothing called it. The flip fallback was added, removed as a hack and restored within four hours on
+  // 2026-07-07 (a96cd67 → c958d45 → a5e108f); the restore was right at the time and the rule is now
+  // simply unnecessary, because an inset's identity no longer reads its normal at all. Deleted 2026-10-17.
 
   // Identify a WALL by its PLANE, not its centroid (docs/specs/spaces-geometry.md §4.2/§4.3). A wall's
   // centroid is a scan artifact — it's the centre of whatever rectangle the Quest captured, so it slides
@@ -333,15 +305,15 @@
   // Instead a wall is its plane: same-facing normal + perpendicular offset from the origin, plus an
   // along-line OVERLAP guard so two DISTINCT walls on the same line & offset (a segment past a doorway)
   // don't collapse to one id. Conservative by design — a wrong wall match is the §10 catastrophe (content
-  // on the wrong wall); a missed match only mints a recoverable duplicate. Floor/ceiling keep matchRef
-  // (centroid+semantic is right for horizontals); insets use matchInset (identity by host_wall+slot).
+  // on the wrong wall); a missed match only mints a recoverable duplicate. Floor/ceiling go by centroid +
+  // semantic inside a radius (matchCost's horizontal rule); insets use matchInset (host_wall + slot).
   /**
    * Tunable knobs for matchWall (server-injected window.CONJURE_WALL — see conjure-client.js). Absent
    * fields keep the defaults.
    * @typedef {Object} WallOpts
    * @property {number} [perpTol]      max plane-offset gap (m) to call two walls the same plane (default 0.15)
    * @property {number} [yawTol]       max normal-yaw difference (rad) for a wall match (default 30° — tighter
-   *                                   than matchRef's 60° same-facing gate: a wall's normal is stable across scans)
+   *                                   than the old 60° same-facing gate: a wall's normal is stable across scans)
    * @property {number} [overlapSlop]  max along-line gap (m) between the two walls' spans and still one wall (0.3)
    */
   /**
@@ -895,7 +867,7 @@
       // re-guess by proximity. Otherwise derive it: the nearest ~parallel wall the inset sits WITHIN (the
       // within-width test stops a coplanar/collinear neighbour from stealing it — the door-50/wall-59 bug),
       // and RECORD the choice. NB: the parallel test is `|dot|` (parallel OR ANTI-parallel), deliberately —
-      // an inset's LIVE normal can be INWARD, ~180° from its host wall's outward normal (see matchRef, and
+      // an inset's LIVE normal can be INWARD, ~180° from its host wall's outward normal (see
       // docs/investigations/wall-art-behind-wall.md). A co-facing test (dot > 0) would REJECT the true host for such insets.
       // The flip side: proximity+|dot| can't tell the two faces of a room-partition apart when they're
       // near-coincident — the recorded host_wall above is the only reliable disambiguator there.
@@ -1015,8 +987,8 @@
     var same = (others || []).filter(function (o) { return o.sem === probe.sem; });
     var vertical = probe.orient === "vertical";
     if (!vertical) {
-      // Horizontals go through matchRef, whose only gate is a same-facing centroid radius — so for a floor
-      // or ceiling the nearest centroid IS the right candidate and the right margin.
+      // Horizontals go through matchCost's radius rule, whose only gate is a centroid distance — so for a
+      // floor or ceiling the nearest centroid IS the right candidate and the right margin.
       var hBest = /** @type {RefSurface|null} */ (null), hD = Infinity;
       same.forEach(function (o) { var d = probe.pos.distanceTo(o.pos); if (d < hD) { hD = d; hBest = o; } });
       if (!hBest || hD > FAR) return { why: "device", dist: hBest ? +hD.toFixed(3) : undefined };
@@ -1137,7 +1109,9 @@
     opts = opts || {};
     if (!ref || ref.sem !== cand.sem) return Infinity;
     if (cand.orient !== "vertical") {
-      // Horizontals and furniture keep matchRef's rule: same semantic, nearest centroid inside a radius.
+      // Horizontals and furniture: same semantic, nearest centroid inside a radius. The radius is 0.5 m
+      // since 2026-07-06 and has never been revisited; the churn census cannot judge it because `dist`
+      // is censored at exactly this value (investigations/surface-churn.md).
       var d = cand.pos.distanceTo(ref.pos);
       return d < 0.5 ? d : Infinity;
     }
@@ -1798,7 +1772,7 @@
            heightCensus: heightCensus, explainNoMatch: explainNoMatch, explainInsetNoMatch: explainInsetNoMatch, explainInsetMint: explainInsetMint, sameDoorway: sameDoorway, matchCost: matchCost, assignRefs: assignRefs, floorUnder: floorUnder, segmentRooms: segmentRooms, roomLinks: roomLinks, roomResiduals: roomResiduals, refineRefs: refineRefs,
            polyFit: polyFit, planeCorners: planeCorners,
            canonicalFrame: canonicalFrame, surfaceToRef: surfaceToRef, selectSpace: selectSpace,
-           matchRef: matchRef, matchWall: matchWall, matchInset: matchInset, dupInsetIds: dupInsetIds,
+           matchWall: matchWall, matchInset: matchInset, dupInsetIds: dupInsetIds,
            wallCorners: wallCorners, authorInsetAnchor: authorInsetAnchor, reconstructInset: reconstructInset,
            insetAlong: insetAlong, hostWallFor: hostWallFor,
            joinCorners: joinCorners, sealWalls: sealWalls, snapInsets: snapInsets };

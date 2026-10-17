@@ -30,7 +30,7 @@
  * A stable reference plane the solver anchors to — a wall or the floor. Both authoring and solving supply
  * these from their OWN local geometry, keyed by the shared `id`.
  * @typedef {Object} Plane
- * @property {string} id                 shared surface id (survives across clients via registration/matchRef)
+ * @property {string} id                 shared surface id (survives across clients via registration + identity matching)
  * @property {"floor"|"wall"} kind
  * @property {Vec3} normal               UNIT normal — wall: horizontal & outward; floor: up (≈ gravity)
  * @property {Vec3} point                any point on the plane (wall centre / a floor point)

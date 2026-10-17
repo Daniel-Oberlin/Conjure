@@ -419,6 +419,20 @@ class Settings:
     # 2026-10-08 showed the two come apart: plane movement of 0.3-2.8 mm while mints missed by 0.42 m.
     fit_min_cov: float = 0.6                         # fraction of the reference `register` must cover
     fit_max_resid: float = 0.08                      # m, mean residual over the covered planes
+    # How many surfaces make a space — ONE definition for both sides of the wire (injected into the client
+    # as window.CONJURE_SPACE_MIN_*). `surfaces`: an ESTABLISHED space, below which the client's load gate
+    # has nothing to compare against and the server's >50% prune guard stands down; a room's structural
+    # shell alone is six, and this sits two above it because a space holding exactly its shell is still
+    # mid-capture. `walls`: enough verticals to pin a frame or vote on a space — at 4 of 30 the golden
+    # room's frame was 180° out, at 16 it was right. Before this the answer was 3, 6, 6, 8 and 8 in five
+    # places; a copy that drifts makes the client post a removal the server then refuses, or vice versa.
+    space_min_surfaces: int = 8                      # stored surfaces before a space counts as established
+    space_min_walls: int = 6                         # vertical planes before a capture can pin a frame / vote
+    # What counts as a STRUCTURAL move, as opposed to per-capture drift (spec §8). The server applies these
+    # to decide whether a posted surface rewrites the seed; the client applies the same two numbers to
+    # decide whether to post at all — they used to be separate copies of 0.5 m / 20°.
+    struct_move_m: float = 0.5                       # m a surface must move or resize to count as relocated
+    struct_rot_deg: float = 20.0                     # degrees it must rotate to count as re-oriented
     room_refine: bool = False                        # apply per-room deltas when matching identity
     room_refine_min_spread: float = 0.02             # m of room-to-room disagreement below which nothing moves
     capture_interval: float = 2.0                    # seconds between recaptures/re-registrations
@@ -652,6 +666,10 @@ def get_settings() -> Settings:
         reg_yaw_peaks=int(os.environ.get("CONJURE_REG_YAW_PEAKS", "5")),
         fit_min_cov=float(os.environ.get("CONJURE_FIT_MIN_COV", "0.6")),
         fit_max_resid=float(os.environ.get("CONJURE_FIT_MAX_RESID", "0.08")),
+        space_min_surfaces=int(os.environ.get("CONJURE_SPACE_MIN_SURFACES", "8")),
+        space_min_walls=int(os.environ.get("CONJURE_SPACE_MIN_WALLS", "6")),
+        struct_move_m=float(os.environ.get("CONJURE_STRUCT_MOVE_M", "0.5")),
+        struct_rot_deg=float(os.environ.get("CONJURE_STRUCT_ROT_DEG", "20")),
         settle_gap_ms=int(os.environ.get("CONJURE_SETTLE_GAP_MS", "0")),
         settle_rms=float(os.environ.get("CONJURE_SETTLE_RMS", "0.004")),
         settle_run=int(os.environ.get("CONJURE_SETTLE_RUN", "3")),
@@ -790,6 +808,10 @@ SETTABLE: dict[str, tuple[str, str]] = {
     "reg_yaw_peaks":         ("client", "candidate room rotations tried when solving orientation"),
     "fit_min_cov":           ("client", "fraction of the reference register must cover before a mint or prune"),
     "fit_max_resid":         ("client", "m of mean fit residual above which identity work waits"),
+    "space_min_surfaces":    ("client", "stored surfaces before a space counts as established (load gate, prune guard)"),
+    "space_min_walls":       ("client", "vertical planes before a capture can pin a frame or vote on a space"),
+    "struct_move_m":         ("client", "m a surface must move or resize to count as a structural change"),
+    "struct_rot_deg":        ("client", "degrees a surface must rotate to count as a structural change"),
     "settle_gap_ms":         ("client", "ms a pose pair must span to count; 0 = the capture interval"),
     "settle_rms":            ("client", "m of per-capture self-movement below which the device model counts as quiet"),
     "settle_run":            ("client", "consecutive quiet captures before the model counts as settled"),
@@ -814,6 +836,7 @@ LIMITS: dict[str, tuple[float, float]] = {
     "pose_tau": (0.0, 10.0), "geo_slice_ms": (0.0, 16.0), "capture_interval": (0.1, 60.0),
     "history_cap": (0, 10_000), "geometry_log_days": (0, 3650), "reg_min_cov": (0, 100),
     "reg_yaw_peaks": (1, 64), "beam_timeout": (0.0, 600.0), "room_refine_min_spread": (0.0, 1.0), "settle_rms": (0.0, 1.0), "fit_min_cov": (0.0, 1.0), "fit_max_resid": (0.0, 2.0), "settle_run": (1, 60),
+    "space_min_surfaces": (1, 1000), "space_min_walls": (1, 1000), "struct_move_m": (0.0, 10.0), "struct_rot_deg": (0.0, 180.0),
 }
 CHOICES: dict[str, tuple[str, ...]] = {
     "occlusion": ("off", "hands", "hands-solid"),

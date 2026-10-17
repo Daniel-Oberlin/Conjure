@@ -5891,6 +5891,39 @@ def test_the_flag_clears_on_the_first_vote_and_pruning_resumes(srv, client):
     assert len([e for e in _entities(client) if e["id"].startswith("real_")]) == 8
 
 
+def test_how_many_surfaces_make_a_space_is_one_setting_on_both_sides_of_the_wire(srv, client, monkeypatch):
+    """The prune guard's size floor and the client's load-gate floor ask the same question of the same
+    seed, and used to carry separate copies (8 and 8 — with 3, 6 and 6 answering it elsewhere). One
+    setting now drives the guard and is injected into the page, with the structural-move thresholds
+    beside it, so a change on one side cannot leave the other refusing what it just accepted."""
+    import dataclasses
+    html = client.get("/").text
+    assert "window.CONJURE_SPACE_MIN_SURFACES=8;" in html
+    assert "window.CONJURE_SPACE_MIN_WALLS=6;" in html
+    assert "window.CONJURE_STRUCT_MOVE_M=0.5;" in html
+    assert "window.CONJURE_STRUCT_ROT_DEG=20.0;" in html
+    # Raise the floor past a ten-surface space: it is no longer "established", so the >50% guard
+    # stands down and the same post that was refused above now prunes.
+    monkeypatch.setattr(srv, "settings", dataclasses.replace(srv.settings, space_min_surfaces=12))
+    assert "window.CONJURE_SPACE_MIN_SURFACES=12;" in client.get("/").text, "the client sees the same number"
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)})
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)[:1]})
+    assert len([e for e in _entities(client) if e["id"].startswith("real_")]) == 1, \
+        "below the floor a wholesale change is ordinary, so the guard does not fire"
+
+
+def test_a_structural_move_is_judged_by_the_shared_threshold(srv, client, monkeypatch):
+    """`_surface_changes` reads `struct_move_m`, the same number the client's post gate is injected with."""
+    import dataclasses
+    client.post("/space/capture", json={"client_id": "h1", "surfaces": _shell(10)})
+    moved = dict(_shell(10)[0]); moved["position"] = [0.3, 1.0, 0]          # 0.3 m: drift at 0.5, a move at 0.2
+    e = next(e for e in _entities(client) if e["id"] == moved["id"])
+    from conjure.server import CapturedSurface, _surface_changes
+    assert "position" not in _surface_changes(e, CapturedSurface(**moved)), "0.3 m is under the 0.5 m default"
+    monkeypatch.setattr(srv, "settings", dataclasses.replace(srv.settings, struct_move_m=0.2))
+    assert "position" in _surface_changes(e, CapturedSurface(**moved)), "…and over a 0.2 m floor"
+
+
 def test_the_unvoted_guard_stands_down_rather_than_disabling_pruning_for_ever(srv, client):
     """A capture source that never votes — the CLI, a desktop client, a headset whose selection never
     completes — must not disable pruning permanently. That would rot the seed with no symptom until

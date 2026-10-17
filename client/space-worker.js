@@ -1,6 +1,6 @@
 // Conjure geometry worker (branch fix/pops-and-jitters). Runs the heavy, PURE room-math off the render
 // thread so the ~0.5 Hz capture solve never blows an XR frame's budget (the walking jitter: register was
-// ~7 ms, spiking to ~11 ms, on the same frame as the render). Step 1 hosts SpaceSnap.register; matchRef /
+// ~7 ms, spiking to ~11 ms, on the same frame as the render). Step 1 hosts SpaceSnap.register; assignRefs /
 // snap / anchor-solve can migrate behind this SAME message boundary as scenes grow — never touching the
 // frame budget again.
 //

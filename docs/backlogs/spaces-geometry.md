@@ -51,8 +51,9 @@ different gates and at a much finer margin:
 | `perp` (wall) | 0.170 / 0.150 | 20 mm |
 | `claimed` ×2 | — | a gate the first campaign never hit |
 
-The first campaign saw only `perp`, at 14–21 mm. `dist` is `matchRef`'s radius for horizontals and
-furniture, and `claimed` means the candidate had already been taken by another surface this pass.
+The first campaign saw only `perp`, at 14–21 mm. `dist` is the centroid radius for horizontals and
+furniture (`matchCost`'s horizontal rule; `matchRef` at the time), and `claimed` means the candidate had
+already been taken by another surface this pass.
 
 > **Corrected 2026-09-24.** This entry used to read *"a shelf re-minting over three millimetres is the
 > sharpest statement yet that the tolerances are not the lever"*. Three millimetres is the **margin**
@@ -130,12 +131,15 @@ server emits `{"op": "remove"}` (`server.py:3305`), deleting the seed entity **a
 `surfaceStyles` is rebuilt from the snapshot's real entities (`:765`), so the colour is gone for good and
 the surface redraws at the default material whenever it returns.
 
+> *2026-10-17:* the two debounces are now one (`WM.absenceStep`, spec §4.0c); the render and the POST
+> set read the same counter, so they can no longer diverge. The mechanism above is otherwise unchanged.
+
 Three different causes produce that identical appearance, and today's log cannot tell them apart:
 
 | Cause | What actually happened | Where the fix would land |
 |---|---|---|
 | **device miss** | the Quest never emitted the plane in `detectedPlanes` for 3+ captures | the debounce count — or nothing, if it's a platform floor |
-| **matcher miss** | the plane *was* detected, but `matchWall` / `matchInset` / `matchRef` rejected its `_ref` entry → a fresh id minted | the identity tolerances (`--wall-perp-tol`, `--wall-yaw-tol`, `--wall-overlap-slop`) |
+| **matcher miss** | the plane *was* detected, but `matchCost` / `matchInset` rejected its `_ref` entry → a fresh id minted | the identity tolerances (`--wall-perp-tol`, `--wall-yaw-tol`, `--wall-overlap-slop`) |
 | **style orphan** | identity held — `_ref` is never pruned, so `matchWall` re-inherited the *same* id — but the seed entity had already been pruned, so the colour is gone anyway | protect styling from the prune, the way `anchored` protects geometry |
 
 The third is the trap, and the reason this needs instrumenting rather than guessing: it is **not an identity
@@ -645,7 +649,7 @@ never as a dropped frame. They cover two of the four axes that grow with scene s
 | **Solve cost** (`register`) | ✅ off-thread, decoupled from frame rate |
 | **Geometry re-triangulation** | ✅ sliced, capped per frame regardless of surface count |
 | **Element creation** | ❌ **not sliced** — `ensureEl` builds N A-Frame entities inline and grows linearly with space size. This is the *nearer* bottleneck for large spaces, and slicing the mesh rebuild does not help it |
-| **`passB` / `matchRef`** | ❌ on the main thread in the reply continuation; grows with N and would need to migrate into the worker behind the same message boundary |
+| **`passB` / `assignRefs`** | ❌ on the main thread in the reply continuation; grows with N and would need to migrate into the worker behind the same message boundary |
 
 See [`docs/decisions.md`](../decisions.md) #16.
 

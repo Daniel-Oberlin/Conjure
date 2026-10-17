@@ -74,13 +74,22 @@
   // patience is a deadlock escape, not a tuning knob — see the LOAD GATE.
   var LOAD_FRAC = 0.6, LOAD_PATIENCE = 15;
 
+  // How many surfaces make a space (WM.ROOM_MIN, one definition for both senses). The server's copy is
+  // authoritative and injected; the defaults cover a server-less page. Read by the load gate, the void
+  // frame gate, the no-match selection vote — and, server-side, the >50% prune guard.
+  var ROOM_MIN = { surfaces: +window.CONJURE_SPACE_MIN_SURFACES || window.WorldModel.ROOM_MIN.surfaces,
+                   walls: +window.CONJURE_SPACE_MIN_WALLS || window.WorldModel.ROOM_MIN.walls };
+  // What counts as a STRUCTURAL move of a surface, as opposed to per-capture drift — the same two numbers
+  // the server's `_surface_changes` applies (injected from `conjure/config.py`, so they cannot drift apart).
+  var STRUCT_MOVE = { m: +window.CONJURE_STRUCT_MOVE_M || 0.5, deg: +window.CONJURE_STRUCT_ROT_DEG || 20 };
+
   // The VOID-world sibling (WM.voidFrameGate). Same 0.6 fraction, but a shorter patience and an absolute
   // wall floor. Patience is shorter because a void world holds the PREVIOUS frame while it waits — content
   // sits displaced, which is worse to sit in than the captured-space case (which shows honest passthrough)
-  // — and 8 captures is already ~14 s. minWalls=6 comes from the measurement: at 4 of 30 verticals the
-  // golden room's frame was 180° out, at 16 it was right, and 6 is the floor below which no amount of
-  // apparent stability should be believed.
-  var VOID_GATE = { frac: 0.6, minWalls: 6, patience: 8 };
+  // — and 8 captures is already ~14 s. The wall floor is ROOM_MIN.walls, from the measurement: at 4 of 30
+  // verticals the golden room's frame was 180° out, at 16 it was right, and 6 is the floor below which no
+  // amount of apparent stability should be believed.
+  var VOID_GATE = { frac: 0.6, minWalls: ROOM_MIN.walls, patience: 8 };
 
   // Compact wire form for the geometry worker (fix/pops-and-jitters): send only the fields SpaceSnap.register
   // reads, as plain numbers, so a capture's planes + reference constellation cross to the worker in a few KB.
@@ -308,7 +317,7 @@
     });
   }
 
-  // Semantics matched by matchInset (host wall + along-slot) rather than matchWall/matchRef. Module-level
+  // Semantics matched by matchInset (host wall + along-slot) rather than matchCost/assignRefs. Module-level
   // because identity, reconstruction AND churn diagnosis all have to agree on the list: a copy that drifts
   // sends an inset through one matcher and explains it with another, which is exactly the fault that hid
   // 69% of surface churn (investigations/surface-churn.md).
@@ -469,7 +478,7 @@
   //             (rebuilds arriving faster than the budget drains them → materialization lag at scale). We LOG
   //             it rather than silently lag — the lever is a bigger budget or fewer rebuilds. Throttled to
   //             once / 2 s; a one-off big first lay can trip it, a *persistent* warning is the real signal.
-  //             §14 "scaling" names the next levels (element creation, matchRef) this pump does NOT cover.
+  //             §14 "scaling" names the next levels (element creation, Pass B assignment) this pump does NOT cover.
   function pumpGeo() {
     if (!geoQueue.length) return;
     var budget = window.CONJURE_GEO_SLICE_MS;
@@ -1613,9 +1622,10 @@
         this._planeWas = new WeakMap();   // XRPlane → its last capture pose; the settling probe's memory
         this._mintedUnsettled = {}; // ids minted before the model was still — withheld from the POST
         this._lastPlaneN = 0;       // plane count last capture; a growing set is still loading, not settling
-        this._selForced = false;    // selection ran out of patience rather than resolving
-        this._mayMutate = false;    // may this capture mint or let a surface go absent?
-        this._heldWhy = undefined;  // last reason it could not, so the log reports CHANGES
+        this._selForced = false;    // selection ran out of patience rather than resolving — STICKY until it does
+        this._mayMint = false;      // may this capture mint an id that reaches the space record?
+        this._mayPrune = false;     // may this capture count a surface as absent?
+        this._heldKey = undefined;  // last (why, mint, prune) verdict, so the log reports CHANGES
         this._modelChange = null;   // RMS the headset moved its OWN planes since the last capture (m)
         this._settleRun = 0;        // consecutive quiet captures; `_settled` needs a RUN, not one sample
         this._settled = false;
@@ -1623,17 +1633,21 @@
         this._refSeq = 0;           // counter for minting brand-new surface ids
         // Client-owned model of what's in the room, for the POST gate (§7): only POST when this changes
         // structurally, so a settled room sends nothing. _known: id → last posted-frame surface record;
-        // _absent: id → consecutive miss count (client owns removal-confidence); _posted / _postedBoundary:
-        // the set/boundary as of the last POST, for structural diffing.
-        this._known = {}; this._absent = {}; this._posted = {}; this._postedBoundary = null;
+        // _posted / _postedBoundary: the set/boundary as of the last POST, for structural diffing.
+        this._known = {}; this._posted = {}; this._postedBoundary = null;
+        // THE absence counter (WM.absenceStep): ref id → consecutive captures not captured. One counter
+        // for every consequence — the render drops the element, the owner drops the id from _known, and
+        // the churn log writes miss/regain — so the three can never disagree about whether a surface is
+        // still here. Advanced in _trackAbsence, read everywhere else.
+        this._absent = {};
+        this._seenOnce = {};        // ref id → 1 once captured this session; a miss carries `ever` so the log
+        //                             can tell "lost mid-session" from "never seen since entry" (§10.1)
         this._pairHeld = {};          // door-face ids whose absence is excused by a visible twin (log-once)
         this._recovered = {};       // seed-surface ids reconstructed via anchor (missing from capture) — for §5.2 logging
+        this._twinLogged = {};      // shadow inset ids already reported (churn.inset_twin is log-once)
         this._localPlanes = null;   // last capture's local wall+floor planes (F_track) — for avatar anchors (§5.1)
         // --- GEOMETRY EVENT LOG (docs/backlogs/spaces-geometry.md — "Instrumentation") ------------------
         // All change-gated: each of these exists so a capture that changes NOTHING logs nothing.
-        this._miss = {};            // ref id → consecutive captures unclaimed (the churn debounce, mirrored)
-        this._everClaimed = {};      // ref id → 1 once matched at least once, so a stale _ref entry that has
-        //                             never matched (a minted duplicate) can't emit a miss every 2 s forever
         this._wasStyled = {};       // surface id → 1 if we have ever rendered it WITH a material, so the
         //                             styling coming back empty is detectable (the style-orphan case)
         this._lastLevel = null;     // last logged height census, keyed id → y — the >2 cm emit gate
@@ -1738,17 +1752,17 @@
         this._ref = []; this._Tmat = null; this._haveT = false;
         this._anchorInv = null; this._refSeq = 0; this._rl = WM.relocInit(); this.lastPost = 0;
         this._known = {}; this._absent = {}; this._posted = {}; this._postedBoundary = null;   // fresh post model
-        this._pairHeld = {};
+        this._seenOnce = {}; this._pairHeld = {}; this._twinLogged = {};
         this._recovered = {};
         // The geometry log's per-world state goes with it: a new world's surface set and heights are a new
         // baseline, so carrying the old one over would report the switch itself as churn and an anomaly.
-        this._miss = {}; this._everClaimed = {}; this._wasStyled = {};
+        this._wasStyled = {};
         this._roomOf = null;        // a new world's partition is a new partition — never refine across one
         // A new frame is a new settle: the planes are about to be re-posed wholesale, so whatever calm we
         // had measured says nothing about the model we are about to be handed.
         this._planeWas = new WeakMap(); this._modelChange = null; this._settleRun = 0; this._settled = false;
         this._mintedUnsettled = {}; this._lastPlaneN = 0;
-        this._selForced = false; this._mayMutate = false; this._heldWhy = undefined;
+        this._selForced = false; this._mayMint = false; this._mayPrune = false; this._heldKey = undefined;
         this._settleT0 = (window.performance && performance.now) ? performance.now() : 0;
         this._lastLevel = null; this._levelAlarm = {}; this._census = null; this._censusFloors = null;
         this._churnRing = []; this._loading = 0;
@@ -1757,19 +1771,20 @@
         // recenter, where the room provably did not change).
         this._voidFrame = null; this._voidGate = WM.voidGateInit();
       },
-      // Has surface `k` (a fresh record) changed STRUCTURALLY vs `p` (its last-posted snapshot)? Mirrors the
-      // server's _surface_structural_change (0.5 m / 20° / opening-count / semantic) so the client only POSTs
-      // real structural changes, not per-capture drift.
+      // Has surface `k` (a fresh record) changed STRUCTURALLY vs `p` (its last-posted snapshot)? The same
+      // test as the server's `_surface_changes` (move / resize / rotate past STRUCT_MOVE, opening count,
+      // semantic), on the same injected thresholds, so the client only POSTs real structural changes, not
+      // per-capture drift — and a change the client posts is one the server will also count.
       _structMoved: function (p, k) {
         if (p.semantic !== k.semantic) return true;
         if ((k.holes || []).length !== (p.holes || 0)) return true;
         var pp = p.position || [0, 0, 0], kp = k.position || [0, 0, 0];
-        if (Math.hypot(pp[0] - kp[0], pp[1] - kp[1], pp[2] - kp[2]) > 0.5) return true;
+        if (Math.hypot(pp[0] - kp[0], pp[1] - kp[1], pp[2] - kp[2]) > STRUCT_MOVE.m) return true;
         var pe = p.extent || [0, 0], ke = k.extent || [0, 0];
-        if (Math.abs(pe[0] - ke[0]) > 0.5 || Math.abs(pe[1] - ke[1]) > 0.5) return true;
+        if (Math.abs(pe[0] - ke[0]) > STRUCT_MOVE.m || Math.abs(pe[1] - ke[1]) > STRUCT_MOVE.m) return true;
         var THREE = AFRAME.THREE;
         return eulerYXZToQuat(THREE, p.rotation || [0, 0, 0]).angleTo(eulerYXZToQuat(THREE, k.rotation || [0, 0, 0]))
-          > 20 * Math.PI / 180;
+          > STRUCT_MOVE.deg * Math.PI / 180;
       },
       // Position #world-root. LOCAL-FIRST (docs/specs/spaces-geometry.md §2): a captured space renders its
       // real surfaces at their OWN detected (refSpace/F_track) poses via _renderLocal, so content is
@@ -1881,23 +1896,27 @@
             components: { surface: { extent: s.extent, holes: s.holes || [] }, material: surfaceStyles[s.id] },
             meta: { real: true, semantic: s.semantic } });   // apply the SHARED styling by id (docs §3)
         });
-        var abs = this._localAbsent || (this._localAbsent = {});
+        // Elements whose surface is no longer here. This READS the one absence counter (_trackAbsence
+        // advances it) rather than keeping its own, so the render can never drop a surface the POST model
+        // still believes in, or the reverse — the two debounces used to be independent and could diverge.
+        // An element with no `_ref` entry at all is a leftover (a provisional id discarded at the settle
+        // transition, a world switch) and goes at once: nothing can ever be captured under that id again.
+        var tracked = {};
+        this._ref.forEach(function (r) { if (r.id) tracked[r.id] = 1; });
         var wr = document.getElementById("world-root"); if (!wr) return;
         Array.prototype.forEach.call(wr.querySelectorAll('[data-real="1"]'), function (el) {
-          if (seen[el.id]) { delete abs[el.id]; return; }
-          abs[el.id] = (abs[el.id] || 0) + 1;
-          if (abs[el.id] >= 3 && el.parentNode) {
-            // The moment the surface VISIBLY disappears — distinct from `churn.prune` below, which is when
-            // the server forgets it. They are separate debounces on separate state and can diverge; a guest
-            // only ever reaches this one.
-            // The COLOUR, not a boolean: every real surface carries a per-semantic default material, so
-            // "has a material" is true for all of them and says nothing. What is worth recording is what
-            // this surface actually looked like at the moment it went away.
-            var hm = surfaceStyles[el.id] || {};
-            self._churn("hide", { id: el.id, sem: el.dataset.semantic || undefined,
-                                  color: hm.color, tex: !!hm.src });
-            slewSet.delete(el); el.parentNode.removeChild(el); delete abs[el.id];   // drop any in-flight ease (§10)
-          }
+          if (seen[el.id] || !el.parentNode) return;
+          var why = !tracked[el.id] ? "untracked" : ((self._absent[el.id] || 0) >= WM.ABSENT_N ? "absent" : null);
+          if (!why) return;
+          // The moment the surface VISIBLY disappears — on the same capture `churn.prune` fires for the
+          // owner, since both read the same counter; a guest only ever reaches this one.
+          // The COLOUR, not a boolean: every real surface carries a per-semantic default material, so
+          // "has a material" is true for all of them and says nothing. What is worth recording is what
+          // this surface actually looked like at the moment it went away.
+          var hm = surfaceStyles[el.id] || {};
+          self._churn("hide", { id: el.id, sem: el.dataset.semantic || undefined, why: why,
+                                color: hm.color, tex: !!hm.src });
+          slewSet.delete(el); el.parentNode.removeChild(el);   // drop any in-flight ease (§10)
         });
       },
       // Place director-authored content (models, props — anything with a remembered F_ref pose) via
@@ -1957,9 +1976,20 @@
         var localCorners = RS.wallCorners(THREE, localSurfaces), floorYL = null, ceilYL = null;
         localSurfaces.forEach(function (s) { if (s.semantic === "floor") floorYL = s._lp.y; else if (s.semantic === "ceiling") ceilYL = s._lp.y; });
         // Don't reconstruct a DUPLICATE seed inset (a shadow id) — its canonical twin is what renders (§5.3).
+        // The twin this guards against was minted when inset identity keyed off the lagging SEED; identity
+        // has resolved against `_ref` since 2026-07-24 (§6.1), so a NEW twin should be impossible and the
+        // guard exists for twins already persisted in live data. Logged once per shadow so the geometry log
+        // says whether any seed still carries one — if that stays silent, the guard can go.
+        var self0 = this;
         var insetShadows = RS.dupInsetIds(docSurfaces.filter(function (e) { return INSET_SEMS[(e.meta || {}).semantic]; })
           .map(function (e) { var p = (e.transform || {}).position || [0, 0, 0];
             return { id: e.id, semantic: e.meta.semantic, hostWall: e.meta.host_wall, pos: p }; }));
+        insetShadows.forEach(function (id) {
+          if (self0._twinLogged[id]) return;
+          self0._twinLogged[id] = 1;
+          var e = seedById[id] || {}, m = e.meta || {};
+          self0._churn("inset_twin", { id: id, sem: m.semantic, host: m.host_wall });
+        });
         // …and don't recover an inset whose spot is already covered by a CAPTURED same-semantic inset (so a
         // just-minted duplicate id can't co-exist with the recovered seed id as a flickering twin).
         var presentInsets = localSurfaces.filter(function (s) { return INSET_SEMS[s.semantic]; });
@@ -2040,42 +2070,80 @@
         this._churnRing.push({ ev: ev, id: fields && fields.id, t: Math.round(performance.now()) });
         if (this._churnRing.length > 20) this._churnRing.shift();
       },
-      // Compare this capture's surface set against the reference constellation and log only what CHANGED.
-      // Runs for owner and guest alike (both run Pass B), so the visual symptom is captured whichever role
-      // the headset is in — the owner's POST gate below sees only the owner's half.
+      // Advance THE absence counter for every reference surface, from what this capture actually contained,
+      // and log what changed. Runs for owner and guest alike (both run Pass B) and BEFORE the render and
+      // the POST gate, which only read the result: the element is dropped and the id leaves `_known` on
+      // the capture the counter crosses WM.ABSENT_N, and not before, and never one without the other.
       //
-      // `claimed` is the Set of _ref entries Pass B matched; anything in _ref that isn't in it went
-      // unmatched THIS capture. `curRef` is every detected plane in the reference frame, which is what makes
+      // `surfaces` is what Pass B captured — anything in _ref that is not in it was not captured THIS
+      // capture (a reconstructed seed surface is not captured; it is drawn, and the log already says so
+      // once via `recover`). `curRef` is every detected plane in the reference frame, which is what makes
       // the device-vs-matcher discrimination possible: if no plane of that semantic is anywhere near, the
       // Quest never emitted it; if one is right there, the matcher rejected it and we can say which gate.
-      _logChurn: function (claimed, claimedInset, curRef) {
+      _trackAbsence: function (surfaces, curRef) {
         var RS = window.SpaceSnap, self = this;
-        if (!window.CONJURE_GEOMETRY_LOG || !RS) return;
-        var hit = {};
-        claimed.forEach(function (r) { if (r && r.id) hit[r.id] = 1; });
-        (claimedInset || new Set()).forEach(function (id) { hit[id] = 1; });
+        var present = {};
+        surfaces.forEach(function (s) { present[s.id] = 1; });
+        // The two faces of one doorway, by _ref id — so an absent face can ask "is my other face being
+        // looked at right now?" without an O(n²) scan per absent surface.
+        //
+        // A doorway is two planes, one per room, and the Quest emits the one you are looking through. So
+        // a door face vanishing WHILE ITS SIBLING IS VISIBLE is not a door that went away — it is the far
+        // side of a door you are standing in front of. Pruning it would cost its styling for nothing
+        // (investigations/surface-churn.md: doors are the largest churn bucket). Gated on the sibling
+        // being seen THIS capture, which makes it self-limiting: walk away and neither face is detected,
+        // the counter resumes, and a genuinely removed door still prunes.
+        //
+        // EXPECT THIS NEVER TO FIRE on current firmware. `detectedPlanes` is the persisted Room Setup
+        // delivered wholesale every frame, not gaze-dependent, so both faces of a doorway are offered
+        // whatever you are looking at. Confirmed by a device run on 2026-09-24: every doorway walked,
+        // 66/67 planes held, zero pair_held. Kept as a cheap net, and because a `churn.pair_held` event
+        // would be real news — it would mean detectedPlanes had become gaze-dependent, which a good deal
+        // of this design assumes it is not. Nothing should depend on it firing.
+        var doorPair = {};
+        if (RS && RS.sameDoorway) {
+          var vert = this._ref.filter(function (r) { return r.orient === "vertical" && r.pos; });
+          vert.forEach(function (a) {
+            vert.forEach(function (b) { if (RS.sameDoorway(a, b)) doorPair[a.id] = b.id; });
+          });
+        }
         this._ref.forEach(function (r) {
           if (!r.id) return;
-          if (hit[r.id]) {
-            self._everClaimed[r.id] = 1;
-            if (self._miss[r.id]) {                       // came back before the debounce fired
-              self._churn("regain", { id: r.id, sem: r.sem, after: self._miss[r.id] });
-              delete self._miss[r.id];
+          var here = !!present[r.id];
+          if (here) { self._seenOnce[r.id] = 1; delete self._pairHeld[r.id]; }
+          else {
+            var twin = doorPair[r.id];
+            if (twin && present[twin]) {
+              if (!self._pairHeld[r.id]) {
+                self._pairHeld[r.id] = 1;
+                self._churn("pair_held", { id: r.id, sem: r.sem, twin: twin });
+              }
+              return;                                   // excused: not counted, not logged as a miss
             }
-            return;
           }
-          if (!self._everClaimed[r.id]) return;           // never matched in this session — not a "loss"
-          var n = self._miss[r.id] = (self._miss[r.id] || 0) + 1;
-          if (n > 3) return;                              // already reported through the debounce; stay quiet
-          // Explain it with the matcher that actually ran. An inset goes through matchInset (host wall +
-          // along-slot); everything else through matchWall/matchRef, which is what explainNoMatch models.
+          // A surface cannot be judged MISSING while the headset is still revising where its planes are,
+          // or while our fit does not explain the room. 2026-09-29: the selection gate forced at 2.8 s,
+          // matching ran against a model still 13 cm from ours, `real_wall_157` missed the perpendicular
+          // gate by 4.6 cm, and the wall the director had painted grey was pruned — carrying its styling,
+          // the one thing here that cannot be re-derived. `absenceStep` withholds the count rather than
+          // ignoring it: a tally that built through the settle would fire the instant it ended.
+          var st = WM.absenceStep(self._absent[r.id], here, self._mayPrune);
+          self._absent[r.id] = st.n;
+          if (!st.ev || !window.CONJURE_GEOMETRY_LOG || !RS) return;
+          if (st.ev === "regain") { self._churn("regain", { id: r.id, sem: r.sem, after: st.n }); return; }
+          // `miss` and `gone`: explain it with the matcher that actually ran. An inset goes through
+          // matchInset (host wall + along-slot); everything else through matchCost, which is what
+          // explainNoMatch models. `ever` separates a surface lost mid-session from a seed entry that was
+          // never captured since entry — different causes (§10.1) that used to be indistinguishable, since
+          // the never-captured case was simply not logged.
           var inset = !!INSET_SEMS[r.sem];
           var why = inset ? RS.explainInsetNoMatch(r, self._insetDiag)
                           : RS.explainNoMatch(AFRAME.THREE, r, curRef, window.CONJURE_WALL);
           // WIDTHS, for insets only. A doorway whose frame is sometimes segmented as the door reads ~2x
           // wide on one side, and a width that flips between captures moves the along-slot with it — the
           // rival explanation for door churn, and undecidable without this field.
-          self._churn("miss", { id: r.id, sem: r.sem, n: n, why: why.why, gate: why.gate,
+          self._churn("miss", { id: r.id, sem: r.sem, n: st.n, gone: st.ev === "gone" || undefined,
+                                ever: !!self._seenOnce[r.id], why: why.why, gate: why.gate,
                                 val: why.val, tol: why.tol, near: why.id, dist: why.dist,
                                 rw: inset && r.ext ? +r.ext[0].toFixed(3) : undefined,
                                 cw: inset ? why.cw : undefined });
@@ -2795,21 +2863,29 @@
         // nothing about whether our transform explains the room, and 2026-10-08 came apart in exactly
         // that gap. Coverage and residual are already computed by `register` — read them rather than
         // trusting the device's calm on its own.
-        var res = this._regRes || [], covFrac = null, resid = null;
-        if (this._ref && this._ref.length) covFrac = res.length / this._ref.length;
+        var res = this._regRes || [], covFrac = null, resid = null, self1 = this;
+        // Coverage is measured against the LIVE reference: `_ref` keeps an entry after its surface is
+        // gone (so a surface that comes back keeps its number), and counting those in the denominator
+        // would let coverage decay with every prune until the gate shut for good on a healthy room.
+        var liveRef = (this._ref || []).filter(function (r) { return (self1._absent[r.id] || 0) < WM.ABSENT_N; }).length;
+        if (liveRef) covFrac = Math.min(1, res.length / liveRef);
         if (res.length) {
           var rs = 0;
           res.forEach(function (r) { rs += (r.res || 0); });
           resid = rs / res.length;
         }
+        var seeded = !!(docSurfaces && docSurfaces.length);
         var may = WM.mayMutateIdentity(
-          { settled: !!this._settled, forced: !!this._selForced, covFrac: covFrac, resid: resid },
+          { settled: !!this._settled, forced: !!this._selForced, seeded: seeded, covFrac: covFrac, resid: resid },
           { minCov: +window.CONJURE_FIT_MIN_COV || 0.6, maxResid: +window.CONJURE_FIT_MAX_RESID || 0.08 });
-        this._mayMutate = may.ok;
-        if (may.why !== this._heldWhy) {
-          this._heldWhy = may.why;
-          geoLog("space.hold", { why: may.why, settled: !!this._settled, forced: !!this._selForced,
+        this._mayMint = may.mint; this._mayPrune = may.prune;
+        var heldKey = (may.why || "") + (may.mint ? "+m" : "-m") + (may.prune ? "+p" : "-p");
+        if (heldKey !== this._heldKey) {
+          this._heldKey = heldKey;
+          geoLog("space.hold", { why: may.why, mint: may.mint, prune: may.prune,
+                                 settled: !!this._settled, forced: !!this._selForced, seeded: seeded,
                                  cov: covFrac == null ? null : +covFrac.toFixed(3),
+                                 ref: liveRef, matched: res.length,
                                  resid: resid == null ? null : +resid.toFixed(4) });
         }
         else if (!sg.settled && mc != null) this._geoLogSettle(null, mc);   // the curve, while it is moving
@@ -2979,7 +3055,8 @@
         // removed from Room Setup) would otherwise never clear the gate and never be able to post the
         // removal, which is the wall-less-seed deadlock in a new costume (backlogs/spaces-geometry.md).
         var expect = docSurfaces ? docSurfaces.length : 0;
-        var gate = WM.loadGate(cur.length, expect, this._loading, { frac: LOAD_FRAC, patience: LOAD_PATIENCE });
+        var gate = WM.loadGate(cur.length, expect, this._loading,
+                               { frac: LOAD_FRAC, patience: LOAD_PATIENCE, minSeed: ROOM_MIN.surfaces });
         if (gate === "hold") {
           if (!this._loading) {
             geoLog("space.loading", { planes: cur.length, expect: expect });
@@ -3014,7 +3091,7 @@
           if (pick) { commitSelect({ matched: true, owner: pick.owner, name: pick.name }); return; }
           pendingSelect.tries++;
           var nWalls = cur.filter(function (c) { return c.orient === "vertical"; }).length;
-          if (nWalls >= 6 && pendingSelect.tries >= 3) { commitSelect({ matched: false }); return; }
+          if (nWalls >= ROOM_MIN.walls && pendingSelect.tries >= 3) { commitSelect({ matched: false }); return; }
           // else undecided — fall through and keep rendering the booted world until the capture fills in
         }
 
@@ -3034,15 +3111,25 @@
           this._regStat = "selecting";
           this.lastPost = time - RETRY_MS; return;          // no _markLost: we are not lost, we are looking
         }
-        if (this._selecting) {
-          // A forced pass is selection giving up, not selection succeeding. Remembered so the
-          // irreversible work can refuse it (WM.mayMutateIdentity) — on 2026-10-08 s_x1ggz0 forced
-          // and then minted eleven surfaces, and nothing had ever read this flag.
-          this._selForced = (selGate === "forced");
-          geoLog("space.selected", { held: this._selecting, forced: selGate === "forced" || undefined });
+        if (selGate === "forced") {
+          // A forced pass is selection giving up, not selection succeeding. Remembered so the irreversible
+          // work can treat it as "unknown" (WM.mayMutateIdentity: no prunes, mints only into an empty
+          // seed) — on 2026-10-08 s_x1ggz0 forced and then minted eleven surfaces, and nothing had ever
+          // read this flag. STICKY: `_selecting` is deliberately NOT reset, so every capture from here
+          // passes as forced until the vote lands. The first version reset it, which re-armed the hold —
+          // eight held captures, one forced pass, eight more — a one-in-nine duty cycle with identity
+          // refused on the one, which is the deadlock the escape hatch was built to prevent.
+          if (!this._selForced) {
+            this._selForced = true;
+            geoLog("space.selected", { held: this._selecting, forced: true });
+            debugLog("sel", "selection FORCED after " + this._selecting + " held capture(s) — never resolved; "
+              + "no prunes, mints only into an empty seed, until it does", true);
+          }
+        } else if (this._selecting) {                       // "go" after a hold or a forced run: resolved
+          geoLog("space.selected", { held: this._selecting, afterForced: this._selForced || undefined });
           debugLog("sel", "selection resolved after " + this._selecting + " held capture(s)"
-            + (selGate === "forced" ? " (FORCED — selection never resolved)" : ""), true);
-          this._selecting = 0;
+            + (this._selForced ? " (after a FORCED run)" : ""), true);
+          this._selecting = 0; this._selForced = false;
         }
 
         // VOID/outdoor world: not tied to a captured space, so there's no reference to register against.
@@ -3137,7 +3224,7 @@
                              + "cm max=" + Math.round(oMax * 100) + "cm" : ""));
         }
         if (JIT) this._jMark("applyReg");                   // on-main apply begins (register itself is off-thread)
-        // Pass B — assign each plane a STABLE id via matchRef, and build TWO views of it: `localSurfaces`
+        // Pass B — assign each plane a STABLE id (assignRefs / matchInset), and build TWO views of it: `localSurfaces`
         // (its raw F_track pose — what we RENDER, matching THIS headset's passthrough) and `surfaces` (the
         // reference-frame pose the OWNER posts to persist the shared model/seed). Both carry the same id.
         // Runs for owner AND guest now (unified): everyone renders their own capture; only the owner authors.
@@ -3189,13 +3276,16 @@
           // An inset arrives with its explanation already made: only Pass B2 holds the host wall and the
           // reconstructed slots matchInset compared against, and explainNoMatch would answer in matchWall's
           // terms — the mismatch that made 69% of churn unreadable (investigations/surface-churn.md).
+          var sid = "real_" + c.sem.replace(/\s+/g, "_") + "_" + (self._refSeq++);
           if (window.CONJURE_GEOMETRY_LOG && window.SpaceSnap && (probe || insetWhy)) {
             var w = insetWhy || window.SpaceSnap.explainNoMatch(THREE, probe, self._ref, window.CONJURE_WALL);
-            self._churn("mint", { sem: c.sem, why: w.why, gate: w.gate, val: w.val, tol: w.tol,
-                                  near: w.id, dist: w.dist,
+            // `held`: the id was issued but will NOT reach the space record (withheld, then discarded at
+            // the settle transition) — so a surface that never appears in the seed can be traced to the
+            // capture that minted it and the gate reason current at the time (`space.hold`).
+            self._churn("mint", { id: sid, sem: c.sem, why: w.why, gate: w.gate, val: w.val, tol: w.tol,
+                                  near: w.id, dist: w.dist, held: !self._mayMint || undefined,
                                   rw: insetWhy && c.ext ? +c.ext[0].toFixed(3) : undefined });
           }
-          var sid = "real_" + c.sem.replace(/\s+/g, "_") + "_" + (self._refSeq++);
           var r = { id: sid, sem: c.sem, ext: c.ext.slice(), pos: lp.clone(), nyaw: cyaw, orient: c.orient };
           self._ref.push(r); claimed.add(r);
           // A mint made while the model is still moving is a claim we are not entitled to make: the same
@@ -3203,12 +3293,13 @@
           // in the same capture that lost _157). It still gets an id so THIS session can render and track
           // it, but it is withheld from the POST until the model is still — so it never reaches the space
           // record, and a wall that is genuinely new simply arrives a few seconds later.
-          if (!self._mayMutate) self._mintedUnsettled[sid] = 1;
+          if (!self._mayMint) self._mintedUnsettled[sid] = 1;
           return sid;
         }
         // Pass B1 — WALLS + floor/ceiling first (insets need resolved wall ids). Walls get identity by
-        // PLANE (matchWall, §5.3/§10) — invariant to the centroid sliding along a differently-captured wall;
-        // horizontals keep matchRef (centroid+semantic is right for a floor/ceiling).
+        // PLANE (matchCost, §5.3/§10) — invariant to the centroid sliding along a differently-captured wall;
+        // horizontals by centroid + semantic inside a radius (right for a floor/ceiling). Both through the
+        // one cost function, so the assignment below reads the same gates.
         // Pose every non-inset candidate FIRST, then assign them all at once. Assigning as we walk means
         // the answer depends on the order `detectedPlanes` handed them over, and that order dependence is
         // itself the swap mechanism — see SpaceSnap.assignRefs. It is also what prunes a wall sitting 7 cm
@@ -3318,8 +3409,8 @@
         if (!surfaces.length) return;
         self._insetDiag = { recon: refReconByKey, cands: insetCands,
                             hostWalls: refWalls.map(function (w) { return w.id; }) };
-        this._logChurn(claimed, claimedInset, curRef);      // change-gated: a settled room logs nothing
-        if (JIT) this._jMark("passB");                      // matchRef: stable ids + F_ref/F_track views
+        this._trackAbsence(surfaces, curRef);               // THE absence counter; change-gated: a settled room logs nothing
+        if (JIT) this._jMark("passB");                      // assignRefs/matchInset: stable ids + F_ref/F_track views
 
         // LOCAL RENDER (every client): snap corners + insets in F_track, then draw each surface at its OWN
         // captured pose — matching THIS headset's passthrough, with no shared rigid frame and no server
@@ -3416,7 +3507,7 @@
         // to log one id (`reason = reason || …`), which is the wrong half of the information exactly when
         // the room is churning — the case the log exists for.
         var self2 = this, curById = {};
-        surfaces.forEach(function (s) { curById[s.id] = s; self2._absent[s.id] = 0; self2._known[s.id] = s; });
+        surfaces.forEach(function (s) { curById[s.id] = s; self2._known[s.id] = s; });
 
         // Segmentation produced nothing from a non-empty capture. `segmentRooms` opens a room for EVERY
         // floor unconditionally, so zero rooms means it saw no surface it considered a floor — and the same
@@ -3435,51 +3526,14 @@
         }
         this._logRoomResiduals(seg);
         var reasons = [];
-        // The two faces of one doorway, by _ref id — built once per capture so the absence loop below can
-        // ask "is my other face being looked at right now?" without an O(n²) scan per absent surface.
-        var doorPair = {};
-        if (RS && RS.sameDoorway && self2._ref) {
-          var vert = self2._ref.filter(function (r) { return r.orient === "vertical" && r.pos; });
-          vert.forEach(function (a) {
-            vert.forEach(function (b) { if (RS.sameDoorway(a, b)) doorPair[a.id] = b.id; });
-          });
-        }
-        Object.keys(self2._known).forEach(function (id) {                 // debounced removals (3 misses)
-          if (curById[id]) { delete self2._pairHeld[id]; return; }
-          // A doorway is two planes, one per room, and the Quest emits the one you are looking through.
-          // So a door face vanishing WHILE ITS SIBLING IS VISIBLE is not a door that went away — it is the
-          // far side of a door you are standing in front of. Pruning it would cost its styling for nothing
-          // (investigations/surface-churn.md: doors are the largest churn bucket).
-          //
-          // Gated on the sibling being seen THIS capture, which makes it self-limiting: walk away and
-          // neither face is detected, the counter resumes, and a genuinely removed door still prunes.
-          //
-          // EXPECT THIS NEVER TO FIRE on current firmware. `detectedPlanes` is the persisted Room Setup
-          // delivered wholesale every frame, not gaze-dependent, so both faces of a doorway are offered
-          // whatever you are looking at and neither goes absent from walking through. Confirmed by a
-          // device run on 2026-09-24: every doorway walked, 66/67 planes held, zero pair_held. Kept as a
-          // cheap net, and because a `churn.pair_held` event would be real news — it would mean
-          // detectedPlanes had become gaze-dependent, which a good deal of this design assumes it is not.
-          // Nothing should depend on it firing.
-          var twin = doorPair[id];
-          if (twin && curById[twin]) {
-            if (!self2._pairHeld[id]) {
-              self2._pairHeld[id] = 1;
-              self2._churn("pair_held", { id: id, sem: (self2._known[id] || {}).semantic, twin: twin });
-            }
-            return;
-          }
-          // A surface cannot be judged MISSING while the headset is still revising where its planes are.
-          // 2026-09-29: the selection gate forced at 2.8 s, matching ran against a model still 13 cm from
-          // ours, `real_wall_157` missed the perpendicular gate by 4.6 cm, and the wall the director had
-          // painted grey was pruned — carrying its styling, which is the one thing here that cannot be
-          // re-derived. Not counted rather than counted-and-ignored: a tally that builds through the
-          // settle would fire the instant it ends, which is the same bug with a delay.
-          if (!self2._mayMutate) return;
-          self2._absent[id] = (self2._absent[id] || 0) + 1;
-          if (self2._absent[id] < 3) return;
+        // Confirmed removals. The counter was advanced by _trackAbsence before the render, with the settle
+        // / fit / forced gating and the doorway-twin excuse applied THERE — this loop only reads it, so the
+        // id leaves the POST set on exactly the capture the element left the render, never a different one.
+        Object.keys(self2._known).forEach(function (id) {
+          if (curById[id]) return;
+          if ((self2._absent[id] || 0) < WM.ABSENT_N) return;
           var gone = self2._known[id];
-          delete self2._known[id]; delete self2._absent[id];
+          delete self2._known[id];
           reasons.push("removed " + id);
           // The client half of losing a surface: this id will be absent from the POST, and the server prunes
           // on absence — taking the material with it (see server.py `seed.prune`). `anchored` says whether

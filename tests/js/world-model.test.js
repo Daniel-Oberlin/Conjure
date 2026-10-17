@@ -897,39 +897,104 @@ test("discardProvisional: real_floor_171 never gets the chance to become a room'
 
 // ---------------------------------------- mayMutateIdentity (one predicate, several reasons)
 
-const FIT_OK = { settled: true, forced: false, covFrac: 0.97, resid: 0.004 };
+const FIT_OK = { settled: true, forced: false, seeded: true, covFrac: 0.97, resid: 0.004 };
 
 test("mayMutateIdentity: a healthy capture may mint and prune", () => {
   const g = WM.mayMutateIdentity(FIT_OK);
-  assert.equal(g.ok, true);
-  assert.equal(g.why, null);
+  assert.deepEqual(g, { mint: true, prune: true, why: null });
 });
 
 test("mayMutateIdentity: a FORCED selection is a shrug, not a yes", () => {
   // 2026-10-08, s_x1ggz0: the gate ran out of patience, recorded `forced`, and eleven surfaces were
-  // minted 1.7 s later. The flag exists so a forced pass is never mistaken for a healthy one; until now
-  // nothing read it.
+  // minted 1.7 s later into a space that already had a seed. The flag exists so a forced pass is never
+  // mistaken for a healthy one; until now nothing read it.
   const g = WM.mayMutateIdentity({ ...FIT_OK, forced: true });
-  assert.equal(g.ok, false);
+  assert.equal(g.mint, false, "a stranger's wall must not be added to a seed we may not be standing in");
+  assert.equal(g.prune, false, "and nothing may be removed from it");
   assert.equal(g.why, "forced", "and it says WHICH reason, so the log can tell the causes apart");
+});
+
+test("mayMutateIdentity: a forced selection with NO seed may mint, so the space can be captured at all", () => {
+  // The deadlock the first version created. With selection unresolved the gate forced once in nine
+  // captures, every forced pass was refused, and a space with no seed could never be captured: the only
+  // record a seedless mint can reach is the one this session is the first to write, which invents
+  // nothing about anyone else's room. Prunes stay refused — there is nothing to prune, but the rule is
+  // the same whatever the seed holds.
+  const g = WM.mayMutateIdentity({ ...FIT_OK, forced: true, seeded: false });
+  assert.equal(g.mint, true);
+  assert.equal(g.prune, false);
+  assert.equal(g.why, "forced", "the log still records that this was a forced pass");
+  // …but the fit still has to hold: a seedless mint is measured against this session's own constellation.
+  assert.equal(WM.mayMutateIdentity({ ...FIT_OK, forced: true, seeded: false, covFrac: 0.2 }).mint, false);
 });
 
 test("mayMutateIdentity: a calm device with a bad fit is refused", () => {
   // The hole the first version left. That session read plane movement of 0.3-2.8 mm — settled by any
   // measure — while mints missed their references by 0.42 and 0.53 m. The device had stopped moving;
   // the transform was wrong.
-  assert.equal(WM.mayMutateIdentity({ ...FIT_OK, resid: 0.17 }).why, "residual");
+  const r = WM.mayMutateIdentity({ ...FIT_OK, resid: 0.17 });
+  assert.deepEqual([r.mint, r.prune, r.why], [false, false, "residual"]);
   assert.equal(WM.mayMutateIdentity({ ...FIT_OK, covFrac: 0.33 }).why, "coverage");
 });
 
 test("mayMutateIdentity: movement outranks the rest, so the log names the root cause", () => {
   const g = WM.mayMutateIdentity({ settled: false, forced: true, covFrac: 0.1, resid: 0.9 });
   assert.equal(g.why, "moving", "the first reason reported is the most fundamental one");
+  assert.equal(g.mint, false); assert.equal(g.prune, false);
 });
 
 test("mayMutateIdentity: unknown fit is not treated as a bad one", () => {
   // Before the first register there is no coverage and no residual. Absent evidence must not block for
   // ever — `settled` and `forced` still have to pass, and those are the cheap guards.
   const g = WM.mayMutateIdentity({ settled: true, forced: false, covFrac: null, resid: null });
-  assert.equal(g.ok, true);
+  assert.equal(g.mint, true); assert.equal(g.prune, true);
+});
+
+// ---------------------------------------- absenceStep (THE absence counter)
+// One counter behind every consequence of a surface not being seen. There were three — the DOM's, the
+// post model's and the churn log's — with the same three-miss rule each, and only one of them gated on
+// the device having settled, so the render and the record could disagree about whether a wall existed.
+
+test("absenceStep: three counted misses and the surface is gone, on exactly the third", () => {
+  let s = WM.absenceStep(0, false, true);
+  assert.deepEqual(s, { n: 1, ev: "miss" });
+  s = WM.absenceStep(s.n, false, true);
+  assert.deepEqual(s, { n: 2, ev: "miss" });
+  s = WM.absenceStep(s.n, false, true);
+  assert.deepEqual(s, { n: 3, ev: "gone" }, "the capture it crosses the line — render and record act together");
+  s = WM.absenceStep(s.n, false, true);
+  assert.deepEqual(s, { n: 4, ev: null }, "and then stays quiet: no miss every 2 s for ever");
+});
+
+test("absenceStep: returning inside the debounce is a regain, returning after it is just presence", () => {
+  assert.deepEqual(WM.absenceStep(2, true, true), { n: 0, ev: "regain" });
+  assert.deepEqual(WM.absenceStep(0, true, true), { n: 0, ev: null }, "never missing: nothing to say");
+  assert.deepEqual(WM.absenceStep(7, true, true), { n: 0, ev: null },
+                   "already gone — its return is a mint or a re-match, logged there, not a regain");
+});
+
+test("absenceStep: while the capture may not prune, absence is WITHHELD, not accumulated", () => {
+  // 2026-09-29: a tally that built through the settle would have fired the instant it ended — the same
+  // bug with a delay. Not counting is the point.
+  let s = WM.absenceStep(0, false, false);
+  assert.deepEqual(s, { n: 0, ev: null });
+  s = WM.absenceStep(2, false, false);
+  assert.deepEqual(s, { n: 2, ev: null }, "a count already underway holds where it is");
+  assert.deepEqual(WM.absenceStep(2, true, false), { n: 0, ev: "regain" }, "presence always resets, gated or not");
+});
+
+test("absenceStep: the debounce length is WM.ABSENT_N and caller-settable", () => {
+  assert.equal(WM.ABSENT_N, 3);
+  assert.equal(WM.absenceStep(0, false, true, 1).ev, "gone");
+});
+
+test("ROOM_MIN is the one answer to 'how many surfaces make a space', and the gates read it", () => {
+  // Five places used to answer 3, 6, 6, 8 and 8. The load gate's seed floor and the void gate's wall
+  // floor now default to the same object the server injects.
+  assert.deepEqual(WM.ROOM_MIN, { surfaces: 8, walls: 6 });
+  assert.equal(WM.loadGate(1, WM.ROOM_MIN.surfaces - 1, 0), "go", "below the floor there is no seed to compare against");
+  assert.equal(WM.loadGate(1, WM.ROOM_MIN.surfaces, 0), "hold", "at the floor there is");
+  const st = WM.voidGateInit();
+  assert.equal(WM.voidFrameGate(WM.ROOM_MIN.walls - 1, { ...st, prev: 99 }), "hold", "too few walls to pin a frame");
+  assert.equal(WM.voidFrameGate(WM.ROOM_MIN.walls, { ...st, prev: 99 }), "go");
 });

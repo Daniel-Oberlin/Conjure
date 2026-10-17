@@ -502,20 +502,86 @@
    * operations that destroy user data wait, because drawing a surface in the wrong place for a few seconds
    * costs nothing and forgetting one costs a colour that cannot be re-derived.
    *
-   * @param {{settled: boolean, forced: boolean, covFrac: number|null, resid: number|null}} s
+   * **The two operations are answered separately**, and `forced` is where they part. A forced selection
+   * means "we do not know which space this is", and the two irreversible things carry different risks
+   * under that doubt. A PRUNE removes a surface from a record we may not even be standing in — refused.
+   * A MINT into a space that already has a seed adds a stranger's wall to it — refused too. But a mint
+   * into an EMPTY seed invents nothing about anyone else's room: the only record it can reach is the one
+   * this session is the first to write. The first version refused that as well, and the result was a
+   * deadlock the escape hatch had been built to prevent: with selection unresolved the gate forced once
+   * in nine captures, every forced pass was refused, and a space with no seed could never be captured at
+   * all (2026-10-08, the session that "forced twice, then gave up to void.establish"). Coverage and
+   * residual still apply to a seedless mint — they are measured against this session's own constellation.
+   *
+   * @param {{settled: boolean, forced: boolean, seeded?: boolean, covFrac: number|null, resid: number|null}} s
+   *   `seeded`: a persisted seed exists for this space (false ⇒ this session would be the first to write one)
    * @param {{minCov?: number, maxResid?: number}} [opts]
-   * @returns {{ok: boolean, why: string|null}}  `why` names the FIRST reason it refused
+   * @returns {{mint: boolean, prune: boolean, why: string|null}}  `why` names the FIRST reason that refused anything
    */
   function mayMutateIdentity(s, opts) {
     opts = opts || {};
     var minCov = opts.minCov != null ? opts.minCov : 0.6;
     var maxResid = opts.maxResid != null ? opts.maxResid : 0.08;
-    if (!s.settled) return { ok: false, why: "moving" };
-    if (s.forced) return { ok: false, why: "forced" };
-    if (s.covFrac != null && s.covFrac < minCov) return { ok: false, why: "coverage" };
-    if (s.resid != null && s.resid > maxResid) return { ok: false, why: "residual" };
-    return { ok: true, why: null };
+    if (!s.settled) return { mint: false, prune: false, why: "moving" };
+    var mint = true, prune = true, why = /** @type {string|null} */ (null);
+    if (s.forced) { prune = false; why = "forced"; if (s.seeded !== false) mint = false; }
+    if (s.covFrac != null && s.covFrac < minCov) return { mint: false, prune: false, why: why || "coverage" };
+    if (s.resid != null && s.resid > maxResid) return { mint: false, prune: false, why: why || "residual" };
+    return { mint: mint, prune: prune, why: why };
   }
+
+  /**
+   * One step of THE absence counter — the single debounce behind every consequence of a surface not
+   * being seen: the element leaving the render, the id leaving the POST set, and the churn log's miss
+   * and regain lines. There used to be three counters for this (`_localAbsent` on the DOM, `_absent` on
+   * the post model, `_miss` for the log), each with its own three-miss rule, and only one of them gated
+   * on whether the device had settled — so the render and the record could disagree about whether a
+   * surface existed, and the log needed a fourth map (`_everClaimed`) to stay quiet about reference
+   * entries that had never matched at all.
+   *
+   * Counting is withheld, not ignored, while the capture may not prune (`mayMutateIdentity`): a tally
+   * that built through a settle would fire the instant it ended, which is the same bug with a delay. The
+   * cost is that a genuinely removed surface stays drawn until the device is still — a ghost wall in
+   * passthrough for a few seconds, which is cheap and self-correcting, against a prune that is neither.
+   *
+   * @param {number} n          consecutive misses so far (0 = present last capture)
+   * @param {boolean} present   seen this capture
+   * @param {boolean} counting  may this capture count an absence (settled, fit healthy, not forced)
+   * @param {number} [need]     misses before the surface counts as gone (default 3)
+   * @returns {{n: number, ev: "regain"|"miss"|"gone"|null}}
+   *   `ev` is what the log should say: `regain` when it returns inside the debounce, `miss` for each
+   *   counted absence up to `need`, `gone` on the capture it crosses the line, null when nothing changed
+   */
+  function absenceStep(n, present, counting, need) {
+    var N = need != null ? need : ABSENT_N;
+    n = n || 0;
+    if (present) return { n: 0, ev: n > 0 && n < N ? "regain" : null };
+    if (!counting) return { n: n, ev: null };
+    n += 1;
+    return { n: n, ev: n === N ? "gone" : (n < N ? "miss" : null) };
+  }
+
+  /** Consecutive uncounted-as-present captures before a surface is gone. Three since 2026-06-24; the commit
+   *  that set it said "needs on-device tuning", and it has not been tuned — it is the number every removal
+   *  consequence shares, which is the point of defining it once. */
+  var ABSENT_N = 3;
+
+  /**
+   * How many surfaces make a space, in the two senses the code needs — defined ONCE for client and server
+   * (the server injects its copy as `window.CONJURE_SPACE_MIN_*`, so the authoritative values live in
+   * `conjure/config.py`; these are the offline defaults the tests and a server-less page run on).
+   *
+   * - `surfaces`: an ESTABLISHED space — enough stored surfaces that losing most of them is a fault, not a
+   *   room still being discovered. A room's structural shell alone is six (four walls, floor, ceiling);
+   *   this sits two above it because a space holding exactly its shell is still mid-capture. Read by the
+   *   load gate (below what size a seed is "nothing to compare against") and the server's >50% prune guard.
+   * - `walls`: enough VERTICAL planes to pin a frame or vote on a space. At 4 of 30 verticals the golden
+   *   room's canonical frame was 180° out; at 16 it was right; 6 is the floor below which no apparent
+   *   stability should be believed. Read by the void frame gate and the no-match selection vote.
+   *
+   * Before this the answer was 3, 6, 6, 8 and 8 in five places across both sides of the wire.
+   */
+  var ROOM_MIN = { surfaces: 8, walls: 6 };
 
   /**
    * Throw away the ids minted while the model was moving, the moment it stops.
@@ -633,6 +699,13 @@
    * never clear the gate and never be able to post the removal — the wall-less-seed deadlock in a new
    * costume. It reports itself so a forced pass is never mistaken for a healthy one.
    *
+   * This gate holds the RENDER and the selection vote. It is no longer what protects identity: that is
+   * `mayMutateIdentity`'s coverage test, which measures the same thing (how much of the reference this
+   * capture accounts for) against `register`'s actual pairings rather than a plane count, and so also
+   * covers the case this gate cannot see — a full plane count paired to the wrong reference. A forced pass
+   * here therefore needs no second flag: a capture that forces through with a third of the room fails the
+   * coverage test on its own.
+   *
    * @param {number} planes    planes in this capture
    * @param {number} expect    surfaces the persisted seed says exist (0 when there is no seed yet)
    * @param {number} held      consecutive captures already held by this gate
@@ -643,7 +716,7 @@
     opts = opts || {};
     var frac = opts.frac != null ? opts.frac : 0.6;
     var patience = opts.patience != null ? opts.patience : 15;
-    var minSeed = opts.minSeed != null ? opts.minSeed : 8;
+    var minSeed = opts.minSeed != null ? opts.minSeed : ROOM_MIN.surfaces;
     if (!(expect >= minSeed)) return "go";          // nothing to compare against — establishing, or a void world
     if (planes >= frac * expect) return "go";
     return held >= patience ? "forced" : "hold";
@@ -695,7 +768,7 @@
   function voidFrameGate(walls, st, opts) {
     opts = opts || {};
     var frac = opts.frac != null ? opts.frac : 0.6;
-    var minWalls = opts.minWalls != null ? opts.minWalls : 6;
+    var minWalls = opts.minWalls != null ? opts.minWalls : ROOM_MIN.walls;
     var patience = opts.patience != null ? opts.patience : 8;
     var no = /** @type {"forced"|"hold"} */ (st.held >= patience ? "forced" : "hold");
     if (walls < minWalls) return no;                       // too few to pin a frame, however stable
@@ -784,6 +857,7 @@
   }
 
   return { hasFrameBasis: hasFrameBasis, levelDeviation: levelDeviation, roomResidualGate: roomResidualGate, loadGate: loadGate, settleGate: settleGate, settleRms: settleRms, discardProvisional: discardProvisional, mayMutateIdentity: mayMutateIdentity,
+           absenceStep: absenceStep, ABSENT_N: ABSENT_N, ROOM_MIN: ROOM_MIN,
            rotXZ: rotXZ, yawAboutPivot: yawAboutPivot, polarDrag: polarDrag,
            nest: nest, holesAttr: holesAttr, v3: v3, avatarAim: avatarAim, spawnRight: spawnRight,
            shouldSpawnGuest: shouldSpawnGuest, isCaptureAuthority: isCaptureAuthority,

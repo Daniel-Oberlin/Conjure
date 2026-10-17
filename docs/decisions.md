@@ -35,6 +35,7 @@ Consequential forks. Each is `OPEN` until we choose; then we record the choice a
 | 31 | Does a worn hand conform to the tracked hand, and what does contact read? | 🔶 DESIGNED | Conform all 25 joints; contact reads the JOINTS, never the skinned mesh |
 | 32 | Where does a TTS engine's speech-tag vocabulary live, and who sees the tags? | ✅ RESOLVED | With the listener: the voice client registers it per connection; the server prompts for it and renders per connection |
 | 33 | Audio to and from the Quest: which transport, which door, which process? | ✅ RESOLVED | Raw PCM over the page's own WebSocket, relayed by the world server to a per-connection pipeline in the voice server; AEC in the page; push-to-talk by default |
+| 34 | Who protects the seed from an early capture — a timed server window, or client evidence? | ✅ RESOLVED | Client gates on evidence (settled, fit, selection resolved), one predicate answering mint and prune separately; the 2026-07 server freeze was removed on half a rationale |
 
 > Numbering note: §15 appears twice (an older "Users, spaces, and a user-first namespace" section
 > predates the table row for world/space identity), and §16 has a section but no table row. External
@@ -347,9 +348,9 @@ only on change; and **time-slice** the mesh re-triangulation across frames under
 - New knobs: `--geo-slice-ms` (slice budget; `<=0` = off) and `--debug-jitter` (probes without the heavy
   registration diagnostics). Probes are flag-gated and kept in-tree for the next perf pass.
 - **Scaling is partial** (§14.3): the solve axis and the geometry-rebuild axis are decoupled from frame rate,
-  but **element creation** (first lay) and **`matchRef`** still grow with space size on the main thread — the
-  next levers if large spaces hitch. Element creation would need its own slicing; `matchRef` would migrate
-  behind the same worker message boundary.
+  but **element creation** (first lay) and **Pass B assignment** (`assignRefs`) still grow with space size on
+  the main thread — the next levers if large spaces hitch. Element creation would need its own slicing;
+  the assignment would migrate behind the same worker message boundary.
 
 
 ### 15. World & space identity — ✅ RESOLVED
@@ -790,3 +791,37 @@ measurement to be safe; it also makes "press while the bot speaks" the barge-in 
 a second port on the voice server (per-tier config, a second origin for permissions); pipecat's browser
 SDK (a protocol and a dependency for a tenth of its surface); WebRTC first (right for the remote bridge,
 wrong for the tiers in use); open-mic by default (decision #5, and unmeasured AEC).
+
+### 34. Who protects the seed from an early capture — a timed server window, or client evidence? — ✅ RESOLVED
+**Choice:** The client, on evidence. One predicate (`WM.mayMutateIdentity`,
+[`specs/spaces-geometry.md` §4.0c](./specs/spaces-geometry.md)) decides whether a capture may **mint**
+an id into the space record and, separately, whether it may **count a surface absent** — from three
+things it can measure: the device has stopped revising its own planes, `register` explains the room
+(coverage and residual), and space selection resolved rather than timing out. Every other hold (load,
+selection, the void frame gate) gates the render or the vote, not identity. One absence counter sits
+behind every consequence of a surface being missing.
+
+**Why this is written down now.** The history of this concern is the one place the record was wrong,
+and a review on 2026-10-16 found it by walking the commits. `055adef` (2026-07-06) built a ~20 s
+establishing window on the server after which static surfaces froze and were never pruned. `2347a93`
+(2026-07-21) deleted it with the rationale *"it only ever stabilized the shared rendered geometry, which
+no longer exists"*. True of the render; false of the seed. The other half of what the window did —
+keeping decisions made on a half-loaded, still-settling capture out of the persisted record — came back
+on the client in three increments, each after a measured loss: the load gate (`43bca11`, 2026-08-31),
+the settle gate (`dc7e177`/`087883e`, 2026-09-29/30) and the fit gate (`b86d2f3`, 2026-10-08). Spec
+§4.0c's own measurement — the frame settles "for the best part of a minute" — says the July guess of 20 s
+was the right order of magnitude. So this was a spiral rather than a circle: the replacement is better in
+kind (evidence-based and transient, where the window was timed and permanent), but it is the same
+concern, and the July deletion's reasoning should not be cited as settling it.
+
+**What the 2026-10-17 pass changed**, on the back of that review: the forced-selection escape hatch had
+been re-closed one layer up (selection forced once in nine captures, the predicate refused every forced
+pass, and a space with no seed could never be captured) — forced is now sticky until the vote lands and
+permits a mint into an *empty* seed only; three absence counters became one; "how many surfaces make a
+space" and "what is a structural move" are each one setting on both sides of the wire; and the dead
+centroid matcher whose flip fallback the spec still described as load-bearing was deleted.
+
+**Rejected:** restoring a timed window (a timeout is what ate `real_wall_157` on 2026-09-29 — the
+device does not settle on a schedule); a server-side absence debounce (`bc42e50`, 2026-07-21: the server
+cannot see what the client saw, and the client owns removal confidence); and holding the *render* while
+unsettled (drawing a surface slightly out is cheap and self-correcting; forgetting one is not).

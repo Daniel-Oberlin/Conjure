@@ -432,43 +432,30 @@ test("selectSpace returns null when the capture matches no candidate (somewhere 
   assert.strictEqual(RS.selectSpace(THREE, cur, []), null);   // and for an empty candidate set
 });
 
-// --- matchRef: id re-inheritance must keep the two FACES of a shared partition wall distinct. Two
-// parallel walls between adjacent rooms have centers ~0.5 m apart and OPPOSITE normals; a center-only
-// match can swap their ids (the bug seen live: wall 3 ↔ wall 59). The normal gate prevents it. ---
-test("matchRef picks the SAME-FACING reference, not merely the nearest center", () => {
-  const refOld = { id: "old", sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 1.2, 0.05) };
-  const refNew = { id: "new", sem: "wall", orient: "vertical", nyaw: Math.PI, pos: new THREE.Vector3(0, 1.2, -0.05) };
+// --- The two FACES of a shared partition wall must stay distinct. Two parallel walls between adjacent
+// rooms have centres ~0.5 m apart and OPPOSITE normals; a centre-only match can swap their ids (the bug
+// seen live: wall 3 ↔ wall 59). The facing gate — once matchRef's, now matchWall's — prevents it. ---
+test("matchWall picks the SAME-FACING reference, not merely the nearest centre", () => {
+  const refOld = { id: "old", sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 1.2, 0.05), ext: [3, 2.4] };
+  const refNew = { id: "new", sem: "wall", orient: "vertical", nyaw: Math.PI, pos: new THREE.Vector3(0, 1.2, -0.05), ext: [3, 2.4] };
   const refs = [refOld, refNew];
-  // a NEW-room wall (normal -z ⇒ nyaw π) whose detected center drifted TOWARD the old wall (z=0.02, so
-  // "old" is nearer by center). Center-only matching would grab "old"; the normal gate must pick "new".
+  // a NEW-room wall (normal -z ⇒ nyaw π) whose detected centre drifted TOWARD the old wall (z=0.02, so
+  // "old" is nearer by centre). Centre-only matching would grab "old"; the facing gate must pick "new".
   assert.strictEqual(
-    RS.matchRef({ sem: "wall", orient: "vertical", nyaw: Math.PI, pos: new THREE.Vector3(0, 1.2, 0.02) }, refs, new Set()).id,
+    RS.matchWall({ sem: "wall", orient: "vertical", nyaw: Math.PI, pos: new THREE.Vector3(0, 1.2, 0.02), ext: [3, 2.4] }, refs, new Set()).id,
     "new");
-  // the old-room wall (normal +z) picks "old"
   assert.strictEqual(
-    RS.matchRef({ sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 1.2, 0.05) }, refs, new Set()).id,
+    RS.matchWall({ sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 1.2, 0.05), ext: [3, 2.4] }, refs, new Set()).id,
     "old");
 });
 
-test("matchRef re-matches a COINCIDENT antiparallel surface (wall art faces inward, 180° from its wall)", () => {
-  // A mounted picture's live normal faces the viewer (inward), but it's stored with the wall's outward
-  // normal — 180° apart at the SAME spot. It must re-match (same surface), not mint a duplicate each session.
-  const ref = { id: "art", sem: "wall art", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 1.5, -2) };
-  const cand = { sem: "wall art", orient: "vertical", nyaw: Math.PI, pos: new THREE.Vector3(0, 1.5, -2.03) };
-  assert.strictEqual(RS.matchRef(cand, [ref], new Set()).id, "art");     // matched despite the 180° flip
-  // a genuinely different opposite face 0.4 m away stays DISTINCT (partition id-swap fix intact)
-  const faceA = { id: "A", sem: "wall", orient: "vertical", nyaw: Math.PI, pos: new THREE.Vector3(0, 1.2, -2) };
-  const candB = { sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 1.2, -1.6) };
-  assert.strictEqual(RS.matchRef(candB, [faceA], new Set()), null);      // → mint its own id, no swap
-});
-
-test("matchRef honors the claimed set and the 0.5 m distance cap", () => {
-  const r = { id: "a", sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 0, 0) };
-  const near = { sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 0, 0.1) };
-  assert.strictEqual(RS.matchRef(near, [r], new Set([r])), null);                 // already claimed
-  assert.strictEqual(RS.matchRef({ sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 0, 1.0) },
-                                 [r], new Set()), null);                          // beyond 0.5 m
-  assert.strictEqual(RS.matchRef(near, [r], new Set()).id, "a");                  // otherwise matches
+test("there is no matchRef: wall art is identified by its host wall and slot, never by its normal", () => {
+  // The coincident-flip fallback (a wall-art plane whose live normal is 180° from its stored one still
+  // re-matches) was matchRef's reason to exist, and it was dead code from 2026-07-24, when wall art
+  // moved to matchInset, which never reads a normal. The spec and a memory file went on citing it as
+  // load-bearing. Pinned here so it cannot quietly come back as "the fix" for a re-minting picture.
+  assert.strictEqual(RS.matchRef, undefined);
+  assert.strictEqual(RS.matchInset({ along: 1.0 }, [{ id: "art", along: 1.02 }], new Set()), "art");
 });
 
 // --- matchWall: identify a wall by its PLANE (normal + perpendicular offset + along-line overlap), NOT
@@ -476,11 +463,12 @@ test("matchRef honors the claimed set and the 0.5 m distance cap", () => {
 // captures/devices; matching by centroid re-mints the id (losing style + shifting every keyed inset). ---
 test("matchWall matches a wall whose centroid slid ALONG its own length (centroid would re-mint)", () => {
   // Ref +Z wall at z=0 spanning x∈[-2,2]. A later/other capture sees the SAME wall but centred at x=1
-  // (slid 1 m along) with a shorter extent and a little perpendicular noise. Centroid distance ~1 m blows
-  // matchRef's 0.5 m cap → re-mint; matchWall keeps the id because it's the same plane with overlapping span.
+  // (slid 1 m along) with a shorter extent and a little perpendicular noise. Centroid distance ~1 m is
+  // past the 0.5 m radius the horizontal rule uses → a centroid matcher would re-mint; matchWall keeps
+  // the id because it's the same plane with overlapping span.
   const ref = { id: "w", sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(0, 1.2, 0), ext: [4, 2.4] };
   const cand = { sem: "wall", orient: "vertical", nyaw: 0, pos: new THREE.Vector3(1, 1.2, 0.03), ext: [3, 2.4] };
-  assert.strictEqual(RS.matchRef({ ...cand }, [ref], new Set()), null, "matchRef WOULD re-mint (centroid 1 m)");
+  assert.ok(cand.pos.distanceTo(ref.pos) > 0.5, "the centroid moved further than any radius rule would allow");
   assert.strictEqual(RS.matchWall(cand, [ref], new Set()).id, "w", "matchWall keeps the id (same plane)");
 });
 
@@ -916,7 +904,7 @@ test("explainNoMatch names the matchWall gate that rejected a candidate, with it
   assert.strictEqual(RS.explainNoMatch(THREE, probe, [at(0, 0.02, 2)], opts).gate, "claimed");
 });
 
-test("explainNoMatch falls back to matchRef's radius for horizontals", () => {
+test("explainNoMatch falls back to matchCost's centroid radius for horizontals", () => {
   const probe = { pos: new THREE.Vector3(0, 0, 0), nyaw: 0, sem: "floor", orient: "horizontal", ext: [4, 4] };
   const near = { id: "f1", pos: new THREE.Vector3(0.9, 0, 0), nyaw: 0, sem: "floor", orient: "horizontal", ext: [4, 4] };
   const r = RS.explainNoMatch(THREE, probe, [near], {});
@@ -1749,7 +1737,7 @@ test("assignRefs never assigns one reference twice, and respects the gates", () 
   assert.strictEqual(farOut.assigned[0], null);
 });
 
-test("assignRefs matches horizontals by matchRef's rule, not matchWall's", () => {
+test("assignRefs matches horizontals by the centroid-radius rule, not the plane rule", () => {
   const floor = { id: "rF", sem: "floor", orient: "horizontal", ext: [4, 4],
                   pos: new THREE.Vector3(0, 0, 0), nyaw: 0 };
   const near = { sem: "floor", orient: "horizontal", ext: [4, 4], pos: new THREE.Vector3(0.1, 0, 0), nyaw: 0 };
