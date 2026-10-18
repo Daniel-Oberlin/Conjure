@@ -62,7 +62,7 @@ Components and where each can run. "Host" = the machine running the Conjure serv
 
 | # | Component | Runs on | Responsibility |
 |---|---|---|---|
-| 1 | **Voice / CLI clients** | host | Thin front-ends. Voice is a PipeCat pipeline (VAD → STT → WebSocket → TTS) plus a wake gate; the CLI is a terminal REPL. Neither holds state, keys, or command logic. Whisper hears and Kokoro speaks, both local ([specs/voice.md](./specs/voice.md)) |
+| 1 | **Voice / CLI clients** | host | Thin front-ends. Voice is a PipeCat pipeline (VAD → STT → WebSocket → TTS) plus a wake gate; the CLI is a terminal REPL. Neither holds state or command logic. Ears and mouth are two **independent profile registries** (`conjure/stt.py`, `conjure/tts.py`): Whisper or Grok STT, Kokoro or Grok TTS. A TTS engine's speech-tag vocabulary is **registered** with the agent server on connect, not hard-coded in a prompt (decision #32). The one key exception: a cloud STT/TTS engine's key lives here, because this process streams the audio ([specs/voice.md](./specs/voice.md)) |
 | 2 | **Agent server** | host | The long-lived host of the deterministic **shell** (switch agent/LLM/session, navigate the namespace — no LLM) above the active **agent** — an experience loaded from `agents/<name>/` ([specs/agents.md](./specs/agents.md)): an orchestrating LLM, MCP **client** of its scoped servers, with a **roster of named LLMs** (one active) sharing a single transcript (§7). One shared conversation for every client; follows the world server's live state |
 | 3 | **World server** | host | Owns the world document; validates + applies patches; serves the WebXR app, module scripts and the shared clock; MCP **server** of world-editing tools; broadcasts state and relays presence |
 | 4 | **Dynamic modules** | host (served) + client (run) | Live, animated, interactive effects the agent can **conjure** into a world — fireflies, a rippling Water Picture, object manipulation. Each is a folder + manifest whose entry script registers one A-Frame component; the server serves it and delivers its **config in the world snapshot**, so presence and state are shared for free. Built; specified in [specs/dynamics.md](./specs/dynamics.md) |
@@ -86,7 +86,7 @@ flowchart TB
 
   subgraph agent["Agent server — :8770"]
     SHELL["Shell — deterministic<br/>agent · llm · session · namespace"]
-    DIR["Director — the active agent<br/>LLM roster · one shared transcript<br/>context resources"]
+    DIR["Director — the active agent<br/>LLM roster · one shared transcript<br/>context resources · client-registered prompting"]
     SHELL --> DIR
   end
 
@@ -102,16 +102,17 @@ flowchart TB
     SCENE["A-Frame scene<br/>patches · dynamic modules · figures · space capture · input layer"]
   end
 
-  MODELS["Model services<br/>LLM · image gen · captioner · embeddings<br/>one provider abstraction"]
+  MODELS["Model services<br/>LLM · STT · TTS · image gen · captioner · embeddings<br/>one provider abstraction"]
 
   CLI -- "ws /ws — turn · events" --> SHELL
-  VOICE -- "ws /ws — turn · events" --> SHELL
+  VOICE -- "ws /ws — turn · register · interrupt" --> SHELL
   DIR -- "MCP over stdio" --> MCP
   MCP -- "HTTP" --> WS
   DIR -. "ws /ws — passive listener, follows live state" .-> WS
   WS -- "ws /ws — snapshot · patch · presence · module_event" --> SCENE
   WS -- "HTTPS — app · assets · /dynamics · /time" --> SCENE
   DIR -- "chat" --> MODELS
+  VOICE -- "STT · TTS" --> MODELS
   WS -- "image gen · captions · embeddings" --> MODELS
 ```
 
@@ -134,10 +135,13 @@ agent server can load without the world server but only serves turns once connec
 Six planes, deliberately separated by reliability and rate:
 
 0. **Conversation channel — WebSocket** 🟢. One per-connection socket from each thin client to the
-   agent server (`ws://…/ws?user=&client=`). Client → server: `{type:"turn", text}`, one line, verbatim.
+   agent server (`ws://…/ws?user=&client=`). Client → server: `{type:"turn", text}`, one line, verbatim;
+   `register` — what this client can *render* (today: a TTS engine's speech-tag vocabulary plus the
+   prompt that teaches it), which the server composes into the active agent's prompt and strips from
+   every other connection's view; `interrupt` — cancel the turn in flight (barge-in).
    Server → client: this connection's `context` (data, not a formatted prompt) plus the shared
-   conversation (`user_turn` / `assistant_delta` / `assistant_final` / `tool_call` / `notice` / `busy`)
-   and a `turn_done` prompt gate. All command logic is server-side; the client never parses
+   conversation (`user_turn` / `assistant_delta` / `assistant_final` / `tool_call` / `notice` / `busy` /
+   `interrupted`) and a `turn_done` prompt gate. All command logic is server-side; the client never parses
    ([specs/agents.md §8](./specs/agents.md)).
 1. **Control plane — MCP** 🟢. Director ↔ world server and ↔ modules. Tool calls (stdio / SSE /
    streamable-HTTP via PipeCat `MCPClient`). Low rate, reliable, request/response. Identity travels
@@ -355,8 +359,10 @@ The shell forwards anything that isn't a command to the active agent, which runs
 1. **Perceive** — addressing gate (§ voice) / shell admits agent-directed speech → STT → the agent's
    LLM. The prompt carries: the **live space**, injected via the `space://current` context resource
    ([specs/agents.md §5.3](./specs/agents.md)) so the agent needn't re-query it; the placed scene
-   (`world://current`) and its conjurable modules (`dynamics://available`); the agent's scoped MCP
-   tools; and the session transcript. (`query_world` is
+   (`world://current`) and its conjurable modules (`dynamics://available`); **client-registered
+   prompting** — a `{speech}` slot filled from whatever the connected voice clients said they can render,
+   so an agent frames its own voice guidance in a `{#speech}…{/speech}` section that drops out when nobody
+   is listening by ear; the agent's scoped MCP tools; and the session transcript. (`query_world` is
    still used where a prefetched snapshot would go stale.)
 2. **Plan & act** — the agent calls MCP tools (world-editing and/or module tools). It reads
    state back when an edit is context-dependent.
