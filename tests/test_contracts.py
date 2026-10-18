@@ -33,6 +33,11 @@ def test_pipecat_surface_we_depend_on():
     assert hasattr(XAIHttpTTSService, "Settings")
     assert {"api_key", "settings"} <= set(inspect.signature(XAIHttpTTSService.__init__).parameters)
     assert inspect.isasyncgenfunction(XAIHttpTTSService.run_tts)
+    # conjure/stt.py builds the Grok recognizer the same way: `api_key`, `sample_rate`, `settings=`.
+    from pipecat.services.xai.stt import XAISTTService
+
+    assert hasattr(XAISTTService, "Settings")
+    assert {"api_key", "sample_rate", "settings"} <= set(inspect.signature(XAISTTService.__init__).parameters)
     # --stt-corpus subclasses WhisperSTTService and taps run_stt: it must stay an ASYNC GENERATOR
     # (we iterate it and re-yield), it receives the audio bytes, and the text arrives on a
     # TranscriptionFrame.text. Drift in any of the three silently stops the corpus recording.

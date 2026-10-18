@@ -273,19 +273,23 @@ true; today it describes an intention the code never picked up.
 `Settings.stt` / `CONJURE_STT` is declared in [`config.md`](../specs/config.md) and read by
 `doctor.py` but **never consulted by `voice.py`** — a seam declared in one file and ignored in another.
 
-**The TTS seam is built** (2026-10-18): `CONJURE_TTS` picks a speech profile in `conjure/tts.py`, and
-Grok is the second real implementation beside Kokoro — which is what made the seam's shape honest
-(spec §5). The same shape is the template for the two below: a profile that builds the service, states
-what it needs, and registers what it can do. Grok also has an STT API (batch and streaming; pipecat
-ships `pipecat.services.xai.stt`) and would be a natural second implementation for the STT seam — but
-read the investigation first: accuracy is measured here, not assumed, and a cloud recognizer has to
-beat `small.en` on the Bluetooth corpus, not on a demo.
+**Both engine seams are built** (2026-10-18): `CONJURE_TTS` picks a speech profile in `conjure/tts.py`
+and `CONJURE_STT` a hearing profile in `conjure/stt.py`, independently. Grok is the second real
+implementation on each side — which is what made the seams' shape honest (spec §4, §5): a profile that
+builds the service, states what it needs, and says what it can do. **Whisper vs MLX is now a profile
+row**, not an edit. Two things the STT seam left open:
 
-Two seams are wanted:
+- **Grok STT accuracy is unmeasured.** A cloud streaming recognizer has to beat `small.en` on the
+  Bluetooth corpus, not on a demo; read the investigation before calling it better. Which needs —
+- **The corpus tap is Whisper-only.** `--stt-corpus` records the WAV a segmented recognizer decoded;
+  a streaming engine decodes no WAV, so the tap is refused up front rather than recording nothing.
+  Scoring Grok against the corpus therefore means the scorer running clips through the REST
+  `POST /v1/stt`, which is also the shape the scorer wants for every other candidate.
+
+One seam is still wanted:
 
 - **Transport** — local microphone today, Quest audio later, same pipeline downstream. This is the one
   that is expensive to retrofit and cheap to allow for now.
-- **STT backend** — honour `CONJURE_STT`, so faster-whisper vs MLX is a config line rather than an edit.
 
 Cheaper than it first appeared: pipecat already ships `SmallWebRTCTransport`, an **`aiortc`-based,
 self-hosted** WebRTC peer. The Quest browser is one end, the host is the other, and no cloud service is

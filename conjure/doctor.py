@@ -52,6 +52,12 @@ def main() -> int:
             rows.append((OK, "Whisper backend present (model downloads on first run)", ""))
         else:
             rows.append((WARN, "Whisper backend not found", "comes with pipecat-ai[whisper]"))
+    elif s.stt == "grok":
+        rows.append((OK if s.xai_api_key else FAIL,
+                     f"Grok STT (streaming) — XAI_API_KEY {'set' if s.xai_api_key else 'missing'}",
+                     "" if s.xai_api_key else "set it in .env"))
+        if not s.xai_api_key:
+            hard_fail = True
     else:
         rows.append((WARN, f"STT='{s.stt}' (non-local) — ensure its key/deps are set", ""))
 

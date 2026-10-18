@@ -21,12 +21,12 @@ cost, strong tool-calling where it matters, one API key (Anthropic). Maps onto t
 ### Speech-to-text (STT)
 | Option | Hosting | Notes |
 |---|---|---|
-| ✅ **Whisper** (faster-whisper) | local | PipeCat-native. Utterance-based (VAD-segmented), not true streaming — fine for commands. **Built:** `small.en`, chosen by measurement ([specs/voice.md](./specs/voice.md) §4). Runs **CPU-only float32** on Apple Silicon — CTranslate2 has no Metal backend. |
-| 💡 Whisper via **MLX** | local | The same models on the Apple GPU, in native fp16 — the only route to `large-v3-turbo` at usable latency (it measures 0.9× realtime on CPU). PipeCat ships `WhisperSTTServiceMLX`; not wired up. See [backlogs/voice.md](./backlogs/voice.md). |
+| ✅ **Whisper** (faster-whisper) | local | `CONJURE_STT=whisper` (default). PipeCat-native. Utterance-based (VAD-segmented), not true streaming — fine for commands. **Built:** `small.en`, chosen by measurement ([specs/voice.md](./specs/voice.md) §4). Runs **CPU-only float32** on Apple Silicon — CTranslate2 has no Metal backend. The only engine the `--stt-corpus` tap works with. |
+| ✅ **xAI Grok STT** | cloud | `CONJURE_STT=grok` + `XAI_API_KEY`. Streaming over `wss://api.x.ai/v1/stt` (pipecat's `XAISTTService`, 16 kHz PCM, `grok-voice-transcribe-2.0`): transcripts form while you speak, the engine endpoints. Independent of `CONJURE_TTS`. Accuracy on the Bluetooth corpus **unmeasured** — see the investigation before calling it better. |
+| 💡 Whisper via **MLX** | local | The same models on the Apple GPU, in native fp16 — the only route to `large-v3-turbo` at usable latency (it measures 0.9× realtime on CPU). PipeCat ships `WhisperSTTServiceMLX`; a profile row in `conjure/stt.py` away. See [backlogs/voice.md](./backlogs/voice.md). |
 | 💡 Moonshine | local | Built for **streaming on edge / Raspberry Pi**; low latency, low hallucination. Needs custom wiring. |
 | 💡 NVIDIA Parakeet (`parakeet.cpp`) | local | Very fast, runs on Apple Silicon via Metal. Needs custom wiring. |
 | 💡 Deepgram / AssemblyAI | cloud | True low-latency streaming; snappiest feel. Per-minute cost + keys. |
-| 💡 xAI Grok STT | cloud | Batch `POST /v1/stt` and a streaming WebSocket; pipecat ships `pipecat.services.xai.stt`. Same key as Grok TTS. Not wired: `CONJURE_STT` is still not read by `voice.py` ([backlogs/voice.md](./backlogs/voice.md)). |
 
 ### Director LLM (roster — vision §3, arch §7a)
 Multiple named LLMs may be active in one session; this is the **default director** + likely roster
@@ -149,8 +149,8 @@ content-source modules (§13).
 
 - **Config-driven:** a provider factory reads `.env` (e.g. `CONJURE_STT=whisper`, `CONJURE_TTS=kokoro`,
   `CONJURE_LLM=claude`) and instantiates the matching service behind a uniform interface. Built for
-  TTS (`conjure/tts.py`, `PROFILES`) and the director roster (`conjure/llm.py`, `ROSTER`); STT is still
-  hardcoded to Whisper.
+  STT (`conjure/stt.py`), TTS (`conjure/tts.py`) and the director roster (`conjure/llm.py`, `ROSTER`);
+  each is its own setting, so the ears and the mouth switch independently.
 - **Secrets:** API keys live in `.env` (git-ignored); a committed `.env.example` documents the vars.
 - **Topologies (#1):** the same code runs all-cloud (Pi orchestrator), part-local (Mac), or with a
   self-hosted home GPU box serving local model endpoints.

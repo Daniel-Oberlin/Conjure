@@ -2,12 +2,14 @@
 
 Wires a real-time voice front-end to the shared agent:
 
-    mic → Silero VAD → Whisper STT → WebSocket → agent server → WebSocket → TTS → speaker
+    mic → Silero VAD → STT → WebSocket → agent server → WebSocket → TTS → speaker
 
-The TTS engine is `CONJURE_TTS` (conjure/tts.py): Kokoro (local) or Grok (xAI, renders speech tags such
-as [laugh] and <whisper>…</whisper>). On connect this client REGISTERS its engine with the agent server —
-the tag vocabulary and the prompt guidance for it — so the LLM is told what it may write and every other
-client is sent the reply with the tags stripped. The engine is the only thing here that knows a tag.
+The ears and the mouth are two INDEPENDENT settings. `CONJURE_STT` (conjure/stt.py) is Whisper (local,
+segmented) or Grok (xAI, streaming); `CONJURE_TTS` (conjure/tts.py) is Kokoro (local) or Grok (xAI,
+renders speech tags such as [laugh] and <whisper>…</whisper>). Any pairing works. On connect this
+client REGISTERS its TTS engine with the agent server — the tag vocabulary and the prompt guidance for
+it — so the LLM is told what it may write and every other client is sent the reply with the tags
+stripped. The engine is the only thing here that knows a tag.
 
 PipeCat here is only *ears and mouth*: STT, TTS, VAD, end-of-turn detection, and mute-while-speaking
 echo mitigation. A completed spoken turn is sent to the **agent server** over one WebSocket (as the
@@ -31,12 +33,12 @@ from __future__ import annotations
 import asyncio
 import re
 import sys
-import time
 import urllib.request
 from typing import Callable, Optional
 
 from .config import (DEFAULT_USER, VOICE_WAKE_WORDS, WAKE_WORDS, Settings, get_settings,
                      voice_wake_aliases, wake_word_conflict)
+from .stt import HearingProfile, profile_for as hearing_for
 from .stt_corpus import CORPUS_DIR, Corpus, purge as purge_corpus, summary as corpus_summary
 from .tts import SpeechProfile, profile_for
 
@@ -95,12 +97,14 @@ def _agent_reachable(url: str) -> bool:
 
 
 async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional[str] = None,
-               corpus: Optional["Corpus"] = None, profile: Optional[SpeechProfile] = None) -> None:
+               corpus: Optional["Corpus"] = None, profile: Optional[SpeechProfile] = None,
+               hearing: Optional[HearingProfile] = None) -> None:
     profile = profile or profile_for(settings)   # the mouth: which engine, its rate, its tags (conjure/tts.py)
+    hearing = hearing or hearing_for(settings, corpus=corpus is not None)   # the ears (conjure/stt.py)
     # Heavy imports are local so the package stays importable on a base (no-voice) install.
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.audio.vad.vad_analyzer import VADParams
-    from pipecat.frames.frames import TranscriptionFrame, TTSSpeakFrame
+    from pipecat.frames.frames import TTSSpeakFrame
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
     from pipecat.pipeline.task import PipelineTask
@@ -114,8 +118,6 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
     from pipecat.turns.user_mute.always_user_mute_strategy import AlwaysUserMuteStrategy
     from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
     from pipecat.turns.user_turn_strategies import UserTurnStrategies
-    from pipecat.services.whisper.stt import WhisperSTTService
-    from pipecat.transcriptions.language import Language
     from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
 
     import json
@@ -168,7 +170,7 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
     transport = LocalAudioTransport(
         LocalAudioTransportParams(
             audio_in_enabled=True,
-            audio_in_sample_rate=16000,
+            audio_in_sample_rate=hearing.sample_rate,    # the recognizer's rate (16 kHz for both today)
             audio_out_enabled=True,
             audio_out_sample_rate=profile.sample_rate,   # the engine's native rate (24 kHz for both today)
         )
@@ -184,43 +186,10 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
         )
     )
 
-    # `small.en`, not `base`. Measured on an M2 Max over a 12-clip synthetic corpus (see
-    # docs/investigations/stt-accuracy.md): `base` is the MULTILINGUAL model, and passing language=EN
-    # only constrains decoding — it does not buy the English-only weights. WER 8.3% → 2.5%, and
-    # `small.en` was also the only model whose decode time did not blow up on band-limited audio
-    # (faster-whisper re-decodes at a higher temperature when a segment trips its confidence
-    # thresholds, so a small model on a bad mic gets slower and worse together). Costs ~0.9s more per
-    # utterance on CPU. Do not "upgrade" to distil-medium.en — measured worse AND slower.
-    stt_model = "small.en"
-    stt_settings = WhisperSTTService.Settings(model=stt_model, language=Language.EN)
-
-    if corpus is None:
-        stt = WhisperSTTService(settings=stt_settings)
-    else:
-        # Tap `run_stt`: it receives the exact WAV the recognizer saw and yields the text it produced,
-        # so the pair is captured at the one point where both exist. Nothing here may raise into the
-        # pipeline — a diagnostic that can break the thing it is diagnosing is worse than none.
-        class _CorpusWhisperSTTService(WhisperSTTService):
-            async def run_stt(self, audio: bytes):
-                t0 = time.perf_counter()
-                said = ""
-                async for frame in super().run_stt(audio):
-                    if isinstance(frame, TranscriptionFrame):
-                        said = frame.text or ""
-                    yield frame
-                if not said.strip():
-                    return                       # silence / a dropped no-speech segment: nothing to label
-                if not gate_capture():
-                    return
-                try:
-                    await asyncio.to_thread(
-                        corpus.record, audio, hypothesis=said.strip(), model=stt_model,
-                        decode_s=round(time.perf_counter() - t0, 3),
-                        sample_rate=self.sample_rate)
-                except Exception as exc:  # noqa: BLE001 — never cost the user a turn over a dropped clip
-                    print(f"[stt-corpus] could not record clip: {exc}", file=sys.stderr)
-
-        stt = _CorpusWhisperSTTService(settings=stt_settings)
+    # The recognizer, built by its profile; a Whisper profile taps itself for `--stt-corpus` (the
+    # exact WAV it decoded, gated on the session being public). A streaming profile has no WAV to
+    # record, which `hearing_for(corpus=True)` already refused at the door.
+    stt = hearing.build(settings, corpus=corpus, may_record=gate_capture)
 
     tts = profile.build(settings)
 
@@ -309,9 +278,9 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
     runner = PipelineRunner(handle_sigint=True)
 
     listen_task = asyncio.create_task(listen())
-    print(f"🎙️  Conjure voice is listening (agent server {settings.agent_url}; speaking through "
-          f"{profile.description}). Speak to build the world; say 'conjure open shell' then "
-          f"'use <name>' / 'agent <name>' to switch. Ctrl+C to stop.")
+    print(f"🎙️  Conjure voice is listening (agent server {settings.agent_url}; hearing through "
+          f"{hearing.description}; speaking through {profile.description}). Speak to build the world; "
+          f"say 'conjure open shell' then 'use <name>' / 'agent <name>' to switch. Ctrl+C to stop.")
     try:
         await runner.run(task)
     finally:
@@ -385,10 +354,12 @@ def main() -> int:
               f"(which itself needs the world server:  python -m conjure)")
         return 1
 
-    # The engine is checked at the door — an unknown name or a missing key is a one-line fix, and a
-    # pipeline that starts and then fails on the first reply hides which line.
+    # Both engines are checked at the door — an unknown name, a missing key, or a corpus the recognizer
+    # cannot tap is a one-line fix, and a pipeline that starts and then fails on the first utterance
+    # hides which line.
     try:
         profile = profile_for(settings)
+        hearing = hearing_for(settings, corpus=args.stt_corpus)
     except ValueError as exc:
         print(f"{exc}")
         return 1
@@ -404,7 +375,7 @@ def main() -> int:
         print(f"⏺  STT corpus recording to {corpus.root} (input: {corpus.device}). "
               f"Paused while a session is private. Purge: --stt-corpus-purge")
     try:
-        asyncio.run(_run(settings, args.user, args.wake_word, corpus, profile))
+        asyncio.run(_run(settings, args.user, args.wake_word, corpus, profile, hearing))
     except KeyboardInterrupt:
         print("\nStopped.")
     except ImportError as exc:

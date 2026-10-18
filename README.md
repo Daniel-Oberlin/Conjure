@@ -119,7 +119,8 @@ At least one of `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` / `XAI
 for the director (set more to grow the roster; `GOOGLE`/`OPENAI`/`XAI` also enable image generators).
 Speech (Whisper STT,
 Kokoro TTS) runs **locally** — no keys; `CONJURE_TTS=grok` swaps in xAI's Grok TTS (expressive speech
-tags, needs `XAI_API_KEY`). Full prerequisites + the doctor:
+tags) and `CONJURE_STT=grok` its streaming recognizer, independently (both need `XAI_API_KEY`). Full
+prerequisites + the doctor:
 [docs/running.md](./docs/running.md). Provider options: [docs/providers.md](./docs/providers.md).
 
 > **Audio note:** use **earbuds**. On an open room mic+speaker the director's own TTS feeds back

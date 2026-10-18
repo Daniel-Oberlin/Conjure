@@ -228,8 +228,8 @@ Each entry: symptom → cause → fix → knob → commit.
 - **Effect:** WER 8.3% → 2.5% on the bench corpus (10 errors → 3); ~0.9 s more per utterance on CPU.
   Also removes the temperature-fallback behaviour that made small models slower *and* worse on degraded
   audio (§2.3).
-- **Knob:** `conjure/voice.py` — the `WhisperSTTService.Settings(model=...)` line. Not yet
-  config-driven; `CONJURE_STT` exists but `voice.py` does not read it (backlog).
+- **Knob:** `conjure/stt.py` — `WHISPER_MODEL`, a constant by design (measured, not configured).
+  `CONJURE_STT` now picks the *engine* (whisper | grok), not the Whisper model.
 - **Commit:** `b7be8de`
 
 ## Related

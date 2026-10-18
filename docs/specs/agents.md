@@ -1237,7 +1237,7 @@ The **one** client-side special case is the quit words (`:q`, `quit`, `exit`, `b
 ### Voice (`voice.py`)
 
 ```
-mic → Silero VAD → Whisper STT → WebSocket → agent server → WebSocket → TTS (Kokoro | Grok) → speaker
+mic → Silero VAD → STT (Whisper | Grok) → WebSocket → agent server → WebSocket → TTS (Kokoro | Grok) → speaker
 ```
 
 PipeCat is only **ears and mouth**: STT, TTS, VAD, end-of-turn detection, and mute-while-speaking echo

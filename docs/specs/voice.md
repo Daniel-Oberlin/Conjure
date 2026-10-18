@@ -11,9 +11,10 @@ ruled out live in [`docs/investigations/stt-accuracy.md`](../investigations/stt-
 `conjure/voice.py` is a **thin client**. It owns a microphone, a speaker, and the machinery to decide
 when you have finished a sentence. It owns no conversation.
 
-It owns one key, when the mouth is a cloud engine: `CONJURE_TTS=grok` needs `XAI_API_KEY` here, because
-this process is what calls the engine. That is the one exception to "keys live with the agent server",
-and a narrow one — the key buys audio, never a conversation (§5).
+It owns one key, when either end is a cloud engine: `CONJURE_STT=grok` or `CONJURE_TTS=grok` needs
+`XAI_API_KEY` here, because this process is what streams audio to the engine. That is the one exception
+to "keys live with the agent server", and a narrow one — the key buys audio, never a conversation
+(§4, §5).
 
 A completed spoken turn goes over one WebSocket to the **agent server**, which owns the shell, the
 shared transcript, the LLM roster, the Director, and the world-editing tools
@@ -36,7 +37,7 @@ shared-room-device default).
 ```
 transport.input()      mic — LocalAudioTransport, 16 kHz in
   → vad                Silero VAD; emits the speaking frames everything downstream keys off
-  → stt                Whisper (faster-whisper), utterance-segmented
+  → stt                the engine `CONJURE_STT` names (§4) — Whisper (segmented) or Grok (streaming)
   → aggregator.user()  end-of-turn detection + mute-while-speaking
   → bridge             VoiceBridge — submits turns to the agent server, speaks its replies
   → tts                the engine `CONJURE_TTS` names (§5) — Kokoro or Grok, 24 kHz out
@@ -79,6 +80,30 @@ this measurably hurts is **untested** — see the investigation.
 
 ## 4. Speech-to-text
 
+**The engine is `CONJURE_STT`**, resolved by `conjure/stt.py` into a **hearing profile** — the mirror
+of the speech profiles in §5, and **independent of `CONJURE_TTS`**: Whisper with Grok speech, Grok
+hearing with Kokoro, either engine for both.
+
+| `CONJURE_STT` | Engine | Shape | `--stt-corpus` | Needs |
+|---|---|---|---|---|
+| `whisper` (default) | faster-whisper `small.en`, local | segmented — decodes each utterance whole | yes | the `[voice]` extra |
+| `grok` | xAI Grok STT over `wss://api.x.ai/v1/stt`, 16 kHz PCM, `grok-voice-transcribe-2.0` | streaming — transcripts form while you speak | **refused** | `XAI_API_KEY` |
+
+An unknown name, Grok without its key, or `--stt-corpus` with a streaming engine is refused **at
+startup** with the fix in the message. `conjure-doctor` reports the same check.
+
+**Streaming changes what "segmentation" means.** With Grok, audio goes to the engine continuously and
+the engine's own endpointing (server default 400 ms of silence) marks `speech_final`; interim results
+arrive about every half second. Our VAD still runs — the turn aggregator keys off *its* speaking frames,
+and that is what decides when a turn is submitted (§3's 0.8 s) — but no WAV is ever assembled, so
+the corpus tap (§9) has nothing to record. The §3 description below is the **Whisper** shape.
+
+Note also that `AlwaysUserMuteStrategy` mutes *transcripts* while the bot speaks, not the microphone:
+with a streaming engine the bot's own speech is still streamed and billed. Earbuds remain the assumption
+(§6).
+
+### 4.1 Whisper
+
 ```python
 WhisperSTTService(settings=WhisperSTTService.Settings(model="small.en", language=Language.EN))
 ```
@@ -101,9 +126,9 @@ warning and the GPU stays idle. That is the current, known state — not a targe
 Whisper's own `no_speech_prob` filter (pipecat default 0.4) drops segments the model judges to be
 non-speech, which is what suppresses the classic hallucinated "Thank you." on silence.
 
-The model is **hardcoded**. `Settings.stt` / `CONJURE_STT` exists in
-[`config.md`](./config.md) and is read by `conjure/doctor.py`, but `voice.py` does not consult it —
-selecting a different STT backend today means editing this line.
+The model name is a constant (`stt.WHISPER_MODEL`), not a setting: it was chosen by measurement and
+the alternatives were ruled out by the same measurement. A different Whisper backend (MLX, for the
+turbo model) is a profile row in `conjure/stt.py`, not an edit to the pipeline.
 
 ## 5. Text-to-speech
 
@@ -217,7 +242,7 @@ temp/stt-corpus/
   truth.tsv                       the labels   — HUMAN, hand-edited
 ```
 
-**The tap is `run_stt`**, subclassed in `voice.py`: it receives the exact WAV the recognizer saw and
+**The tap is `run_stt`**, subclassed in the Whisper profile (`conjure/stt.py`): it receives the exact WAV the recognizer saw and
 yields the text it produced, so the pair is captured at the one point where both exist. Recording runs
 off-thread and swallows its own errors — a diagnostic that can break the thing it diagnoses is worse
 than none.
@@ -267,16 +292,18 @@ without pipecat or a microphone (`tests/test_stt_corpus.py`) — including that 
 an unknown `reviewed` marker reads as *not* reviewed, and that tabs in a hypothesis cannot break the
 TSV.
 
-The speech profiles are pure and tested without pipecat (`tests/test_tts.py`): the two engines, the
-startup refusals, and that Grok's registration carries every tag its prompt mentions. The stripper is
+The speech and hearing profiles are pure and tested without pipecat (`tests/test_tts.py`,
+`tests/test_stt.py`): the engines, the startup refusals, that the ears and the mouth resolve
+independently in every pairing, that the corpus is refused for a streaming recognizer, and that Grok's
+TTS registration carries every tag its prompt mentions. The stripper is
 tested in `tests/test_speech.py`; the registration protocol, the per-connection rendering and the
 re-bind survival in `tests/test_agent_server.py`; the `{speech}` injection in `tests/test_director.py`.
 
 The real-time pipeline is not unit-tested. The **Tier-2 contract test** asserts the pipecat classes we
 construct still have the shapes we call ([`testing.md`](../testing.md)) — including that
 `WhisperSTTService.run_stt` is still an async generator taking `audio`, since `--stt-corpus` taps it
-and drift there would stop recording *silently*, and that `XAIHttpTTSService` still takes `api_key` and
-`settings=`.
+and drift there would stop recording *silently*, and that `XAIHttpTTSService` / `XAISTTService` still
+take `api_key` and `settings=`.
 
 Accuracy itself is still covered by no automated test; that is what a labelled corpus exists to make
 possible.
