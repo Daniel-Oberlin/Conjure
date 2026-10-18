@@ -873,3 +873,50 @@ async def test_a_spoken_open_shell_with_a_full_stop_still_opens_it():
     assert voice.in_shell is True
     await _handle_turn(app, cli, "conjure open shell.")                # typed: taken literally, not a toggle
     assert cli.in_shell is False
+
+
+# --------------------------------------------------------------------------- barge-in (C3b)
+
+def test_interrupt_cancels_only_this_connections_turn_and_re_arms_the_prompt():
+    """A client's `interrupt` cancels its in-flight turn: the floor is released, everyone is told who
+    interrupted, the interrupter gets `interrupted`, and `turn_done` still fires exactly once."""
+    import time
+
+    from fastapi.testclient import TestClient
+
+    shell = FakeShell()
+    started = asyncio.Event()
+
+    async def slow_handle(text, *, speaker, on_text=None, on_tool=None):
+        started.set()
+        if on_text:
+            await on_text("thinking…", final=False, speaker="Claude")
+        await asyncio.sleep(30)                                   # a long LLM turn
+        if on_text:
+            await on_text("never", final=True, speaker="Claude")
+
+    shell.director.handle = slow_handle
+    app = build_app(get_settings(), shell=shell)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws?user=alice&client=voice&backlog=0") as ws:
+            assert ws.receive_json()["type"] == "context"
+            ws.send_json({"type": "turn", "text": "make a dragon"})
+            seen = [ws.receive_json(), ws.receive_json()]          # user_turn, assistant_delta
+            assert [e["type"] for e in seen] == ["user_turn", "assistant_delta"]
+            ws.send_json({"type": "interrupt"})
+            events = []
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                ev = ws.receive_json()
+                events.append(ev)
+                if ev["type"] == "turn_done":
+                    break
+            kinds = [e["type"] for e in events]
+            assert "interrupted" in kinds
+            assert any(e["type"] == "notice" and "interrupted" in e["text"] for e in events)
+            assert kinds.count("turn_done") == 1 and kinds[-1] == "turn_done"
+            assert app.state.turn_active is False
+            # …and the floor is really free: the next line runs instead of answering busy.
+            ws.send_json({"type": "turn", "text": "conjure open shell"})
+            nxt = ws.receive_json()
+            assert nxt["type"] != "busy"

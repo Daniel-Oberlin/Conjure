@@ -1626,6 +1626,7 @@ async def index() -> HTMLResponse:
                         f"window.CONJURE_BEAM_TRIGGER={settings.beam_trigger};"
                         f"window.CONJURE_BINDINGS={settings.bindings};"
                         f'window.CONJURE_OCCLUSION="{settings.occlusion}";'
+                        f'window.CONJURE_VOICE_ACTIVATION="{settings.voice_activation}";'
                         f'window.CONJURE_WORKER_URL="/static/space-worker.js?v={v}";</script>\n  </head>')
     return HTMLResponse(html, headers=_NO_STORE)
 
@@ -6212,6 +6213,62 @@ async def skybox_from_image(req: SkyboxFromSceneRequest) -> dict:
     await _broadcast({"type": "patch", "patch": patch})
     return {"ok": True, "sky": new.url, "image_id": new.id,
             "provider": new.provider, "model": new.model, "w": new.w, "h": new.h}
+
+
+@app.websocket("/audio")
+async def audio_relay(websocket: WebSocket) -> None:
+    """The headset's AUDIO socket, relayed to the voice server (docs/specs/voice.md §11).
+
+    The page reaches one origin — this server — on every serving tier (adb reverse forwards one port, a
+    cloudflared tunnel has one URL), so the voice server's `/audio` is reached through here rather than
+    on a second port the headset would have to be told about. Stateless: bytes in both directions, text
+    and binary alike, until either side closes. The pipeline, the identity and everything that matters
+    live on the far end (`conjure.voice --serve`); this process stays ML-free and off the audio path
+    except as a pipe. If the voice server is not up the page is told so and the socket closes — the
+    same preflight shape the voice client gives the agent server."""
+    import websockets
+    from starlette.websockets import WebSocketState
+
+    await websocket.accept()
+    base = settings.voice_url.replace("https://", "wss://").replace("http://", "ws://").rstrip("/")
+    query = websocket.scope.get("query_string", b"").decode()
+    url = f"{base}/audio" + (f"?{query}" if query else "")
+    try:
+        upstream = await websockets.connect(url, max_size=None)
+    except Exception:  # noqa: BLE001 — not running, or unreachable
+        await websocket.send_json({"type": "notice", "text": "The voice server isn't running "
+                                   "(python -m conjure.voice --serve)."})
+        await websocket.close()
+        return
+
+    async def down() -> None:                          # voice server → headset
+        async for msg in upstream:
+            if isinstance(msg, bytes):
+                await websocket.send_bytes(msg)
+            else:
+                await websocket.send_text(msg)
+
+    async def up() -> None:                            # headset → voice server
+        while True:
+            msg = await websocket.receive()
+            if msg.get("type") == "websocket.disconnect":
+                return
+            if msg.get("bytes") is not None:
+                await upstream.send(msg["bytes"])
+            elif msg.get("text") is not None:
+                await upstream.send(msg["text"])
+
+    pumps = [asyncio.create_task(down()), asyncio.create_task(up())]
+    try:
+        await asyncio.wait(pumps, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for p in pumps:
+            p.cancel()
+        with contextlib.suppress(Exception):
+            await upstream.close()
+        if websocket.client_state == WebSocketState.CONNECTED:
+            with contextlib.suppress(Exception):
+                await websocket.close()
 
 
 @app.websocket("/ws")

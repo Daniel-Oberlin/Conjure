@@ -34,7 +34,7 @@ PROJECT_CACHE = ROOT / ".cache"
 DEFAULT_BINDINGS = ('{"select":["trigger","pinch"],"grab":["grip","grasp"],'
                     '"resize":["trigger","pinch"],"reel":"right.stickY",'
                     '"yaw":"right.stickX","pitch":"left.stickY","bank":"left.stickX","mark":"b",'
-                    '"surfaces":"a"}')
+                    '"surfaces":"a","talk":"stickPress"}')
 
 # The default logged-in user when none is specified (--user / the /tunnel/<user> route).
 # No security — users are identity only (docs/specs/spaces.md).
@@ -346,6 +346,12 @@ class Settings:
     # existing Settings(...) constructions stay valid. (Wired in conjure.llm's ROSTER table.)
     agent_url: str = "http://localhost:8770"         # the agent server thin clients (cli/voice) talk to
                                                      # (docs/specs/agents.md §11); mirrors world_url one hop up
+    voice_url: str = "http://localhost:8771"         # the voice SERVER (`conjure.voice --serve`); the world
+                                                     # server relays a headset's /audio socket here
+                                                     # (docs/specs/voice.md §11). Boot-tier on both.
+    voice_activation: str = "ptt"                    # how a headset's mic reaches the voice server: ptt (hold
+                                                     # the `talk` action — decision #5's shared-mode default)
+                                                     # | open (always streaming; solo mode) | off (no mic)
     gemini_model: str = "gemini-2.5-flash"           # Gemini director model
     openai_director_model: str = "gpt-4.1"           # OpenAI ("Chat") director model
     openai_image_model: str = "gpt-image-1"          # OpenAI image generator model
@@ -570,6 +576,8 @@ def get_settings() -> Settings:
         port=int(os.environ.get("CONJURE_PORT", "8080")),
         world_url=os.environ.get("CONJURE_URL", "http://localhost:8080"),
         agent_url=os.environ.get("CONJURE_AGENT_URL", "http://localhost:8770"),
+        voice_url=os.environ.get("CONJURE_VOICE_URL", "http://localhost:8771"),
+        voice_activation=(os.environ.get("CONJURE_VOICE_ACTIVATION", "ptt").strip().lower() or "ptt"),
         gemini_model=os.environ.get("CONJURE_GEMINI_MODEL", "gemini-2.5-flash"),
         openai_director_model=os.environ.get("CONJURE_OPENAI_DIRECTOR_MODEL", "gpt-4.1"),
         openai_image_model=os.environ.get("CONJURE_OPENAI_IMAGE_MODEL", "gpt-image-1"),
@@ -690,6 +698,7 @@ SETTABLE: dict[str, tuple[str, str]] = {
     # -- client: stored now, applied when the headset next loads
     "foveation":             ("client", "0..1 peripheral render reduction; higher = cheaper, blurrier edges"),
     "occlusion":             ("client", "real-world depth occlusion: off | hands | hands-solid"),
+    "voice_activation":      ("client", "headset mic: ptt (hold `talk`) | open (always on) | off"),
     "pose_tau":              ("client", "seconds of pose smoothing; 0 snaps"),
     "geo_slice_ms":          ("client", "per-frame budget for mesh rebuilds"),
     "capture_interval":      ("client", "seconds between room recaptures"),
@@ -730,6 +739,7 @@ LIMITS: dict[str, tuple[float, float]] = {
 }
 CHOICES: dict[str, tuple[str, ...]] = {
     "occlusion": ("off", "hands", "hands-solid"),
+    "voice_activation": ("ptt", "open", "off"),
     "void_origin": ("centres", "corners"),
 }
 # The six env names that don't follow `CONJURE_<FIELD>`. All are secrets or boot-tier, so none is

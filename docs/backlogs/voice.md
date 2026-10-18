@@ -28,7 +28,7 @@ Ordered by how much they constrain the design, not by when they arrive.
 | 1 | **Bluetooth earbuds** (AirPods Pro) while moving around the room | HFP voice path — band-limited, denoised in the earbud, unreachable DSP | today's primary |
 | 2 | **Bluetooth speakerphone**, multi-mic, hands-free at desk or table | HFP voice path; device-side beamforming + AGC | today, secondary |
 | 3 | **Built-in Mac microphone** | 48 kHz wideband, minimally processed | dev and **bench reference** only |
-| 4 | **Quest audio streaming** — capture in the headset browser, stream to the host | WiFi, Opus, wideband; browser DSP is *reachable* | wanted, not built |
+| 4 | **Quest audio streaming** — capture in the headset browser, stream to the host | WiFi, raw PCM over the page's own socket, wideband; browser DSP is *reachable* | **built** 2026-10-18 (spec §11); awaiting its first headset session |
 | 5 | **2.4 GHz USB wireless microphone** (lav-style receiver) | USB audio class, wideband, light processing | untried; would satisfy portability without Bluetooth |
 
 All five must keep working. Case 4 is the one worth designing toward rather than merely allowing,
@@ -294,10 +294,20 @@ row**, not an edit. Two things the STT seam left open:
   Scoring Grok against the corpus therefore means the scorer running clips through the REST
   `POST /v1/stt`, which is also the shape the scorer wants for every other candidate.
 
-One seam is still wanted:
+**The transport seam is built too** (2026-10-18, `conjure/transport.py`): `local` and `websocket`
+profiles, the second one serving a headset's page through the world server's `/audio` relay (spec §11).
+The host end was exercised end to end with a browser stand-in; what is still owed is the headset:
 
-- **Transport** — local microphone today, Quest audio later, same pipeline downstream. This is the one
-  that is expensive to retrofit and cheap to allow for now.
+- **Spike 1** — mic capture inside `immersive-ar`, and how much AEC3 removes on open-air speakers.
+  `/static/audio-spike.html`, results in `temp/conjure.log`. Decides whether `open` activation and
+  VAD-driven barge-in are usable on a headset; `ptt` is the default until then.
+- **Render-loop cost** of the two worklets and the socket — `--debug-jitter` with the link up.
+- **Push-to-talk on a real controller** (`talk` = `stickPress` by default) and a hand gesture for it:
+  `poke` is the free vocabulary, and whether poke-to-talk feels right is a headset question.
+- **Before the third headset:** one Whisper model shared across pipelines; a speech cache keyed on
+  `(engine, voice, text)` so a reply is synthesised once.
+- **Opus over the socket** (WebCodecs `AudioEncoder`, Chromium ≥ 94) when a headset sits behind a
+  tunnel; **WebRTC** (`SmallWebRTCTransport`) as the third profile for a remote participant.
 
 Cheaper than it first appeared: pipecat already ships `SmallWebRTCTransport`, an **`aiortc`-based,
 self-hosted** WebRTC peer. The Quest browser is one end, the host is the other, and no cloud service is

@@ -1,0 +1,145 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Conjure audio spike</title>
+<style>
+  body { font: 15px/1.5 -apple-system, sans-serif; margin: 16px; background: #10161e; color: #dfe7ef; max-width: 820px; }
+  button { font: inherit; padding: 10px 16px; margin: 4px 6px 4px 0; border-radius: 8px; border: 0; background: #1a8cff; color: #fff; }
+  button:disabled { opacity: .4; }
+  table { border-collapse: collapse; margin-top: 10px; } td, th { border: 1px solid #334; padding: 4px 10px; text-align: left; }
+  #log { white-space: pre-wrap; font: 12px/1.4 monospace; background: #000; padding: 8px; margin-top: 12px; max-height: 40vh; overflow: auto; }
+  label { margin-right: 14px; }
+</style>
+</head>
+<body>
+<h2>Audio spike 1 — mic in the headset browser</h2>
+<p>Answers two questions from <code>temp/plans/quest-audio-streaming-2026-10-18.md</code>: does microphone
+capture keep running inside an <code>immersive-ar</code> session, and how much does the browser's echo
+canceller remove of a sound this page plays through its own speakers. Every result line is also POSTed to
+<code>/client_log</code> (tag <code>audio-spike</code>) so it can be read from <code>temp/conjure.log</code>
+after you take the headset off.</p>
+
+<p>
+  <label><input type="checkbox" id="aec" checked> echoCancellation</label>
+  <label><input type="checkbox" id="ns"> noiseSuppression</label>
+  <label><input type="checkbox" id="agc"> autoGainControl</label>
+</p>
+<p>
+  <button id="mic">1. Request mic</button>
+  <button id="measure" disabled>2. Measure echo (plays a 3 s tone)</button>
+  <button id="ar" disabled>3. Enter AR + measure in-session</button>
+  <button id="all" disabled>4. Run all 4 constraint combos</button>
+</p>
+<table id="results"><tr><th>where</th><th>aec</th><th>ns</th><th>agc</th><th>rate</th><th>frames/s</th><th>floor dBFS</th><th>during-tone dBFS</th><th>residual dB</th><th>worklet gaps</th></tr></table>
+<div id="log"></div>
+
+<script>
+(function () {
+  var logEl = document.getElementById("log");
+  function log(m) {
+    var line = new Date().toISOString().slice(11, 23) + " " + m;
+    logEl.textContent += line + "\n"; logEl.scrollTop = 1e9; console.log("[audio-spike] " + m);
+    try { fetch("/client_log", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tag: "audio-spike", msg: m }) }).catch(function () {}); } catch (e) {}
+  }
+  var ctx, stream, tap, meter = { n: 0, sum: 0, frames: 0, gaps: 0, last: 0 };
+  var WORKLET = [
+    "class Tap extends AudioWorkletProcessor {",
+    "  constructor(){ super(); this.last=0; }",
+    "  process(inputs){ var ch=inputs[0]&&inputs[0][0]; if(!ch) return true; var s=0; for(var i=0;i<ch.length;i++) s+=ch[i]*ch[i];",
+    "    var t=currentTime; var gap = this.last && (t-this.last) > (ch.length/sampleRate)*2.5; this.last=t;",
+    "    this.port.postMessage({ sum:s, n:ch.length, gap:gap }); return true; } }",
+    "registerProcessor('spike-tap', Tap);"].join("\n");
+
+  function cons() {
+    return { audio: { echoCancellation: document.getElementById("aec").checked,
+                      noiseSuppression: document.getElementById("ns").checked,
+                      autoGainControl: document.getElementById("agc").checked, channelCount: 1 } };
+  }
+  function settingsOf(st) { var t = st.getAudioTracks()[0]; return t && t.getSettings ? t.getSettings() : {}; }
+
+  async function requestMic() {
+    if (!ctx) {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      var url = URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" }));
+      await ctx.audioWorklet.addModule(url);
+    }
+    if (ctx.state !== "running") await ctx.resume();
+    if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
+    stream = await navigator.mediaDevices.getUserMedia(cons());
+    var st = settingsOf(stream);
+    log("mic granted: ctx.sampleRate=" + ctx.sampleRate + " aec=" + st.echoCancellation + " ns=" + st.noiseSuppression + " agc=" + st.autoGainControl + " state=" + ctx.state);
+    if (tap) tap.disconnect();
+    tap = new AudioWorkletNode(ctx, "spike-tap", { numberOfInputs: 1, numberOfOutputs: 0 });
+    ctx.createMediaStreamSource(stream).connect(tap);
+    tap.port.onmessage = function (e) { meter.sum += e.data.sum; meter.n += e.data.n; meter.frames++; if (e.data.gap) meter.gaps++; };
+    return st;
+  }
+
+  function reset() { meter = { n: 0, sum: 0, frames: 0, gaps: 0 }; }
+  function dbfs() { return meter.n ? (10 * Math.log10(meter.sum / meter.n + 1e-12)).toFixed(1) : "—"; }
+  function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  // Play 3 s of a loud, broadband-ish signal through the page: three tones plus a slow chirp, so the
+  // canceller has something harder than a pure sine and the number means something for speech.
+  function playTone(secs) {
+    var g = ctx.createGain(); g.gain.value = 0.5; g.connect(ctx.destination);
+    [220, 440, 880].forEach(function (f) { var o = ctx.createOscillator(); o.type = "sawtooth"; o.frequency.value = f; var gg = ctx.createGain(); gg.gain.value = 0.25; o.connect(gg); gg.connect(g); o.start(); o.stop(ctx.currentTime + secs); });
+    var c = ctx.createOscillator(); c.frequency.setValueAtTime(300, ctx.currentTime); c.frequency.linearRampToValueAtTime(3000, ctx.currentTime + secs); var cg = ctx.createGain(); cg.gain.value = 0.3; c.connect(cg); cg.connect(g); c.start(); c.stop(ctx.currentTime + secs);
+  }
+
+  async function measure(where) {
+    var st = settingsOf(stream);
+    reset(); await wait(2000);                                  // 2 s of quiet: the floor
+    var floor = dbfs(), floorFrames = meter.frames / 2;
+    reset(); playTone(3); await wait(3000);                      // 3 s with the tone playing
+    var during = dbfs(), frames = meter.frames / 3, gaps = meter.gaps;
+    var residual = (parseFloat(during) - parseFloat(floor)).toFixed(1);
+    var row = [where, st.echoCancellation, st.noiseSuppression, st.autoGainControl, ctx.sampleRate, frames.toFixed(0), floor, during, residual, gaps];
+    var tr = document.createElement("tr"); row.forEach(function (v) { var td = document.createElement("td"); td.textContent = v; tr.appendChild(td); });
+    document.getElementById("results").appendChild(tr);
+    log("result " + where + " aec=" + st.echoCancellation + " ns=" + st.noiseSuppression + " agc=" + st.autoGainControl +
+        " rate=" + ctx.sampleRate + " frames/s=" + frames.toFixed(0) + " (quiet " + floorFrames.toFixed(0) + ") floor=" + floor + " dBFS during-tone=" + during + " dBFS residual=" + residual + " dB gaps=" + gaps);
+    return residual;
+  }
+
+  document.getElementById("mic").onclick = function () {
+    requestMic().then(function () { ["measure", "ar", "all"].forEach(function (id) { document.getElementById(id).disabled = false; }); })
+      .catch(function (e) { log("mic refused: " + e); });
+  };
+  document.getElementById("measure").onclick = function () { measure("2d").catch(function (e) { log("measure failed: " + e); }); };
+  document.getElementById("all").onclick = async function () {
+    var combos = [[true, false, false], [false, false, false], [true, true, false], [true, true, true]];
+    for (var i = 0; i < combos.length; i++) {
+      document.getElementById("aec").checked = combos[i][0]; document.getElementById("ns").checked = combos[i][1]; document.getElementById("agc").checked = combos[i][2];
+      try { await requestMic(); await measure("2d"); } catch (e) { log("combo failed: " + e); }
+    }
+    log("all combos done");
+  };
+
+  // The in-session test: enter immersive-ar from THIS gesture (the mic is already granted), then
+  // measure while the session runs. The DOM is invisible in-session, so the log is the result.
+  document.getElementById("ar").onclick = async function () {
+    if (!navigator.xr) { log("no WebXR"); return; }
+    var ok = await navigator.xr.isSessionSupported("immersive-ar").catch(function () { return false; });
+    if (!ok) { log("immersive-ar not supported here"); return; }
+    var session;
+    try { session = await navigator.xr.requestSession("immersive-ar", { optionalFeatures: ["local-floor"] }); }
+    catch (e) { log("requestSession failed: " + e); return; }
+    log("immersive-ar session started; ctx.state=" + ctx.state + " track=" + (stream.getAudioTracks()[0].readyState));
+    var gl = document.createElement("canvas").getContext("webgl", { xrCompatible: true });
+    await gl.makeXRCompatible();
+    session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+    var frames = 0; session.requestAnimationFrame(function loop(t, f) { frames++; if (session) session.requestAnimationFrame(loop); });
+    reset(); await wait(2000);
+    log("in-session: mic frames in 2 s = " + meter.frames + " (0 means capture stopped in-session), ctx.state=" + ctx.state + " xr frames=" + frames);
+    try { await measure("immersive-ar"); } catch (e) { log("in-session measure failed: " + e); }
+    log("in-session test done — ending session");
+    var s = session; session = null; await s.end();
+  };
+})();
+</script>
+</body>
+</html>

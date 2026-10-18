@@ -99,12 +99,14 @@ literal separately, and adding an action to one left the running server serving 
 ```json
 {"select": ["trigger", "pinch"], "grab": ["grip", "grasp"], "resize": ["trigger", "pinch"],
  "reel": "right.stickY", "yaw": "right.stickX", "pitch": "left.stickY", "bank": "left.stickX",
- "mark": "b", "surfaces": "a"}
+ "mark": "b", "surfaces": "a", "talk": "stickPress"}
 ```
 
-The last two are diagnostics rather than interaction: `mark` writes the geometry ground-truth probe
-([`spaces-geometry.md` §10.3](./spaces-geometry.md)) and `surfaces` cycles the surface debug overlay's
-layers (§11 there).
+`mark` and `surfaces` are diagnostics rather than interaction: `mark` writes the geometry ground-truth
+probe ([`spaces-geometry.md` §10.3](./spaces-geometry.md)) and `surfaces` cycles the surface debug
+overlay's layers (§11 there). `talk` is the headset's push-to-talk ([`voice.md`](./voice.md) §11) —
+`stickPress` because it is the one controller control nothing else claims; it has no hand control yet
+(`poke` is the candidate).
 
 **A binding may name SEVERAL controls, and the largest wins.** That is the whole of what it takes for
 one action to mean one thing on a controller *and* on a tracked hand: a controller's `pinch` is 0 and a

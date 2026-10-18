@@ -965,6 +965,7 @@ ws://<agent_url>/ws?user=<name>&client=cli|voice&backlog=0|1&shell=0|1
 
 client → server   {type:"turn", text}                    # one line: an utterance OR a command
                   {type:"register", speech:{engine, tags, prompt}}   # what this client can RENDER (§5.3)
+                  {type:"interrupt"}                                # barge-in: cancel MY in-flight turn
 server → client   {type:"context", …}                    # this connection's state — DATA, not a prompt
                   {type:"user_turn"|"assistant_delta"|"assistant_final"|"tool_call", …}
                   {type:"notice"|"busy"|"turn_done", …}
@@ -977,6 +978,11 @@ server → client   {type:"context", …}                    # this connection's
 - **`register` is not a line.** It is handled between turns, needs no floor, and produces no event —
   not even a `turn_done`. It replaces this connection's earlier registration; the server forgets it
   with the connection, so a reconnecting client sends it again.
+- **`interrupt` cancels this connection's in-flight turn** (C3b): the task is cancelled, the floor
+  released, everyone sees a *[user interrupted]* notice, the interrupter gets `interrupted`, and the
+  one `turn_done` still fires. Another connection's turn is not yours to cancel; `interrupt` with nothing
+  in flight does nothing. The headset's push-to-talk-while-speaking is what sends it
+  ([`voice.md`](./voice.md) §11).
 - `busy` is the single floor rejecting a concurrent turn. It is **always paired with a `turn_done`** —
   the gate has to re-arm, or a refusal wedges the prompt just as surely as the wait it replaced.
 - **The receive loop reads ahead.** A submitted line runs as a task and the loop goes straight back to

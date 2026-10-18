@@ -1085,7 +1085,12 @@ is playing → cancel the in-flight turn and take the new utterance.
 **Why shelved:** voice landed as a thin WebSocket client (C3a) with mute-while-speaking; barge-in is a
 UX polish, not required for the shared-conversation goal.
 
-**Proposed fix:** the WebSocket protocol already reserves a `{type:"interrupt"}` client→server message.
+**Server half built 2026-10-18** (specs/agents.md §8.1): `interrupt` cancels the sender's in-flight
+task, releases the floor, announces it, and still fires one `turn_done`. The headset voice link sends it
+on push-to-talk-while-speaking (specs/voice.md §11) — a deliberate gesture, which needs no echo
+handling. The VAD-driven form below still waits on the echo measurement (spike 1 there).
+
+**Proposed fix (as designed):** the WebSocket protocol already reserves a `{type:"interrupt"}` client→server message.
 Wiring it: (1) the agent server must run each turn as a **cancellable task** (not awaited inline in the
 connection's receive loop) so the loop stays responsive mid-turn; on `interrupt`, cancel that task, emit
 `interrupted`+`turn_done`, release the floor. (2) voice: turn OFF mute-while-speaking (or gate it), and on

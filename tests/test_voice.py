@@ -88,3 +88,42 @@ def test_a_shell_word_hidden_inside_a_list_is_still_refused():
     import pytest
     with pytest.raises(SystemExit, match="unreachable"):
         _make_wake_gate("computer,conjure")
+
+
+# --------------------------------------------------------------------------- the voice server (/audio)
+
+def test_audio_socket_runs_one_pipeline_per_connection_as_that_user():
+    """`/audio?user=` is accepted, answered `ready` with the TTS rate, counted while open, and the
+    pipeline it started is cancelled when the browser goes. The pipeline is a stand-in here — the real
+    one loads the recognizer — but the transport it is handed is the real websocket one."""
+    import asyncio
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from conjure.config import get_settings
+    from conjure.voice import build_voice_app
+
+    seen: list = []
+
+    async def fake_pipeline(settings, *, user, transport, ready=None, label="", **kw):
+        seen.append((user, type(transport).__name__, label))
+        ready.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            seen.append(("cancelled", user))
+            raise
+
+    app = build_voice_app(get_settings(), pipeline=fake_pipeline)
+    with TestClient(app) as c:
+        with c.websocket_connect("/audio?user=alice") as ws:
+            assert ws.receive_json() == {"type": "ready", "out_rate": 24000}
+            assert c.get("/health").json()["connections"] == 1
+            assert seen[0] == ("alice", "FastAPIWebsocketTransport", "alice")
+        for _ in range(100):                                   # the disconnect lands in the finally
+            if ("cancelled", "alice") in seen:
+                break
+            time.sleep(0.02)
+        assert ("cancelled", "alice") in seen
+        assert c.get("/health").json()["connections"] == 0

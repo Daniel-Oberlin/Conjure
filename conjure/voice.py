@@ -36,10 +36,18 @@ import sys
 import urllib.request
 from typing import Callable, Optional
 
+# fastapi is a core dependency (the world and agent servers), so the voice server's two routes import it
+# at module level — and they MUST: this file uses `from __future__ import annotations`, so a `WebSocket`
+# annotation is a string FastAPI resolves against the module's globals. Imported inside the builder it
+# resolved to nothing, and FastAPI quietly treated the socket as a required QUERY parameter (every
+# handshake answered 1008 "field required: websocket") — found by spying on the ASGI messages.
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+
 from .config import (DEFAULT_USER, VOICE_WAKE_WORDS, WAKE_WORDS, Settings, get_settings,
                      voice_wake_aliases, wake_word_conflict)
 from .stt import HearingProfile, profile_for as hearing_for
 from .stt_corpus import CORPUS_DIR, Corpus, purge as purge_corpus, summary as corpus_summary
+from .transport import PROFILES as TRANSPORTS
 from .tts import SpeechProfile, profile_for
 
 # PipeCat pipeline idle timeout (seconds). Prevents idle-timeout warnings after inactivity.
@@ -96,20 +104,26 @@ def _agent_reachable(url: str) -> bool:
         return False
 
 
-async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional[str] = None,
-               corpus: Optional["Corpus"] = None, profile: Optional[SpeechProfile] = None,
-               hearing: Optional[HearingProfile] = None) -> None:
+async def run_pipeline(settings: Settings, *, user: str, transport, wake_word: Optional[str] = None,
+                       corpus: Optional["Corpus"] = None, profile: Optional[SpeechProfile] = None,
+                       hearing: Optional[HearingProfile] = None, handle_sigint: bool = True,
+                       ready: Optional[asyncio.Event] = None, label: str = "") -> None:
+    """ONE voice pipeline, on `transport`, acting as `user`. The host-mic client runs one of these; the
+    voice server runs one per headset connection. Everything between the transport's two ends is the same
+    chain: VAD → STT profile → turn aggregator → bridge (its own agent-server socket) → TTS profile."""
     profile = profile or profile_for(settings)   # the mouth: which engine, its rate, its tags (conjure/tts.py)
     hearing = hearing or hearing_for(settings, corpus=corpus is not None)   # the ears (conjure/stt.py)
     # Heavy imports are local so the package stays importable on a base (no-voice) install.
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.audio.vad.vad_analyzer import VADParams
-    from pipecat.frames.frames import TTSSpeakFrame
+    from pipecat.frames.frames import (BotStartedSpeakingFrame, BotStoppedSpeakingFrame, InputTransportMessageFrame,
+                                       InterruptionFrame, OutputTransportMessageFrame, TranscriptionFrame,
+                                       TTSSpeakFrame)
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
-    from pipecat.pipeline.task import PipelineTask
+    from pipecat.pipeline.task import PipelineParams, PipelineTask
     from pipecat.processors.audio.vad_processor import VADProcessor
-    from pipecat.processors.frame_processor import FrameProcessor
+    from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
     from pipecat.processors.aggregators.llm_context import LLMContext
     from pipecat.processors.aggregators.llm_response_universal import (
         LLMContextAggregatorPair,
@@ -118,7 +132,6 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
     from pipecat.turns.user_mute.always_user_mute_strategy import AlwaysUserMuteStrategy
     from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
     from pipecat.turns.user_turn_strategies import UserTurnStrategies
-    from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
 
     import json
 
@@ -128,6 +141,7 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
 
     holder: dict = {"ws": None}          # the current agent-server socket (None while (re)connecting)
     stop = asyncio.Event()
+    tag = f"[voice{(':' + label) if label else ''}]"
 
     # Corpus capture is gated on the LIVE session being public (docs/backlogs/voice.md). `None` means we
     # have not seen a `context` event yet, and unknown must not record: the whole point of a governed
@@ -149,13 +163,26 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
     # mouth. `bridge` passes frames through and provides speak()/submit(); a listener task turns server
     # events into speech. The early-ack and the final each arrive as their own event → their own spoken
     # utterance, so the streaming cadence is preserved.
+    #
+    # It is ALSO where the wire's control messages meet the pipeline (conjure/transport.py `Wire`): a
+    # client's `interrupt` cancels the reply at both ends — an InterruptionFrame downstream flushes the
+    # TTS and the transport's buffered audio; the agent server's reserved `interrupt` cancels the turn.
     class VoiceBridge(FrameProcessor):
         async def process_frame(self, frame, direction):
             await super().process_frame(frame, direction)
+            if isinstance(frame, InputTransportMessageFrame) and isinstance(frame.message, dict):
+                if frame.message.get("type") == "interrupt":
+                    await self.interrupt()
+                return                                     # consumed: the wire's messages stop here
             await self.push_frame(frame, direction)
 
         async def speak(self, text: str) -> None:
             await self.push_frame(TTSSpeakFrame(text=text))
+
+        async def tell(self, message: dict) -> None:
+            """A control message to the client (speaking / transcript / notice). A local transport has
+            no one to tell and drops it; the websocket serializer sends it as JSON."""
+            await self.push_frame(OutputTransportMessageFrame(message=message))
 
         async def submit(self, text: str) -> None:
             ws = holder["ws"]
@@ -167,14 +194,32 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
             except Exception as exc:  # noqa: BLE001 — a send failure shouldn't tear down the pipeline
                 print(f"voice send error: {exc}", file=sys.stderr)
 
-    transport = LocalAudioTransport(
-        LocalAudioTransportParams(
-            audio_in_enabled=True,
-            audio_in_sample_rate=hearing.sample_rate,    # the recognizer's rate (16 kHz for both today)
-            audio_out_enabled=True,
-            audio_out_sample_rate=profile.sample_rate,   # the engine's native rate (24 kHz for both today)
-        )
-    )
+        async def interrupt(self) -> None:
+            await self.push_frame(InterruptionFrame())       # downstream: TTS + output flush what's queued
+            ws = holder["ws"]
+            if ws is not None:
+                try:
+                    await ws.send(json.dumps({"type": "interrupt"}))
+                except Exception as exc:  # noqa: BLE001
+                    print(f"voice send error: {exc}", file=sys.stderr)
+
+    # What the CLIENT is told about the pipeline's state, placed right after the recognizer so it sees
+    # every TranscriptionFrame on its way down and the output transport's Bot*SpeakingFrames on their way
+    # up. `speaking` drives an indicator on the headset (and, if echo cancellation proves insufficient,
+    # gates its capture); `transcript` shows what was heard — the on-headset diagnostic for mis-hearings.
+    class WireMessages(FrameProcessor):
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            await self.push_frame(frame, direction)
+            if isinstance(frame, TranscriptionFrame) and (frame.text or "").strip():
+                await self.push_frame(OutputTransportMessageFrame(
+                    message={"type": "transcript", "text": frame.text.strip()}), FrameDirection.DOWNSTREAM)
+            elif isinstance(frame, BotStartedSpeakingFrame):
+                await self.push_frame(OutputTransportMessageFrame(message={"type": "speaking", "on": True}),
+                                      FrameDirection.DOWNSTREAM)
+            elif isinstance(frame, BotStoppedSpeakingFrame):
+                await self.push_frame(OutputTransportMessageFrame(message={"type": "speaking", "on": False}),
+                                      FrameDirection.DOWNSTREAM)
 
     # In pipecat 1.3.x, VAD is a pipeline PROCESSOR, not a transport param (passing it to the
     # transport is silently ignored). The VADProcessor emits the speaking frames that both STT
@@ -194,6 +239,7 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
     tts = profile.build(settings)
 
     bridge = VoiceBridge()
+    wire = WireMessages()
 
     # Listener: turn agent-server events into speech. Reconnects with backoff. `backlog=False` so a fresh
     # connection doesn't get the whole transcript spoken at us — just the current context (which voice
@@ -220,7 +266,7 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
                             await bridge.speak("One moment — I'm still working on the last request.")
                         elif t == "context" and "public" in ev:
                             session["public"] = bool(ev["public"])   # gates corpus capture; never spoken
-                        # context / user_turn / tool_call / turn_done → not spoken
+                        # context / user_turn / tool_call / turn_done / interrupted → not spoken
             except Exception:  # noqa: BLE001 — agent server down/restarting: back off and reconnect
                 holder["ws"] = None
                 session["public"] = None         # lost the server ⇒ lost the privacy state ⇒ stop recording
@@ -251,41 +297,147 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
         if cmd:
             await bridge.submit(cmd)        # the server routes it (agent utterance vs command)
         elif wake_word:
-            print(f"[conjure] (idle — say '{wake_word}' to talk)")
+            print(f"{tag} (idle — say '{wake_word}' to talk)")
 
     pipeline = Pipeline(
         [
-            transport.input(),       # mic
+            transport.input(),       # mic (host device, or a browser's worklet over the wire)
             vad,                     # VAD → emits user-speaking frames (1.3.x: a processor)
             stt,                     # speech → text
+            wire,                    # tells the client what was heard / when the bot speaks
             aggregator.user(),       # detect end-of-turn + mute while speaking
             bridge,                  # sends turns to the agent server; speaks its replies as TTS frames
             tts,                     # reply text → speech
-            transport.output(),      # speaker
+            transport.output(),      # speaker (host device, or the browser's playback worklet)
             aggregator.assistant(),  # (context unused, kept so the pair is wired normally)
         ]
     )
 
     # Interruptions OFF + mute-while-speaking (above): on an open room mic the bot's own TTS would leak
-    # back, get transcribed, and feed back. Use earbuds today; room-speaker support (echo cancellation /
-    # barge-in via the WS `interrupt` message) is a follow-up.
+    # back, get transcribed, and feed back. Use earbuds today; a browser client with echo cancellation can
+    # barge in through the wire's `interrupt` instead (C3b).
     task = PipelineTask(
         pipeline,
+        params=PipelineParams(audio_in_sample_rate=hearing.sample_rate, audio_out_sample_rate=profile.sample_rate),
         idle_timeout_secs=PIPELINE_IDLE_TIMEOUT_SECS,
         cancel_on_idle_timeout=False,
         cancel_runner_on_idle_timeout=False,
     )
-    runner = PipelineRunner(handle_sigint=True)
+    runner = PipelineRunner(handle_sigint=handle_sigint)
 
     listen_task = asyncio.create_task(listen())
-    print(f"🎙️  Conjure voice is listening (agent server {settings.agent_url}; hearing through "
-          f"{hearing.description}; speaking through {profile.description}). Speak to build the world; "
-          f"say 'conjure open shell' then 'use <name>' / 'agent <name>' to switch. Ctrl+C to stop.")
+    if ready is not None:
+        ready.set()
     try:
         await runner.run(task)
     finally:
         stop.set()
         listen_task.cancel()
+
+
+async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional[str] = None,
+               corpus: Optional["Corpus"] = None, profile: Optional[SpeechProfile] = None,
+               hearing: Optional[HearingProfile] = None, serve_port: Optional[int] = None,
+               mic: bool = True) -> None:
+    """The process: the host-mic pipeline (unless `mic=False`), plus — with `serve_port` — the `/audio`
+    listener that runs one more pipeline per browser connection (`conjure/transport.py`)."""
+    profile = profile or profile_for(settings)
+    hearing = hearing or hearing_for(settings, corpus=corpus is not None)
+    tasks = []
+    if mic:
+        local = TRANSPORTS["local"].build(settings, in_rate=hearing.sample_rate, out_rate=profile.sample_rate)
+        print(f"🎙️  Conjure voice is listening (agent server {settings.agent_url}; hearing through "
+              f"{hearing.description}; speaking through {profile.description}). Speak to build the world; "
+              f"say 'conjure open shell' then 'use <name>' / 'agent <name>' to switch. Ctrl+C to stop.")
+        tasks.append(asyncio.create_task(run_pipeline(settings, user=user, transport=local, wake_word=wake_word,
+                                                      corpus=corpus, profile=profile, hearing=hearing)))
+    if serve_port:
+        tasks.append(asyncio.create_task(serve(settings, port=serve_port, wake_word=wake_word, corpus=corpus,
+                                               profile=profile, hearing=hearing)))
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for t in pending:
+        t.cancel()
+    for t in done:
+        t.result()
+
+
+def build_voice_app(settings: Settings, *, wake_word: Optional[str] = None, corpus: Optional["Corpus"] = None,
+                    profile: Optional[SpeechProfile] = None, hearing: Optional[HearingProfile] = None,
+                    pipeline=None):
+    """The voice SERVER's app: `/audio?user=<name>` accepts a browser's socket (the headset page, relayed
+    by the world server — docs/specs/voice.md §11) and runs one pipeline on it, as that user, until it
+    closes. A headset is therefore one more voice client of the agent server, with its own registration,
+    its own rendering of every reply and its own corpus gate — nothing there changes.
+
+    `pipeline` is `run_pipeline` unless a test injects a stand-in (the real one loads the recognizer)."""
+    from .transport import make_wire_serializer
+
+    profile = profile or profile_for(settings)
+    hearing = hearing or hearing_for(settings, corpus=corpus is not None)
+    run = pipeline or run_pipeline
+    app = FastAPI()
+    live: dict[str, int] = {}
+    app.state.live = live
+
+    @app.get("/health")
+    async def health() -> dict:
+        return {"ok": True, "connections": sum(live.values()), "stt": hearing.name, "tts": profile.name}
+
+    @app.websocket("/audio")
+    async def audio(websocket: WebSocket) -> None:
+        await websocket.accept()
+        user = websocket.query_params.get("user") or DEFAULT_USER
+        serializer = make_wire_serializer()
+        transport = TRANSPORTS["websocket"].build(settings, in_rate=hearing.sample_rate,
+                                                  out_rate=profile.sample_rate, websocket=websocket,
+                                                  serializer=serializer)
+        # The headset's clips carry WHERE they came from as the corpus condition tag — the thing the
+        # corpus exists to compare — instead of the host's PortAudio device, which heard none of it.
+        link_corpus = None
+        if corpus is not None:
+            from .stt_corpus import Corpus as _Corpus
+            link_corpus = _Corpus(corpus.root, device=f"browser:{user}")
+        live[user] = live.get(user, 0) + 1
+        print(f"[voice:{user}] browser connected ({sum(live.values())} live)")
+        pipeline_task = None
+        try:
+            await websocket.send_json({"type": "ready", "out_rate": profile.sample_rate})
+            ready = asyncio.Event()
+            pipeline_task = asyncio.create_task(run(
+                settings, user=user, transport=transport, wake_word=wake_word, corpus=link_corpus,
+                profile=profile, hearing=hearing, handle_sigint=False, ready=ready, label=user))
+
+            @transport.event_handler("on_client_disconnected")
+            async def _gone(_t, _ws):
+                if pipeline_task and not pipeline_task.done():
+                    pipeline_task.cancel()
+
+            await pipeline_task
+        except (asyncio.CancelledError, WebSocketDisconnect):
+            pass
+        except Exception as exc:  # noqa: BLE001 — one headset's pipeline must not take the server down
+            print(f"[voice:{user}] pipeline ended: {exc}", file=sys.stderr)
+        finally:
+            if pipeline_task and not pipeline_task.done():
+                pipeline_task.cancel()
+            live[user] -= 1
+            if live[user] <= 0:
+                live.pop(user, None)
+            print(f"[voice:{user}] browser disconnected ({sum(live.values())} live)")
+
+    return app
+
+
+async def serve(settings: Settings, *, port: int, wake_word: Optional[str] = None,
+                corpus: Optional["Corpus"] = None, profile: Optional[SpeechProfile] = None,
+                hearing: Optional[HearingProfile] = None, host: str = "0.0.0.0") -> None:
+    """Run `build_voice_app` under uvicorn, in this process's loop beside the host-mic pipeline."""
+    import uvicorn
+
+    app = build_voice_app(settings, wake_word=wake_word, corpus=corpus, profile=profile, hearing=hearing)
+    config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+    print(f"🔊 Voice server listening on ws://{host}:{port}/audio (relayed by the world server at /audio)")
+    await uvicorn.Server(config).serve()
 
 
 def _purge_cli(*, include_reviewed: bool) -> int:
@@ -317,6 +469,7 @@ def _purge_cli(*, include_reviewed: bool) -> int:
 
 def main() -> int:
     import argparse
+    from urllib.parse import urlparse
 
     ap = argparse.ArgumentParser(prog="conjure.voice", description="Voice front-end for the Conjure director.")
     # No --agent: voice is a thin client and the agent server owns which agent is open, so the flag
@@ -328,6 +481,13 @@ def main() -> int:
                          f"can ride along (--wake-word computer,computa). Must NOT be the shell's wake "
                          f"word ({WAKE_WORDS[0]!r}) — the gate strips its own word first, so sharing one "
                          f"would make spoken shell commands unreachable")
+    ap.add_argument("--serve", action="store_true",
+                    help="also accept headset/browser audio on /audio (one pipeline per connection; the "
+                         "world server relays the page's /audio here — CONJURE_VOICE_URL). The host mic "
+                         "keeps running alongside unless --no-mic")
+    ap.add_argument("--no-mic", action="store_true",
+                    help="with --serve: don't open the host microphone/speaker at all — a headless voice "
+                         "server for headsets only")
     # Not --capture-*: "capture" already means SPACE capture throughout this codebase, so a voice flag
     # borrowing the word would read as something to do with Room Setup.
     ap.add_argument("--stt-corpus", action="store_true",
@@ -374,8 +534,13 @@ def main() -> int:
         # matters, and naming the device here is also how you notice the mic is not the one you think.
         print(f"⏺  STT corpus recording to {corpus.root} (input: {corpus.device}). "
               f"Paused while a session is private. Purge: --stt-corpus-purge")
+    serve_port = (urlparse(settings.voice_url).port or 8771) if args.serve else None
+    if args.no_mic and not serve_port:
+        print("--no-mic only makes sense with --serve (nothing would be listening).")
+        return 1
     try:
-        asyncio.run(_run(settings, args.user, args.wake_word, corpus, profile, hearing))
+        asyncio.run(_run(settings, args.user, args.wake_word, corpus, profile, hearing, serve_port,
+                         mic=not args.no_mic))
     except KeyboardInterrupt:
         print("\nStopped.")
     except ImportError as exc:

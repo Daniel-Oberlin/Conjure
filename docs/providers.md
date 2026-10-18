@@ -65,8 +65,9 @@ The roster (casual name → vendor/key/models/roles) lives in **one place**: the
 ### Audio transport (Phase 2)
 | Option | Notes |
 |---|---|
-| ✅ **Host-local audio** (room mic + speaker) | Matches decision #5's shared-room-device default; no audio piped through the Quest. |
-| 💡 Quest-mic over WebRTC | Later enhancement (per-headset audio, remote bridge). |
+| ✅ **Host-local audio** (room mic + speaker) | `conjure/transport.py` `local`. Matches decision #5's shared-room-device default. |
+| ✅ **Quest audio over the page's WebSocket** | `transport.py` `websocket`: the headset page streams raw PCM to the world server's `/audio` relay → `conjure.voice --serve`, one pipeline per headset; reply audio comes back the same way, played by the page so the browser's echo canceller has its reference ([specs/voice.md](./specs/voice.md) §11). Works on every serving tier, tunnel included. |
+| 💡 Quest audio over WebRTC | pipecat `SmallWebRTCTransport` as a third profile — jitter buffer and Opus built in, but UDP, so not through `adb reverse` or a tunnel. For the remote bridge. |
 
 ---
 

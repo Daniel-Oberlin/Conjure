@@ -7,6 +7,7 @@ over a single per-connection **WebSocket**:
       client → server:  {type:"turn", text}          # one line of input (utterance OR command)
                         {type:"register", speech:{engine, tags, prompt}}   # what this client can RENDER —
                                                       # a voice client's TTS engine and its speech tags
+                        {type:"interrupt"}             # barge-in: cancel MY in-flight turn (C3b)
       server → client:  {type:"context", …}           # this connection's state (agent, llm, user, in_shell,
                                                         # world, space) — DATA; the client formats its prompt
                         {type:"user_turn"|"assistant_delta"|"assistant_final"|"tool_call"|"notice"|
@@ -489,6 +490,10 @@ async def _handle_turn(app: FastAPI, conn: Conn, text: str) -> None:
             await _broadcast_context(app)                # an LLM/agent switch changes everyone's prompt
     except Busy:                                         # defense-in-depth; the floor normally prevents it
         await conn.send({"type": "busy"})
+    except asyncio.CancelledError:                       # barge-in (C3b): the inner finally released the
+        app.state.turn_active = False                    # floor and the Director's own finally its `_busy`;
+        await _conv_broadcast(app, {"type": "notice", "text": f"[{conn.user} interrupted]"})
+        raise                                            # …and the outer finally still fires turn_done
     except Exception as exc:                             # a bad line must not strand the floor or the socket
         app.state.turn_active = False
         await conn.send({"type": "notice", "text": f"error: {exc}"})
@@ -753,9 +758,14 @@ def build_app(settings: Settings, *, agent: Optional[str] = None, user: str = DE
                 if msg.get("type") == "register":        # what this client can render — no floor needed
                     _register(app, conn, msg)
                     continue
+                if msg.get("type") == "interrupt":        # barge-in (C3b): only THIS connection's turn
+                    if inflight is not None and not inflight.done():
+                        inflight.cancel()
+                        # `_handle_turn`'s finally releases the floor and fires turn_done; this names why.
+                        await conn.send({"type": "interrupted"})
+                    continue
                 if msg.get("type") != "turn":
                     continue
-                # (C3) elif msg.get("type") == "interrupt": cancel the in-flight turn
                 if inflight is not None and not inflight.done():
                     await conn.send({"type": "busy"})
                     await conn.send({"type": "turn_done"})   # the prompt gate: without it the client's

@@ -34,6 +34,7 @@ Consequential forks. Each is `OPEN` until we choose; then we record the choice a
 | 30 | Is a worn hand model world state, or a per-client setting? | 🔶 DESIGNED | An occupied entity — durable, replayed on reload, "put it down" names a place |
 | 31 | Does a worn hand conform to the tracked hand, and what does contact read? | 🔶 DESIGNED | Conform all 25 joints; contact reads the JOINTS, never the skinned mesh |
 | 32 | Where does a TTS engine's speech-tag vocabulary live, and who sees the tags? | ✅ RESOLVED | With the listener: the voice client registers it per connection; the server prompts for it and renders per connection |
+| 33 | Audio to and from the Quest: which transport, which door, which process? | ✅ RESOLVED | Raw PCM over the page's own WebSocket, relayed by the world server to a per-connection pipeline in the voice server; AEC in the page; push-to-talk by default |
 
 > Numbering note: §15 appears twice (an older "Users, spaces, and a user-first namespace" section
 > predates the table row for world/space identity), and §16 has a section but no table row. External
@@ -761,3 +762,27 @@ branch, and the wrong one would fire whenever the voice client's config changed)
 (`[asset 3f2a]` is what the builder calls a library asset); and stripping only while a tag-rendering
 client is connected (the model keeps the habit for a turn or two after it leaves, so the vocabulary is
 remembered for the life of the server).
+
+### 33. Audio to and from the Quest: which transport, which door, which process? — ✅ RESOLVED
+**Choice:** The headset page streams **raw Int16 PCM over a WebSocket** to the **world server's
+`/audio` relay**, which pumps it to the **voice server** (`conjure.voice --serve`), where **one
+pipeline per connection** runs as that headset's user. The reply comes back the same way and is played
+**by the page**, so the browser's echo canceller has the reply as its reference. Activation is
+**push-to-talk by default**. ([`specs/voice.md`](./specs/voice.md) §11; the investigation is
+`temp/plans/quest-audio-streaming-2026-10-18.md`.)
+
+**Why:** Three constraints picked each piece. *Transport:* WebRTC is UDP and cannot reach a headset over
+`adb reverse` or a cloudflared tunnel — the two tiers a developer uses first — while a socket the page
+already has works on all of them and costs ~0.4 Mb/s on a LAN. *Door:* the headset reaches one origin
+on every tier, so a second port would be a second rule per tier; a stateless relay is thirty lines and
+keeps the world server ML-free and off the audio path except as a pipe. *Process:* a pipeline per
+connection makes a headset one more voice client of the agent server — its own `register`, its own
+rendering, its own corpus gate — so the agent server changed by exactly one message (`interrupt`).
+Playing the reply in the page is what makes AEC possible at all: Chromium's canceller references the
+audio the same browser renders. Push-to-talk is decision #5's shared-mode default and needs no echo
+measurement to be safe; it also makes "press while the bot speaks" the barge-in gesture.
+
+**Rejected:** terminating audio in the world server process (Whisper decodes on the presence loop);
+a second port on the voice server (per-tier config, a second origin for permissions); pipecat's browser
+SDK (a protocol and a dependency for a tenth of its surface); WebRTC first (right for the remote bridge,
+wrong for the tiers in use); open-mic by default (decision #5, and unmeasured AEC).

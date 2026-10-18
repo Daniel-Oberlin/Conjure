@@ -5930,3 +5930,52 @@ def test_losing_a_users_styling_is_loud_and_losing_a_default_is_not(srv, client,
     out2 = capsys.readouterr().out
     assert "real_wall_4" in out2, "an unstyled prune is still recorded"
     assert "LOST STYLING" not in out2, "…but quietly — it destroyed nothing a user made"
+
+
+# --------------------------------------------------------------------------- the /audio relay (voice.md §11)
+
+def test_audio_relay_pumps_bytes_and_text_both_ways_to_the_voice_server(srv, client, monkeypatch):
+    """The headset's audio socket terminates HERE (one origin on every serving tier) and is relayed,
+    stateless, to the voice server named by `voice_url`: binary and text alike, in both directions."""
+    import asyncio
+    import dataclasses
+    import threading
+
+    import websockets
+
+    got: list = []
+    port_ready = threading.Event()
+    port: dict = {}
+
+    async def echo(ws):
+        got.append(ws.request.path)                         # the query string must survive the hop
+        async for m in ws:
+            await ws.send(m if isinstance(m, bytes) else "echo:" + m)
+
+    def run_upstream():
+        async def _main():
+            async with websockets.serve(echo, "127.0.0.1", 0) as server:
+                port["v"] = server.sockets[0].getsockname()[1]
+                port_ready.set()
+                await asyncio.Event().wait()
+        asyncio.run(_main())
+
+    threading.Thread(target=run_upstream, daemon=True).start()
+    assert port_ready.wait(5)
+    monkeypatch.setattr(srv, "settings", dataclasses.replace(srv.settings, voice_url=f"http://127.0.0.1:{port['v']}"))
+
+    with client.websocket_connect("/audio?user=alice") as ws:
+        ws.send_text('{"type":"hello"}')
+        assert ws.receive_text() == 'echo:{"type":"hello"}'
+        ws.send_bytes(b"\x01\x02\x03\x04")
+        assert ws.receive_bytes() == b"\x01\x02\x03\x04"
+    assert got and got[0].endswith("/audio?user=alice")
+
+
+def test_audio_relay_says_so_when_the_voice_server_is_down(srv, client, monkeypatch):
+    import dataclasses
+
+    monkeypatch.setattr(srv, "settings", dataclasses.replace(srv.settings, voice_url="http://127.0.0.1:1"))
+    with client.websocket_connect("/audio?user=alice") as ws:
+        ev = ws.receive_json()
+        assert ev["type"] == "notice" and "voice server" in ev["text"]

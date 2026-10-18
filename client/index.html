@@ -21,6 +21,7 @@
              occlusion
              hands-fit
              scene-environment
+             voice-link
              renderer="foveationLevel: 0"
              webxr="optionalFeatures: plane-detection, mesh-detection, hit-test, anchors, depth-sensing, hand-tracking, local-floor">
       <!-- foveationLevel: 0 disables fixed foveated rendering (A-Frame's default is 1 = MAX), which
@@ -75,6 +76,9 @@
     <!-- Debug-only surface overlay (--debug-surface-overlay): seed / device-rect / device-polygon
          wireframes drawn together in F_track. Inert unless the flag is on. -->
     <script src="/static/surface-overlay.js"></script>
+    <!-- The headset's ears and mouth: mic → /audio → voice server → reply audio (docs/specs/voice.md §11).
+         Inert when CONJURE_VOICE_ACTIVATION=off; needs conjure-pointers.js for push-to-talk. -->
+    <script src="/static/voice-link.js"></script>
     <script src="/static/conjure-client.js"></script>
   </body>
 </html>

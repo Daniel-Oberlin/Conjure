@@ -200,8 +200,9 @@ the guidance and the rendering all follow from the one registration.
 Interruptions are **off**, and `AlwaysUserMuteStrategy` mutes the mic while the bot speaks. On an open
 room microphone the TTS output would otherwise be transcribed as user speech and fed back as a turn.
 
-The accepted cost: **you cannot interrupt.** The assumption is earbuds. Room-speaker support needs
-acoustic echo cancellation and a barge-in path, and is not built.
+The accepted cost on the host: **you cannot interrupt.** The assumption is earbuds. Room-speaker support
+needs acoustic echo cancellation and a barge-in path. A headset is different: its page has the browser's
+echo canceller and a button, and push-to-talk while the bot speaks *is* the interruption (§11).
 
 ## 7. The mic-activation gate
 
@@ -320,6 +321,89 @@ take `api_key` and `settings=` — and that `XAISTTService._push_final_transcrip
 
 Accuracy itself is still covered by no automated test; that is what a labelled corpus exists to make
 possible.
+
+## 11. The headset link — audio to and from the Quest
+
+The investigation that chose this shape is `temp/plans/quest-audio-streaming-2026-10-18.md`; decision
+#33 records the choice. What is built:
+
+```
+ Quest page (client/voice-link.js)                 world server            voice server
+ mic → AudioWorklet → Int16 PCM ──┐                                       conjure.voice --serve
+ Web Audio ← AudioWorklet ← PCM ←─┼── /audio?user= ──▶ relay ──▶ /audio ──▶ one pipeline per
+ ptt / speaking / transcript      │   (wss, same origin)   (voice_url)      connection, as that user
+```
+
+**A headset is one more voice client.** `voice-link.js` captures the microphone in an AudioWorklet,
+sends Int16 PCM over a WebSocket to the world server's `/audio` relay, and plays the reply's PCM through a
+second worklet. The relay (world server, `audio_relay`) pumps bytes to the voice server named by
+`voice_url` — stateless, so the world server stays ML-free and off the audio path except as a pipe —
+and the voice server runs **one `run_pipeline` per connection**, acting as the page's `?user=`. That
+pipeline is the §2 chain on a different transport (`conjure/transport.py`, the third profile registry):
+its bridge opens its own agent-server socket, registers its own TTS engine (§5.1), hears its own
+rendering of every reply, and gates its own corpus capture. Nothing on the agent server changed.
+
+**Why a WebSocket and not WebRTC.** ICE is UDP; a headset over `adb reverse` or a cloudflared tunnel
+cannot reach it. Raw PCM on the socket the page already has works on every serving tier and costs
+~0.4 Mb/s each way on a LAN. WebRTC is the third transport profile when a remote participant needs it.
+
+**The wire** is documented in `conjure/transport.py`: `hello {user, in_rate}` first, then binary
+frames at the browser's own rate (48 kHz on the Quest); the server resamples to the pipeline's rate in
+the serializer (pipecat's input transport does not; SOXR `HQ`, measured 21 ms of latency against VHQ's
+37). Back come `ready {out_rate}`, binary PCM paced to real time, and `speaking {on}`, `transcript
+{text}` (what STT heard — the on-headset diagnostic for every mis-hearing), `notice {text}`.
+
+**Permission and the gesture.** The mic prompt cannot render inside an immersive session and an
+AudioContext created outside a user gesture starts suspended, so `voice-link` takes both on the
+ENTER AR tap (a capture-phase click listener, before `enterVR`). Capture asks for
+`echoCancellation: true, noiseSuppression: false, autoGainControl: false` — the backlog's "NR off,
+AEC on": Chromium's canceller uses audio *this browser renders* as its reference, which is why the
+reply is played by the page and not positionally.
+
+**Activation is the input layer's.** `talk` is an action in `CONJURE_BINDINGS` (default `stickPress`)
+and `CONJURE_VOICE_ACTIVATION` picks how the mic reaches the server:
+
+| `voice_activation` | Behaviour |
+|---|---|
+| `ptt` (default — decision #5's shared mode) | the worklet captures continuously (AEC stays converged) but frames are **sent** only while `talk` is held, plus a 350 ms tail; the server's VAD then sees silence and closes the segment. Nothing is streamed while nobody is pressing — which also makes the streaming-STT billing note in §4 moot |
+| `open` | always streaming; solo mode, relies on AEC and mute-while-speaking |
+| `off` | no microphone; the component is inert |
+
+**Barge-in (C3b) is a gesture, not an acoustic guess.** Pressing `talk` while the bot is speaking flushes
+the playback ring buffer and sends `{type:"interrupt"}`; the bridge pushes an `InterruptionFrame`
+(TTS and transport flush what is queued) and forwards the reserved `interrupt` to the agent server,
+which cancels that connection's in-flight turn, broadcasts *[user interrupted]* and still fires one
+`turn_done`. Deliberate interruption needs no echo-cancellation quality at all; VAD-driven barge-in in
+`open` mode waits on spike 1's measurement.
+
+**Corpus from the headset.** With `--stt-corpus`, a headset's clips are tagged `browser:<user>` as
+their condition — the thing the corpus exists to compare — in place of the host's PortAudio device,
+which heard none of it.
+
+**Multi-headset.** N connections, N pipelines, N agent-server connections, one floor; every reply through
+every headset, near-ear. Two costs to pay before the third headset: a shared Whisper model across
+pipelines, and a speech cache so a reply is synthesised once (plan §2.3).
+
+### 11.1 What the spikes measured (2026-10-18)
+
+Spike 2/3 ran on the host with `scripts/audio_probe.py` standing in for the browser (a corpus clip,
+resampled to 48 kHz, streamed in 20 ms frames through the world server's relay to a headless voice
+server, `conjure.voice --serve --no-mic`):
+
+| Stage | Measured |
+|---|---|
+| connect → `ready` | 0.83 s (pipeline + Whisper start) |
+| speech end → `transcript` | 2.4 s — VAD stop 0.6 + turn 0.8 + Whisper ≈ 0.9 |
+| `transcript` → first reply audio | 3.5 s — the LLM turn and the first TTS utterance |
+| **speech end → first reply audio** | **5.9 s**, of which the transport's share is tens of milliseconds |
+| heard | *"What worlds do I have?"* — the clip's label, verbatim |
+| reply (4.9 s, transcribed back through Grok STT) | *"Let me check for you. You just have the one world right now default, and that's the one you're in."* |
+
+Spike 1 — mic capture inside `immersive-ar` and how much AEC3 cancels on the Quest's open-air speakers
+— needs the headset: open `/static/audio-spike.html` on it, tap **1**, then **2**, **3**, **4**; every
+result line lands in `temp/conjure.log` under `audio-spike`. Until it has run, `ptt` is the default
+and VAD barge-in stays off. Spike 3's render-loop check (`--debug-jitter` with the link up) and spike 4's
+push-to-talk on a real controller are likewise waiting on a headset session.
 
 ## Related
 

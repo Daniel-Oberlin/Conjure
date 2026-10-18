@@ -130,6 +130,18 @@ conjure-agent              # terminal 2: agent server (holds the director + keys
 conjure-cli                # terminal 3: the REPL   (or: python -m conjure.voice)
 ```
 
+For voice **from the headset** (docs/specs/voice.md §11) run the voice process as a server — the page
+streams its microphone to it through the world server, and the reply plays in the headset:
+
+```bash
+python -m conjure.voice --serve            # host mic AND headsets;  --no-mic for headsets only
+```
+
+Push-to-talk is the stick press by default (`CONJURE_VOICE_ACTIVATION=ptt|open|off`, `talk` in
+`CONJURE_BINDINGS`). The first headset session should start with the measurement page:
+`/static/audio-spike.html` on the Quest, tap 1–4, read the results in `temp/conjure.log`. A world server
+started before this landed has no `/audio` relay — restart it.
+
 The world server runs **standalone** — it boots from disk and renders to headsets with no agent server
 present, so you can walk a world with no AI in the loop. Voice and CLI are thin clients of the *agent*
 server; start that before them.
