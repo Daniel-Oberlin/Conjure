@@ -83,13 +83,14 @@ class FakeShell:
 
 
 class FakeConn:
-    def __init__(self, user="daniel", kind="cli"):
+    def __init__(self, user="daniel", kind="cli", speech=None):
         self.user = user
         self.kind = kind                 # "cli" | "voice" — selects the shell's command set
         self.in_shell = False
         self.cwd = ""
         self.cwd_display = ""
         self.bumped = False
+        self.speech = speech             # a voice client's `register`ed {engine, tags, prompt}, or None
         self.sent: list[dict] = []
 
     async def send(self, event):
@@ -102,7 +103,8 @@ def _app(shell, conns=(), sessions=None):
         hub.add(c)
     return types.SimpleNamespace(state=types.SimpleNamespace(
         shell=shell, hub=hub, turn_active=False, floor_lock=asyncio.Lock(), live=None, user="daniel",
-        sessions=sessions or SessionRepository(tempfile.mkdtemp()), loaded_session=None))
+        sessions=sessions or SessionRepository(tempfile.mkdtemp()), loaded_session=None,
+        tags_seen=set()))
 
 
 def _kinds(conn):
@@ -194,6 +196,143 @@ async def test_the_rewrite_is_a_rendering_not_an_edit():
     heard = next(e for e in conn.sent if e["type"] == "assistant_final")
     assert heard["text"] == "Done! party popper emoji"                     # what the engine says
     assert shell.director.transcript[-1].text == "**Done!** 🎉"            # what was written, unchanged
+
+
+# --------------------------------------------------------------------------- speech tags (client-registered prompting)
+
+GROK = {"engine": "grok", "tags": ["laugh", "pause", "whisper", "slow"],
+        "prompt": "Use [laugh] and <whisper>…</whisper> sparingly."}
+KOKORO = {"engine": "kokoro", "tags": [], "prompt": ""}
+
+
+async def test_register_puts_the_engines_guidance_into_the_director_and_a_disconnect_takes_it_out():
+    """The voice client says what its engine can render; the server composes that into the Director's
+    `speech` slot, which an agent frames with `{#speech}…{/speech}`. The registration lives exactly as
+    long as the connection — nobody is listening through Grok once the Grok client has gone."""
+    from conjure.agent_server import _register, _sync_client_prompts
+
+    shell = FakeShell()
+    shell.director.client_prompts = {}
+    voice = FakeConn("alice", kind="voice")
+    app = _app(shell, [voice])
+    _register(app, voice, {"type": "register", "speech": GROK})
+
+    assert voice.speech == GROK
+    assert shell.director.client_prompts == {"speech": GROK["prompt"]}
+    assert app.state.tags_seen == {"laugh", "pause", "whisper", "slow"}
+
+    app.state.hub.remove(voice)
+    _sync_client_prompts(app)
+    assert shell.director.client_prompts == {"speech": ""}         # the slot stays, empty → section dropped
+    assert app.state.tags_seen == {"laugh", "pause", "whisper", "slow"}   # the vocabulary is remembered
+
+
+async def test_two_clients_on_one_engine_register_one_copy_and_a_tagless_engine_registers_nothing():
+    from conjure.agent_server import _register
+
+    shell = FakeShell()
+    shell.director.client_prompts = {}
+    a, b, k = FakeConn("alice", kind="voice"), FakeConn("bob", kind="voice"), FakeConn("carol", kind="voice")
+    app = _app(shell, [a, b, k])
+    _register(app, a, {"type": "register", "speech": GROK})
+    _register(app, b, {"type": "register", "speech": GROK})
+    _register(app, k, {"type": "register", "speech": KOKORO})
+
+    assert shell.director.client_prompts["speech"] == GROK["prompt"]   # once, not twice
+    assert k.speech == KOKORO and app.state.tags_seen == set(GROK["tags"])
+
+
+async def test_a_re_bind_does_not_lose_the_registered_prompting():
+    """An agent switch builds a fresh Director (empty `client_prompts`); the voice client that registered
+    is still connected, so the follower re-applies the composition after every re-bind."""
+    from conjure.agent_server import _register
+
+    shell = FakeShell()
+    shell.director.client_prompts = {}
+    voice = FakeConn("alice", kind="voice")
+    app = _app(shell, [voice])
+    _register(app, voice, {"type": "register", "speech": GROK})
+
+    await _reconcile_state(app, {"agent": "outdoor", "scope": "daniel/agents/outdoor"})
+    assert shell.opened == [("outdoor", False)]
+    # FakeShell._open_agent keeps the same FakeDir, so mimic the real thing: a fresh dict.
+    shell.director.client_prompts = {}
+    await _reconcile_state(app, {"agent": "outdoor", "scope": "daniel/agents/outdoor"})
+    assert shell.director.client_prompts == {"speech": GROK["prompt"]}
+
+
+async def test_tags_reach_only_the_client_whose_engine_renders_them():
+    """One reply, three listeners. The Grok voice client hears its tags; the Kokoro voice client and the
+    CLI get the sentence with them removed — the same words, so the conversation stays one conversation."""
+    from conjure.agent_server import _conv_broadcast, _register
+
+    shell = FakeShell()
+    shell.director.client_prompts = {}
+    grok, kokoro, cli = FakeConn("alice", kind="voice"), FakeConn("bob", kind="voice"), FakeConn("carol")
+    app = _app(shell, [grok, kokoro, cli])
+    _register(app, grok, {"type": "register", "speech": GROK})
+    _register(app, kokoro, {"type": "register", "speech": KOKORO})
+    await _conv_broadcast(app, {"type": "assistant_final",
+                                "text": "**Really?** [laugh] <whisper>It's a dragon.</whisper> 🎉"})
+
+    assert grok.sent[-1]["text"] == "Really? [laugh] <whisper>It's a dragon.</whisper> party popper emoji"
+    assert kokoro.sent[-1]["text"] == "Really? It's a dragon. party popper emoji"
+    assert cli.sent[-1]["text"] == "**Really?** It's a dragon. 🎉"
+
+
+async def test_the_cli_keeps_reading_clean_sentences_after_the_tagged_client_has_gone():
+    """The transcript keeps tagged replies and the model keeps the habit for a turn or two, so the
+    vocabulary is stripped for as long as this server runs — not just while the engine is connected."""
+    from conjure.agent_server import _conv_broadcast, _register, _sync_client_prompts
+
+    shell = FakeShell()
+    shell.director.client_prompts = {}
+    grok, cli = FakeConn("alice", kind="voice"), FakeConn("carol")
+    app = _app(shell, [grok, cli])
+    _register(app, grok, {"type": "register", "speech": GROK})
+    app.state.hub.remove(grok)
+    _sync_client_prompts(app)
+    await _conv_broadcast(app, {"type": "assistant_final", "text": "Done [laugh]."})
+    assert cli.sent[-1]["text"] == "Done."
+
+
+async def test_a_voice_client_that_never_registered_hears_no_tags():
+    """Older or minimal voice clients send no `register`; they must not hear "bracket laugh" read aloud."""
+    from conjure.agent_server import _conv_broadcast
+
+    shell = FakeShell()
+    voice = FakeConn("alice", kind="voice")
+    app = _app(shell, [voice])
+    app.state.tags_seen = {"laugh"}
+    await _conv_broadcast(app, {"type": "assistant_final", "text": "Done [laugh]."})
+    assert voice.sent[-1]["text"] == "Done."
+
+
+def test_ws_register_is_handled_between_turns_and_forgotten_on_disconnect():
+    """Over the real socket: `register` is answered by nothing (no turn_done — it is not a line), takes
+    effect at once, and the hub forgets the registration with the connection."""
+    from fastapi.testclient import TestClient
+
+    shell = FakeShell()
+    shell.director.client_prompts = {}
+    app = build_app(get_settings(), shell=shell)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws?user=alice&client=voice&backlog=0") as ws:
+            assert ws.receive_json()["type"] == "context"
+            ws.send_json({"type": "register", "speech": GROK})
+            ws.send_json({"type": "turn", "text": "make a dragon"})
+            events = []
+            while not events or events[-1]["type"] != "turn_done":
+                events.append(ws.receive_json())
+            assert shell.director.client_prompts == {"speech": GROK["prompt"]}
+            assert app.state.tags_seen == set(GROK["tags"])
+            assert [e["type"] for e in events][0] == "user_turn"      # register produced no event of its own
+        import time
+        for _ in range(100):                                      # the disconnect lands in the finally
+            if shell.director.client_prompts == {"speech": ""}:
+                break
+            time.sleep(0.01)
+        assert shell.director.client_prompts == {"speech": ""}
 
 
 # --------------------------------------------------------------------------- transcript persistence (step 2)

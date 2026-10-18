@@ -74,3 +74,54 @@ def test_the_stage_is_data_so_a_case_can_be_added():
     from conjure import speech
     assert [name for name, _ in speech._STAGES] == ["asterisks", "emoji"]
     assert all(callable(fn) for _, fn in speech._STAGES)
+
+
+# --------------------------------------------------------------------------- speech tags
+
+from conjure.speech import strip_tags  # noqa: E402
+
+TAGS = ["laugh", "pause", "long-pause", "whisper", "slow", "emphasis"]
+
+
+def test_an_inline_tag_goes_and_the_sentence_closes_up():
+    assert strip_tags("Really? [laugh] That's incredible!", TAGS) == "Really? That's incredible!"
+    assert strip_tags("[laugh] Sure thing.", TAGS) == "Sure thing."
+    assert strip_tags("Done [laugh].", TAGS) == "Done."
+    assert strip_tags("Yes[laugh]no", TAGS) == "Yes no"
+
+
+def test_a_wrapping_tag_goes_and_its_span_stays():
+    assert strip_tags("<whisper>It is a secret.</whisper> Pretty cool, right?", TAGS) == \
+        "It is a secret. Pretty cool, right?"
+    assert strip_tags("Goodnight, <slow>sleep well</slow>.", TAGS) == "Goodnight, sleep well."
+
+
+def test_only_named_tags_are_touched():
+    """`[asset 3f2a]` is how the builder prompt names a library asset; a stripper that guessed at shapes
+    would eat it. Names only."""
+    assert strip_tags("the [asset 3f2a] one, see <id>", TAGS) == "the [asset 3f2a] one, see <id>"
+    assert strip_tags("a [giggle] b", TAGS) == "a [giggle] b"           # not in THIS vocabulary
+
+
+def test_tags_are_matched_whole_and_case_insensitively():
+    assert strip_tags("[Laugh]Hi", TAGS) == "Hi"
+    assert strip_tags("a [long-pause] b [pause] c", TAGS) == "a b c"
+
+
+def test_keep_lets_the_rendering_engine_hear_its_own_tags():
+    out = strip_tags("Really? [laugh] <whisper>hi</whisper> [giggle]", TAGS + ["giggle"], keep=["whisper", "laugh"])
+    assert out == "Really? [laugh] <whisper>hi</whisper>"
+
+
+def test_lines_keep_their_breaks_and_lose_the_gap():
+    assert strip_tags("line one [laugh]\n[pause] line two", TAGS) == "line one\nline two"
+
+
+def test_empty_vocabulary_and_empty_text_are_untouched():
+    assert strip_tags("Done [laugh].", []) == "Done [laugh]."
+    assert strip_tags("", TAGS) == ""
+    assert strip_tags("plain", TAGS) == "plain"
+
+
+def test_the_stage_and_the_stripper_compose_for_a_tagless_voice_client():
+    assert strip_tags(for_speech("**Done!** [laugh] 🎉"), TAGS) == "Done! party popper emoji"

@@ -11,6 +11,10 @@ ruled out live in [`docs/investigations/stt-accuracy.md`](../investigations/stt-
 `conjure/voice.py` is a **thin client**. It owns a microphone, a speaker, and the machinery to decide
 when you have finished a sentence. It owns no conversation.
 
+It owns one key, when the mouth is a cloud engine: `CONJURE_TTS=grok` needs `XAI_API_KEY` here, because
+this process is what calls the engine. That is the one exception to "keys live with the agent server",
+and a narrow one — the key buys audio, never a conversation (§5).
+
 A completed spoken turn goes over one WebSocket to the **agent server**, which owns the shell, the
 shared transcript, the LLM roster, the Director, and the world-editing tools
 ([`agents.md`](./agents.md) §10). Replies stream back as events and are spoken. No LLM, no keys, no
@@ -35,7 +39,7 @@ transport.input()      mic — LocalAudioTransport, 16 kHz in
   → stt                Whisper (faster-whisper), utterance-segmented
   → aggregator.user()  end-of-turn detection + mute-while-speaking
   → bridge             VoiceBridge — submits turns to the agent server, speaks its replies
-  → tts                Kokoro, 24 kHz out (its native rate)
+  → tts                the engine `CONJURE_TTS` names (§5) — Kokoro or Grok, 24 kHz out
   → transport.output() speaker
   → aggregator.assistant()
 ```
@@ -103,9 +107,58 @@ selecting a different STT backend today means editing this line.
 
 ## 5. Text-to-speech
 
-Kokoro, voice `af_heart`, 24 kHz. Each server event becomes its own `TTSSpeakFrame`, so the early
-acknowledgement and the final reply arrive as separate spoken utterances and the streaming cadence of
-the conversation survives into speech.
+Each server event becomes its own `TTSSpeakFrame`, so the early acknowledgement and the final reply
+arrive as separate spoken utterances and the streaming cadence of the conversation survives into speech.
+
+**The engine is `CONJURE_TTS`**, resolved by `conjure/tts.py` into a **speech profile** — how to build
+the pipecat service, its sample rate, and what it can render:
+
+| `CONJURE_TTS` | Engine | Speech tags | Needs |
+|---|---|---|---|
+| `kokoro` (default) | Kokoro, voice `af_heart`, local | none | the `[voice]` extra |
+| `grok` | xAI Grok TTS over `POST https://api.x.ai/v1/tts`, PCM; voice `CONJURE_XAI_TTS_VOICE` (`ara`; also `eve`, `rex`, `sal`, `leo`) | 26, below | `XAI_API_KEY` |
+
+An unknown name, or Grok without its key, is refused **at startup** with the fix in the message — a
+pipeline that starts and then fails on the first reply hides which line was wrong. `conjure-doctor`
+reports the same check.
+
+### 5.1 Speech tags — the listener's vocabulary, registered with the server
+
+Grok renders **speech tags** written into the text: inline tags at a point (`[laugh]`, `[pause]`,
+`[sigh]`, `[giggle]`, `[breath]`, …) and wrapping tags around a span (`<whisper>…</whisper>`,
+`<slow>…</slow>`, `<emphasis>…</emphasis>`, `<singing>…</singing>`, …). The full vocabulary is the
+`GROK_INLINE` / `GROK_WRAPPING` tables in `conjure/tts.py`, copied from xAI's docs. Kokoro would read
+the brackets aloud. So a tag is a property of the **listener**, and that is where it is declared:
+
+1. **The profile knows its tags and the guidance for them.** `SpeechProfile.prompt` is rendered from the
+   same tables the tag names come from, so the vocabulary the model is told about and the vocabulary
+   the server strips cannot drift apart. The guidance is xAI's own — sparingly, with punctuation, around
+   whole phrases — plus the rule that matters in a shared conversation: the reply must still read as a
+   complete sentence with every tag removed, because text clients see exactly that.
+2. **The voice client registers it on connect** — and on every reconnect, since the server forgets a
+   connection's registration with the connection:
+   ```
+   client → server   {type:"register", speech:{engine:"grok", tags:[…26 names…], prompt:"…"}}
+   ```
+   Kokoro registers too, with no tags and an empty prompt. It is a statement of capability, not a
+   request: the server decides what to do with it.
+3. **The agent server composes the live registrations into the Director's `speech` slot**
+   ([`agents.md`](./agents.md) §5.3), which every bundled agent frames as `{#speech}…{speech}…{/speech}`.
+   Two Grok clients contribute one copy; a Kokoro client contributes nothing; with no tag-rendering
+   listener connected the section drops out of the system prompt entirely, and the model is never told
+   about tags it has no one to speak to. An agent switch rebuilds the Director, and the follower
+   re-applies the composition after every re-bind.
+4. **Replies are rendered per connection** (`_render_for`, the same fan-out seam as the speech stage in
+   [`agents.md`](./agents.md) §10): a voice client keeps the tags its own engine registered and loses
+   any other; the CLI, and a voice client on a tagless engine, lose them all (`speech.strip_tags`). The
+   stripped set is every tag any client has registered **since the server started**, not just the ones
+   live now — a Grok client that disconnects leaves tagged replies in the transcript and the model keeps
+   the habit for a turn or two, and the CLI must go on reading clean sentences. Only *named* tags are
+   ever touched: `[asset 3f2a]` in the builder's vocabulary is not a speech tag.
+
+The transcript stores what the model wrote, tags and all — a rendering, not an edit, like the rest of
+the speech stage. Nothing in an agent prompt names an engine: change `CONJURE_TTS` and the vocabulary,
+the guidance and the rendering all follow from the one registration.
 
 ## 6. Echo, interruption, and why barge-in is off
 
@@ -142,6 +195,8 @@ compose: the mic gate opens the channel, the shell's escape decides whether what
   history at you on reconnect.
 - **Client kind `voice`.** The server uses this to serve the modal/navigational command subset; a spoken
   directory listing helps nobody.
+- **`register` first.** Immediately after connecting (every time — a reconnect is a new connection to
+  the server) the client sends its speech profile's registration (§5.1), before any turn.
 - **Reconnect** on any failure with a 1-second backoff, indefinitely. While disconnected, a submitted
   turn is answered by speech: *"The agent server isn't connected yet."*
 - **Spoken events:** `assistant_delta`, `assistant_final`, `notice`. `busy` speaks a canned "one moment"
@@ -212,10 +267,16 @@ without pipecat or a microphone (`tests/test_stt_corpus.py`) — including that 
 an unknown `reviewed` marker reads as *not* reviewed, and that tabs in a hypothesis cannot break the
 TSV.
 
+The speech profiles are pure and tested without pipecat (`tests/test_tts.py`): the two engines, the
+startup refusals, and that Grok's registration carries every tag its prompt mentions. The stripper is
+tested in `tests/test_speech.py`; the registration protocol, the per-connection rendering and the
+re-bind survival in `tests/test_agent_server.py`; the `{speech}` injection in `tests/test_director.py`.
+
 The real-time pipeline is not unit-tested. The **Tier-2 contract test** asserts the pipecat classes we
 construct still have the shapes we call ([`testing.md`](../testing.md)) — including that
 `WhisperSTTService.run_stt` is still an async generator taking `audio`, since `--stt-corpus` taps it
-and drift there would stop recording *silently*.
+and drift there would stop recording *silently*, and that `XAIHttpTTSService` still takes `api_key` and
+`settings=`.
 
 Accuracy itself is still covered by no automated test; that is what a labelled corpus exists to make
 possible.

@@ -78,7 +78,9 @@ torch wheel to avoid the CUDA download.
 
 ## Keys
 
-Speech runs **locally** (Whisper STT, Kokoro TTS) — no key. Everything else is per-feature, all in
+Speech runs **locally** by default (Whisper STT, Kokoro TTS) — no key. `CONJURE_TTS=grok` switches the
+mouth to xAI's Grok TTS, which renders speech tags (a laugh, a whisper) and needs `XAI_API_KEY` in the
+voice client's environment. Everything else is per-feature, all in
 `.env` (git-ignored). **The current table is in the [README](../README.md#quickstart)**; in short you
 need at least one director key (`ANTHROPIC` / `GOOGLE` / `OPENAI` / `XAI`), plus `POLY_PIZZA_API_KEY`
 for 3D models and any of `GOOGLE`/`OPENAI`/`XAI` for image generation.

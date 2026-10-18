@@ -2,7 +2,12 @@
 
 Wires a real-time voice front-end to the shared agent:
 
-    mic → Silero VAD → Whisper STT → WebSocket → agent server → WebSocket → Kokoro TTS → speaker
+    mic → Silero VAD → Whisper STT → WebSocket → agent server → WebSocket → TTS → speaker
+
+The TTS engine is `CONJURE_TTS` (conjure/tts.py): Kokoro (local) or Grok (xAI, renders speech tags such
+as [laugh] and <whisper>…</whisper>). On connect this client REGISTERS its engine with the agent server —
+the tag vocabulary and the prompt guidance for it — so the LLM is told what it may write and every other
+client is sent the reply with the tags stripped. The engine is the only thing here that knows a tag.
 
 PipeCat here is only *ears and mouth*: STT, TTS, VAD, end-of-turn detection, and mute-while-speaking
 echo mitigation. A completed spoken turn is sent to the **agent server** over one WebSocket (as the
@@ -33,6 +38,7 @@ from typing import Callable, Optional
 from .config import (DEFAULT_USER, VOICE_WAKE_WORDS, WAKE_WORDS, Settings, get_settings,
                      voice_wake_aliases, wake_word_conflict)
 from .stt_corpus import CORPUS_DIR, Corpus, purge as purge_corpus, summary as corpus_summary
+from .tts import SpeechProfile, profile_for
 
 # PipeCat pipeline idle timeout (seconds). Prevents idle-timeout warnings after inactivity.
 PIPELINE_IDLE_TIMEOUT_SECS = 3600  # 1 hour
@@ -89,7 +95,8 @@ def _agent_reachable(url: str) -> bool:
 
 
 async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional[str] = None,
-               corpus: Optional["Corpus"] = None) -> None:
+               corpus: Optional["Corpus"] = None, profile: Optional[SpeechProfile] = None) -> None:
+    profile = profile or profile_for(settings)   # the mouth: which engine, its rate, its tags (conjure/tts.py)
     # Heavy imports are local so the package stays importable on a base (no-voice) install.
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.audio.vad.vad_analyzer import VADParams
@@ -107,7 +114,6 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
     from pipecat.turns.user_mute.always_user_mute_strategy import AlwaysUserMuteStrategy
     from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
     from pipecat.turns.user_turn_strategies import UserTurnStrategies
-    from pipecat.services.kokoro.tts import KokoroTTSService
     from pipecat.services.whisper.stt import WhisperSTTService
     from pipecat.transcriptions.language import Language
     from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
@@ -164,7 +170,7 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
             audio_in_enabled=True,
             audio_in_sample_rate=16000,
             audio_out_enabled=True,
-            audio_out_sample_rate=24000,  # Kokoro's native rate
+            audio_out_sample_rate=profile.sample_rate,   # the engine's native rate (24 kHz for both today)
         )
     )
 
@@ -216,7 +222,7 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
 
         stt = _CorpusWhisperSTTService(settings=stt_settings)
 
-    tts = KokoroTTSService(settings=KokoroTTSService.Settings(voice="af_heart"))
+    tts = profile.build(settings)
 
     bridge = VoiceBridge()
 
@@ -229,6 +235,11 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
             try:
                 async with websockets.connect(url) as ws:
                     holder["ws"] = ws
+                    # Say what we can render BEFORE the first turn, and again on every reconnect (the
+                    # server forgets a connection's registration with the connection). The server
+                    # injects the engine's tag guidance into the system prompt and keeps the tags in
+                    # replies bound for us; a plain engine registers no tags and hears none.
+                    await ws.send(json.dumps({"type": "register", "speech": profile.registration()}))
                     async for raw in ws:
                         ev = json.loads(raw)
                         t = ev.get("type")
@@ -298,8 +309,9 @@ async def _run(settings: Settings, user: str = DEFAULT_USER, wake_word: Optional
     runner = PipelineRunner(handle_sigint=True)
 
     listen_task = asyncio.create_task(listen())
-    print(f"🎙️  Conjure voice is listening (agent server {settings.agent_url}). Speak to build the world; "
-          f"say 'conjure open shell' then 'use <name>' / 'agent <name>' to switch. Ctrl+C to stop.")
+    print(f"🎙️  Conjure voice is listening (agent server {settings.agent_url}; speaking through "
+          f"{profile.description}). Speak to build the world; say 'conjure open shell' then "
+          f"'use <name>' / 'agent <name>' to switch. Ctrl+C to stop.")
     try:
         await runner.run(task)
     finally:
@@ -373,6 +385,14 @@ def main() -> int:
               f"(which itself needs the world server:  python -m conjure)")
         return 1
 
+    # The engine is checked at the door — an unknown name or a missing key is a one-line fix, and a
+    # pipeline that starts and then fails on the first reply hides which line.
+    try:
+        profile = profile_for(settings)
+    except ValueError as exc:
+        print(f"{exc}")
+        return 1
+
     if args.wake_word:
         print(f"🔒 Wake word active: say '{args.wake_word}' before a command.")
 
@@ -384,7 +404,7 @@ def main() -> int:
         print(f"⏺  STT corpus recording to {corpus.root} (input: {corpus.device}). "
               f"Paused while a session is private. Purge: --stt-corpus-purge")
     try:
-        asyncio.run(_run(settings, args.user, args.wake_word, corpus))
+        asyncio.run(_run(settings, args.user, args.wake_word, corpus, profile))
     except KeyboardInterrupt:
         print("\nStopped.")
     except ImportError as exc:

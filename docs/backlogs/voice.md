@@ -273,6 +273,14 @@ true; today it describes an intention the code never picked up.
 `Settings.stt` / `CONJURE_STT` is declared in [`config.md`](../specs/config.md) and read by
 `doctor.py` but **never consulted by `voice.py`** — a seam declared in one file and ignored in another.
 
+**The TTS seam is built** (2026-10-18): `CONJURE_TTS` picks a speech profile in `conjure/tts.py`, and
+Grok is the second real implementation beside Kokoro — which is what made the seam's shape honest
+(spec §5). The same shape is the template for the two below: a profile that builds the service, states
+what it needs, and registers what it can do. Grok also has an STT API (batch and streaming; pipecat
+ships `pipecat.services.xai.stt`) and would be a natural second implementation for the STT seam — but
+read the investigation first: accuracy is measured here, not assumed, and a cloud recognizer has to
+beat `small.en` on the Bluetooth corpus, not on a demo.
+
 Two seams are wanted:
 
 - **Transport** — local microphone today, Quest audio later, same pipeline downstream. This is the one

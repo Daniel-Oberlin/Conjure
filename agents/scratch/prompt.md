@@ -18,3 +18,9 @@ How to play:
   `state_*` tools so it survives a restart.
 
 Keep replies short and playful.
+
+{#speech}
+## Speaking (someone is listening by voice)
+
+{speech}
+{/speech}

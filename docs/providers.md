@@ -26,6 +26,7 @@ cost, strong tool-calling where it matters, one API key (Anthropic). Maps onto t
 | 💡 Moonshine | local | Built for **streaming on edge / Raspberry Pi**; low latency, low hallucination. Needs custom wiring. |
 | 💡 NVIDIA Parakeet (`parakeet.cpp`) | local | Very fast, runs on Apple Silicon via Metal. Needs custom wiring. |
 | 💡 Deepgram / AssemblyAI | cloud | True low-latency streaming; snappiest feel. Per-minute cost + keys. |
+| 💡 xAI Grok STT | cloud | Batch `POST /v1/stt` and a streaming WebSocket; pipecat ships `pipecat.services.xai.stt`. Same key as Grok TTS. Not wired: `CONJURE_STT` is still not read by `voice.py` ([backlogs/voice.md](./backlogs/voice.md)). |
 
 ### Director LLM (roster — vision §3, arch §7a)
 Multiple named LLMs may be active in one session; this is the **default director** + likely roster
@@ -50,8 +51,9 @@ The roster (casual name → vendor/key/models/roles) lives in **one place**: the
 ### Text-to-speech (TTS)
 | Option | Hosting | Notes |
 |---|---|---|
-| ✅ **Kokoro** | local | 82M, Apache-2.0, studio-grade for its size; real-time on Apple Silicon (MLX). PipeCat-native. **Best voice quality (local).** |
-| 🟢 Piper | local | Sub-50ms first-audio; runs Pi → Mac; PipeCat-native. **Lowest latency / most Pi-friendly.** No voice cloning. |
+| ✅ **Kokoro** | local | 82M, Apache-2.0, studio-grade for its size; real-time on Apple Silicon (MLX). PipeCat-native. **Best voice quality (local).** No speech tags. `CONJURE_TTS=kokoro` (default). |
+| ✅ **xAI Grok TTS** | cloud | `CONJURE_TTS=grok` + `XAI_API_KEY`. Five voices (`CONJURE_XAI_TTS_VOICE`, default `ara`), 24 kHz PCM over `POST /v1/tts` (pipecat's `XAIHttpTTSService`). **Speech tags** — `[laugh]`, `[sigh]`, `<whisper>…</whisper>`, `<slow>…</slow>`, 26 in all — which the voice client *registers* with the agent server so the director is prompted for them and text clients never see them ([specs/voice.md](./specs/voice.md) §5.1). The engine is the one thing that knows a tag: `conjure/tts.py`. |
+| 🟢 Piper | local | Sub-50ms first-audio; runs Pi → Mac; PipeCat-native. **Lowest latency / most Pi-friendly.** No voice cloning. Not wired to `CONJURE_TTS` (a profile row in `conjure/tts.py` would do it). |
 | 💡 Cartesia | cloud | Very low latency, high quality. |
 | 💡 ElevenLabs | cloud | Top quality, slightly more latency. |
 
@@ -146,7 +148,9 @@ content-source modules (§13).
 ## How a default is chosen / swapped
 
 - **Config-driven:** a provider factory reads `.env` (e.g. `CONJURE_STT=whisper`, `CONJURE_TTS=kokoro`,
-  `CONJURE_LLM=claude`) and instantiates the matching service behind a uniform interface.
+  `CONJURE_LLM=claude`) and instantiates the matching service behind a uniform interface. Built for
+  TTS (`conjure/tts.py`, `PROFILES`) and the director roster (`conjure/llm.py`, `ROSTER`); STT is still
+  hardcoded to Whisper.
 - **Secrets:** API keys live in `.env` (git-ignored); a committed `.env.example` documents the vars.
 - **Topologies (#1):** the same code runs all-cloud (Pi orchestrator), part-local (Mac), or with a
   self-hosted home GPU box serving local model endpoints.

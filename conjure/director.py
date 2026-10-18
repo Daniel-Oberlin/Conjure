@@ -51,6 +51,13 @@ OnTool = Callable[..., Awaitable[None]]   # (name: str, args: dict) -> None
 REPEAT_LIMIT = 2
 
 
+# The prompt slots a connected client may register text into (`Director.client_prompts`), each reachable
+# from an agent's prompt.md as `{<slot>}` / `{#<slot>}…{/<slot>}`. One today: `speech`, the tag guidance a
+# voice client's TTS engine needs (conjure/tts.py). A new kind of client prompting is a new slot here, a
+# `register` field on the wire (agent_server), and a placeholder in the agents that want it.
+CLIENT_PROMPT_SLOTS: tuple[str, ...] = ("speech",)
+
+
 class Busy(RuntimeError):
     """A turn was submitted while another is already in flight. The Director holds a **single floor**
     (docs/specs/agents.md §5.1, reject-while-busy): among people co-located in one room, concurrent speech
@@ -211,6 +218,12 @@ class Director:
         self._ctx_chars: dict = {"prompt": 0, "space": 0, "tools": _tools_chars(self._tools), "history": 0}
         self._last_injected: dict = {}             # injection name → chars, from the most recent `_system()`
         self._measured = False                     # has a real turn filled `_ctx_chars` yet?
+        # Prompting that CLIENTS register, slot → text (docs/specs/agents.md §5.3). A voice client whose
+        # engine renders speech tags registers the guidance for them on connect; the agent server keeps
+        # the live set and writes the composed text here. Read per turn through the slot's injection
+        # placeholder, so an agent frames it like any other injection (`{#speech}…{speech}…{/speech}`)
+        # and the Director still carries no text of its own. Empty slot ⇒ the section is dropped.
+        self.client_prompts: dict[str, str] = {}
 
     def context_stats(self) -> dict:
         """What the model is being sent, for a front-end to display: how many transcript turns exist vs
@@ -303,6 +316,11 @@ class Director:
             ("user", lambda: self._speaker),      # WHO is speaking this turn (human identity; per-turn)
             ("context", self._fetch_context),     # live MCP context resources (async; docs/specs/agents.md §5.3)
         ]
+        # Client-registered prompting, one placeholder per slot. Always registered — an unreferenced
+        # placeholder costs nothing, and a referenced one must be FILLED (to "") when no client has
+        # registered, or the agent's `{#speech}…{/speech}` framing would reach the model verbatim.
+        for slot in CLIENT_PROMPT_SLOTS:
+            rows.append((slot, lambda sl=slot: self.client_prompts.get(sl, "")))
         # Agent-state docs declaring an `inject` placeholder (docs/specs/agents.md §7.4): wire each into
         # the prompt as JSON, read from the live session's StateStore — the SAME mechanism as {user}.
         for docname, spec in self.state_defs.items():

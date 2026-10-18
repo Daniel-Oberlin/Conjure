@@ -5,6 +5,8 @@ over a single per-connection **WebSocket**:
 
     ws://…/ws?user=<name>
       client → server:  {type:"turn", text}          # one line of input (utterance OR command)
+                        {type:"register", speech:{engine, tags, prompt}}   # what this client can RENDER —
+                                                      # a voice client's TTS engine and its speech tags
       server → client:  {type:"context", …}           # this connection's state (agent, llm, user, in_shell,
                                                         # world, space) — DATA; the client formats its prompt
                         {type:"user_turn"|"assistant_delta"|"assistant_final"|"tool_call"|"notice"|
@@ -34,7 +36,7 @@ from .config import DEFAULT_USER, USERS_DIR, VOID, Settings
 from .director import Busy
 from .llm import Turn
 from .shell import Shell, default_cwd
-from .speech import for_speech
+from .speech import for_speech, strip_tags
 from .world import MIGRATED_SID, SessionRepository
 
 
@@ -55,6 +57,9 @@ class Conn:
                                          # needs a world-server round trip that a prompt redraw hasn't got.
         self.bumped = False              # auto-forced into shell by a private session (§8.3) — distinct from
                                          # a user who chose shell, so we only auto-restore what we bumped
+        self.speech: Optional[dict] = None   # this client's `register`ed speech block — {engine, tags, prompt}
+                                         # — i.e. which TTS engine it speaks through and the tags it renders.
+                                         # None for a text client, or a voice client that never registered.
 
     async def send(self, event: dict) -> None:
         """Tolerant of a closed socket, for the same reason `Hub.broadcast` is: a client that has gone
@@ -183,12 +188,68 @@ async def _conv_broadcast(app: FastAPI, event: dict, *, origin: Optional[Conn] =
     for c in app.state.hub.conns:
         if _permitted(app, c):
             ev = event
-            if c.kind == "voice" and event.get("type") in _SPOKEN_TEXT:
-                ev = {**event, "text": for_speech(event.get("text") or "")}
+            if event.get("type") in _SPOKEN_TEXT:
+                ev = {**event, "text": _render_for(app, c, event.get("text") or "")}
             try:
                 await c.send({**ev, "mine": True} if c is origin else ev)
             except Exception:  # noqa: BLE001 — a dead socket must not break the fan-out
                 pass
+
+
+def _render_for(app: FastAPI, conn: Conn, text: str) -> str:
+    """LLM prose as THIS connection should receive it.
+
+    Two rewrites, both per connection. A voice client gets speakable text (`for_speech`). Then the speech
+    tags: a voice client that registered an engine keeps the tags that engine renders and loses any other;
+    every other client — the CLI, a voice client on a tagless engine — loses them all. The vocabulary
+    stripped is `tags_seen`, every tag any client has registered since this server started, not just the
+    ones registered NOW: a Grok client that disconnects leaves tagged replies in the transcript, and the
+    model keeps the habit for a turn or two, so the CLI must go on reading clean sentences after the
+    reason for the tags has gone. Only ever named tags — see `speech.strip_tags`."""
+    tags = app.state.tags_seen
+    if conn.kind == "voice":
+        text = for_speech(text)
+        return strip_tags(text, tags, keep=(conn.speech or {}).get("tags") or ())
+    return strip_tags(text, tags)
+
+
+# --------------------------------------------------------------------------- client-registered prompting
+
+def _register(app: FastAPI, conn: Conn, msg: dict) -> None:
+    """A client's `register` message: what it can RENDER, so the model can be told what to write. Today
+    one block, `speech` — `{engine, tags, prompt}` from the voice client's TTS profile (conjure/tts.py).
+    Re-registering replaces; an empty or absent block clears. The tag names join `tags_seen` for good
+    (see `_render_for`), and the live prompts are recomposed into the Director."""
+    speech = msg.get("speech")
+    conn.speech = speech if isinstance(speech, dict) and speech.get("engine") else None
+    if conn.speech:
+        app.state.tags_seen.update(t for t in (conn.speech.get("tags") or []) if isinstance(t, str))
+        print(f"[speech] {conn.user}'s voice client speaks through {conn.speech['engine']} "
+              f"({len(conn.speech.get('tags') or [])} tags"
+              f"{', with prompt guidance' if (conn.speech.get('prompt') or '').strip() else ''})")
+    _sync_client_prompts(app)
+
+
+def _client_prompts(app: FastAPI) -> dict[str, str]:
+    """The composed client prompting, slot → text, from every LIVE connection. The `speech` slot is the
+    distinct engines' guidance joined — two Grok clients contribute one copy, a Kokoro client (no tags,
+    empty prompt) contributes nothing, so the section drops out of the system prompt when nobody who is
+    listening can render a tag."""
+    by_engine: dict[str, str] = {}
+    for c in app.state.hub.conns:
+        sp = c.speech
+        if sp and (sp.get("prompt") or "").strip():
+            by_engine.setdefault(str(sp["engine"]), sp["prompt"].strip())
+    return {"speech": "\n\n".join(by_engine[k] for k in sorted(by_engine))}
+
+
+def _sync_client_prompts(app: FastAPI) -> None:
+    """Write the composed client prompting into the live Director. Called whenever the set changes (a
+    `register`, a disconnect) AND after every re-bind — a fresh Director starts with an empty dict, and
+    the clients that registered are still connected."""
+    d = app.state.shell.director if app.state.shell else None
+    if d is not None and hasattr(d, "client_prompts"):
+        d.client_prompts = _client_prompts(app)
 
 
 async def _apply_bumps(app: FastAPI) -> None:
@@ -475,6 +536,7 @@ async def _reconcile_state(app: FastAPI, state: dict) -> None:
                 if expected != new_agent:                # nobody here asked for this — say so
                     await hub.broadcast({"type": "notice", "text": _agent_change_notice(state)})
     app.state.live = state
+    _sync_client_prompts(app)                            # a re-bind made a fresh Director; the clients didn't move
     _sync_transcript(app)                                # (re)load the live session's saved dialog (step 2)
     _maybe_seed(app)                                     # seed a new session's agent-state once (step 5b)
     await _maybe_greet(app)                              # speak a new session's opening line once (step 4b)
@@ -607,6 +669,7 @@ def build_app(settings: Settings, *, agent: Optional[str] = None, user: str = DE
         app.state.hub = Hub()
         app.state.turn_active = False
         app.state.live = None                            # last world-server state tuple (set by the follower)
+        app.state.tags_seen: set[str] = set()            # every speech tag any client has registered (see _render_for)
         app.state.sessions = SessionRepository(USERS_DIR)  # transcript store; tests may repoint at a tmp
         app.state.loaded_session = None                  # (scope, sid) whose transcript is loaded (step 2)
         app.state.floor_lock = asyncio.Lock()            # serializes turns against a follower re-bind (C2)
@@ -685,6 +748,9 @@ def build_app(settings: Settings, *, agent: Optional[str] = None, user: str = DE
             inflight: Optional[asyncio.Task] = None
             while True:
                 msg = await websocket.receive_json()
+                if msg.get("type") == "register":        # what this client can render — no floor needed
+                    _register(app, conn, msg)
+                    continue
                 if msg.get("type") != "turn":
                     continue
                 # (C3) elif msg.get("type") == "interrupt": cancel the in-flight turn
@@ -700,6 +766,8 @@ def build_app(settings: Settings, *, agent: Optional[str] = None, user: str = DE
             # a constructor) that is worse abandoned half-done than completed unheard. Its final sends
             # fail into the closed socket, which `_handle_turn` already tolerates.
             app.state.hub.remove(conn)
+            if conn.speech:                              # its engine left with it; recompose the prompting
+                _sync_client_prompts(app)
 
     return app
 

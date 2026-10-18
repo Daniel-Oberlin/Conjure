@@ -8,6 +8,11 @@ at worst. This module is the one place that turns written text into *speakable* 
 filtered, so nothing here is persisted, echoed back, or visible in the transcript — `agent_server`
 applies it at fan-out, to assistant text only (see `_conv_broadcast`).
 
+Speech tags (`[laugh]`, `<whisper>…</whisper>`) are the one case that runs the OTHER way: a voice client
+whose engine renders them must hear them, and everyone else must not — so `strip_tags` takes the
+vocabulary a client registered (conjure/tts.py) and is applied per connection by `agent_server`, not as
+a stage of `for_speech`.
+
 Adding a case is adding a function to `_STAGES`. They run in order over the whole string; each takes and
 returns text, so they compose and are individually testable. Deliberately small: an LLM's phrasing is the
 agent prompt's job, and rewriting meaning here would make the spoken and written conversations diverge.
@@ -94,6 +99,32 @@ def name_emoji(text: str) -> str:
         if names:
             out.append(f"{' '.join(names)} {'emojis' if len(names) > 1 else 'emoji'}")
     return "".join(out)
+
+
+def strip_tags(text: str, tags, *, keep=()) -> str:
+    """Remove the speech tags in `tags` that `keep` does not list — `[name]` for an inline tag, `<name>`
+    and `</name>` for a wrapping one — and tidy the gap each one leaves.
+
+    This is the inverse of the guidance a voice client registers (conjure/tts.py): the engine that asked
+    for `[laugh]` is the only listener that should hear it. A CLI reads the sentence without it, and a
+    voice client on an engine with no tag support hears the words without a spoken "bracket laugh".
+    Only NAMED tags are touched: `[asset 3f2a]` or a stray `<id>` in prose is never a speech tag, and a
+    stripper that guessed at shapes would eat exactly the bracketed ids the builder prompt uses.
+
+    A tag is matched whole and case-insensitively (an LLM may write `[Laugh]`). The spaces around a removed
+    inline tag collapse to one, so "Really? [laugh] That's" reads "Really? That's"; a removed wrapping tag
+    leaves its span in place."""
+    if not text:
+        return text
+    names = [t for t in tags if t and t not in set(keep)]
+    if not names:
+        return text
+    alt = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+    out = re.sub(r"[^\S\n]*\[(?:" + alt + r")\][^\S\n]*", " ", text, flags=re.I)   # inline → one space
+    out = re.sub(r"</?(?:" + alt + r")>", "", out, flags=re.I)                     # wrapping → its span
+    out = re.sub(r"[^\S\n]{2,}", " ", out)             # a tag between two spaces left two; keep one
+    out = re.sub(r"(?m)^[^\S\n]+|[^\S\n]+$", "", out)   # …or an indent / a trailing space on its line
+    return re.sub(r"[^\S\n]+([,.!?;:])", r"\1", out)   # "word [laugh]." → "word."
 
 
 # Ordered. Asterisks first: stripping them can't create an emoji, but an emoji name could contain

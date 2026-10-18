@@ -33,6 +33,7 @@ Consequential forks. Each is `OPEN` until we choose; then we record the choice a
 | 29 | Does `ConjurePointers` belong in the dynamics spec? | ✅ RESOLVED | No — `specs/input.md`; its consumers are not all modules |
 | 30 | Is a worn hand model world state, or a per-client setting? | 🔶 DESIGNED | An occupied entity — durable, replayed on reload, "put it down" names a place |
 | 31 | Does a worn hand conform to the tracked hand, and what does contact read? | 🔶 DESIGNED | Conform all 25 joints; contact reads the JOINTS, never the skinned mesh |
+| 32 | Where does a TTS engine's speech-tag vocabulary live, and who sees the tags? | ✅ RESOLVED | With the listener: the voice client registers it per connection; the server prompts for it and renders per connection |
 
 > Numbering note: §15 appears twice (an older "Users, spaces, and a user-first namespace" section
 > predates the table row for world/space identity), and §16 has a section but no table row. External
@@ -734,3 +735,29 @@ identity. A hand authored any other way gets no map and is refused with a reason
 agree); driving only the wrist and letting a clip or IK approximate the fingers (the fingers are the
 whole point); and colliding against the skinned mesh (per-frame cost, for a silhouette the joints
 already describe).
+
+### 32. Where does a TTS engine's speech-tag vocabulary live, and who sees the tags? — ✅ RESOLVED
+**Choice:** With the **listener**. The voice client's TTS profile (`conjure/tts.py`) owns the engine's
+tag vocabulary and the prompt guidance for it, and **registers** both with the agent server on every
+connection. The server composes the live registrations into one Director injection slot (`{speech}`,
+which the agent's own prompt frames), and renders every reply **per connection**: a client keeps the
+tags its own engine registered, everyone else gets the sentence with them stripped. The transcript keeps
+what the model wrote. ([`specs/voice.md`](./specs/voice.md) §5.1, [`specs/agents.md`](./specs/agents.md)
+§5.3.)
+
+**Why:** Grok renders `[laugh]` as a laugh; Kokoro reads "bracket laugh"; a CLI should see neither. So
+the tag is a fact about *who is listening*, which changes per connection and at runtime — exactly the
+thing an agent's `prompt.md` cannot know and the server cannot be configured with once. Putting the
+vocabulary in the profile and sending it over the wire keeps three invariants the rest of the design
+already rests on: the Director carries no text of its own (the guidance is the engine's, the framing
+the agent's); the fan-out seam is the one place a reply is rendered differently for different clients
+(the speech stage already lives there); and the transcript is one conversation (a rendering, not an
+edit). It also makes the engine the single source: the prompt is generated from the same tag tables the
+stripper uses, so the model can never be told about a tag the server would not recognise.
+
+**Rejected:** naming the engine in agent prompts (every agent would need a Grok branch and a Kokoro
+branch, and the wrong one would fire whenever the voice client's config changed); a server-side
+`CONJURE_TTS` (the server does not speak, and two voice clients may differ); stripping tags by shape
+(`[asset 3f2a]` is what the builder calls a library asset); and stripping only while a tag-rendering
+client is connected (the model keeps the habit for a turn or two after it leaves, so the vocabulary is
+remembered for the life of the server).

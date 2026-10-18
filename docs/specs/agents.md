@@ -322,6 +322,17 @@ async. Today:
 | `{user}` | the **speaker of this turn** (`_speaker`), not a fixed launch identity |
 | `{context}` | the agent's `context` MCP resources, concatenated (`_fetch_context`) |
 | per-doc, e.g. `{quest}` | the live session's state doc as JSON (§7.4) |
+| `{speech}` | **client-registered prompting**: the speech-tag guidance of every connected voice client's TTS engine, composed (`Director.client_prompts`); empty — section dropped — while no listener renders tags |
+
+**Client-registered prompting.** A connected client may tell the server what it can *render*, and that
+becomes prompting the model needs — today the one case is a voice client whose TTS engine renders speech
+tags (`[laugh]`, `<whisper>…</whisper>`; [`voice.md`](./voice.md) §5.1). The client sends it in a
+`register` message (§8.1); the agent server composes the live set into `Director.client_prompts`, slot →
+text, and the Director exposes each slot in `CLIENT_PROMPT_SLOTS` as an injection. The Director still
+carries no text of its own: the guidance is the engine's, the framing is the agent's, and the slot is
+always registered so an agent's `{#speech}…{/speech}` is filled (to nothing) rather than sent verbatim
+when no one has registered. A new kind of client prompting is a new slot name, a new `register` field,
+and a placeholder in the agents that want it.
 
 A failed or missing context resource is skipped, never fatal. The world server exposes three:
 
@@ -941,6 +952,7 @@ One long-lived process holding one `Shell` → one `Director` → one shared tra
 ws://<agent_url>/ws?user=<name>&client=cli|voice&backlog=0|1&shell=0|1
 
 client → server   {type:"turn", text}                    # one line: an utterance OR a command
+                  {type:"register", speech:{engine, tags, prompt}}   # what this client can RENDER (§5.3)
 server → client   {type:"context", …}                    # this connection's state — DATA, not a prompt
                   {type:"user_turn"|"assistant_delta"|"assistant_final"|"tool_call", …}
                   {type:"notice"|"busy"|"turn_done", …}
@@ -950,6 +962,9 @@ server → client   {type:"context", …}                    # this connection's
   can't *speak* the history, so it wants only the current context. `shell=1` opens the connection
   already in shell mode (`cli --open-shell`).
 - **`turn_done` always fires**, in a `finally`, and is the client's prompt gate.
+- **`register` is not a line.** It is handled between turns, needs no floor, and produces no event —
+  not even a `turn_done`. It replaces this connection's earlier registration; the server forgets it
+  with the connection, so a reconnecting client sends it again.
 - `busy` is the single floor rejecting a concurrent turn. It is **always paired with a `turn_done`** —
   the gate has to re-arm, or a refusal wedges the prompt just as surely as the wait it replaced.
 - **The receive loop reads ahead.** A submitted line runs as a task and the loop goes straight back to
@@ -1222,13 +1237,15 @@ The **one** client-side special case is the quit words (`:q`, `quit`, `exit`, `b
 ### Voice (`voice.py`)
 
 ```
-mic → Silero VAD → Whisper STT → WebSocket → agent server → WebSocket → Kokoro TTS → speaker
+mic → Silero VAD → Whisper STT → WebSocket → agent server → WebSocket → TTS (Kokoro | Grok) → speaker
 ```
 
 PipeCat is only **ears and mouth**: STT, TTS, VAD, end-of-turn detection, and mute-while-speaking echo
-mitigation. No LLM, no Director, no keys. A completed spoken turn is sent as `{type:"turn", text}`; the
-server's `assistant_delta` / `assistant_final` / `notice` events are spoken, preserving the streaming
-cadence. `backlog=0`, because a fresh connection shouldn't get the whole transcript spoken at it.
+mitigation. No LLM, no Director, no keys — except a cloud TTS engine's own, which lives where the engine
+is called. A completed spoken turn is sent as `{type:"turn", text}`; the server's `assistant_delta` /
+`assistant_final` / `notice` events are spoken, preserving the streaming cadence. `backlog=0`, because a
+fresh connection shouldn't get the whole transcript spoken at it. On connect the client `register`s its
+TTS engine's speech-tag vocabulary and guidance ([`voice.md`](./voice.md) §5.1).
 
 `--wake-word` is a separate, purely voice-input concern: a mic-activation gate ahead of the socket.
 Bare wake word arms for the next utterance; wake word plus text submits the remainder immediately. It
@@ -1287,6 +1304,14 @@ than in the director:
 Only LLM prose is rewritten (`assistant_delta`, `assistant_final`). A `user_turn` is the speaker's own
 words echoed back and a `notice` is server-authored; rewriting either would make a client hear something
 different from what it said. Adding a case is adding a function to `_STAGES`.
+
+**Speech tags run the other way** and are the one rewrite applied to *text* clients too. When a voice
+client has registered a tag-rendering engine, the model writes `[laugh]` and `<whisper>…</whisper>`; at
+the same fan-out seam (`_render_for`) each connection gets the reply with the tags its own engine
+registered kept and every other known tag removed — so the CLI reads the plain sentence, a Kokoro voice
+client hears it, and only the Grok client hears the laugh. Named tags only, never a guessed shape, and
+the vocabulary is remembered for the life of the server, not the connection
+([`voice.md`](./voice.md) §5.1).
 
 ---
 
@@ -1380,7 +1405,10 @@ with no ordering dance.
    explicit `tools` list, and `context`/`dynamics` if it wants them.
 2. `agents/<name>/prompt.md` — **all** of the agent's text, including the framing around any injection
    it references (`{user}`, `{#context}…{/context}`, a state doc's `{…}`) and any per-LLM `{#llm}`
-   section (§5.3a) — whose branch names must be in the roster *and* in this agent's own `llms`.
+   section (§5.3a) — whose branch names must be in the roster *and* in this agent's own `llms`. Include
+   a `{#speech}…{speech}…{/speech}` section (§5.3) unless the agent should sound flat by voice: without
+   it a tag-rendering TTS engine is never told about its tags. `tests/test_director.py` checks every
+   bundled agent has one; a user agent is its author's to add.
 3. Optional: a `session` block (greeting, `first_world`), a `world.on_create` chain, a `state` block with
    seed and schema files.
 4. Confirm it loads (`load_agent("<name>", registry=load_server_registry())` fails loud on a typo'd

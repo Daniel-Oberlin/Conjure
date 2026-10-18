@@ -26,6 +26,13 @@ def test_pipecat_surface_we_depend_on():
 
     assert hasattr(WhisperSTTService, "Settings")
     assert hasattr(KokoroTTSService, "Settings")
+    # conjure/tts.py builds the Grok engine from pipecat's xAI service: HTTP endpoint, `api_key` +
+    # `settings=` (voice/language) — the two keyword names the profile passes.
+    from pipecat.services.xai.tts import XAIHttpTTSService
+
+    assert hasattr(XAIHttpTTSService, "Settings")
+    assert {"api_key", "settings"} <= set(inspect.signature(XAIHttpTTSService.__init__).parameters)
+    assert inspect.isasyncgenfunction(XAIHttpTTSService.run_tts)
     # --stt-corpus subclasses WhisperSTTService and taps run_stt: it must stay an ASYNC GENERATOR
     # (we iterate it and re-yield), it receives the audio bytes, and the text arrives on a
     # TranscriptionFrame.text. Drift in any of the three silently stops the corpus recording.

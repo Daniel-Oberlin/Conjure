@@ -306,7 +306,7 @@ this layout doesn't yet reach, and are not precluded by it.
 
 ## 9. Runtime settings — what `set` may change
 
-Every one of `Settings`' 63 fields reaches the app through an environment variable (`CONJURE_<FIELD>`,
+Every one of `Settings`' 64 fields reaches the app through an environment variable (`CONJURE_<FIELD>`,
 with six exceptions — the five API keys and `CONJURE_URL` — all of them unsettable anyway). The shell's
 `set` reads and changes them in place, and the useful half of its job is refusing the ones it can't.
 Four tiers, decided by `config.tier_of` — `SETTABLE` lists the two settable ones, `SECRET_KEYS` the API

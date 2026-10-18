@@ -595,3 +595,34 @@ def test_tools_chars_counts_name_description_and_schema():
     assert big > small > 0
     # an unserializable schema must not break a turn — it's just skipped
     assert _tools_chars([_tool("a", "b", {"bad": object()})]) >= 0
+
+
+# --------------------------------------------------------------------------- client-registered prompting
+
+async def test_speech_slot_is_an_injection_an_agent_frames_like_any_other():
+    from conjure.config import get_settings
+
+    """A voice client's engine guidance lands in `client_prompts["speech"]`; the agent's own prompt
+    frames it with `{#speech}…{/speech}`, and the section is dropped entirely while nothing is registered —
+    the Director carries no text of its own either way."""
+    from conjure.director import CLIENT_PROMPT_SLOTS
+
+    assert CLIENT_PROMPT_SLOTS == ("speech",)
+    d = Director(get_settings(), session=None, roster={}, active="Claude",
+                 prompt="Build stuff.{#speech}\n## Speaking\n{speech}{/speech}")
+    assert await d._system() == "Build stuff."
+    d.client_prompts["speech"] = "Use [laugh] sparingly."
+    assert await d._system() == "Build stuff.\n## Speaking\nUse [laugh] sparingly."
+    assert d._last_injected == {"speech": len("Use [laugh] sparingly.")}
+
+
+def test_every_bundled_agent_frames_the_speech_slot():
+    """An agent that forgets the placeholder silently gets a flat voice; the checklist says to add it."""
+    from conjure.agents import list_agents, load_agent, load_server_registry
+
+    reg = load_server_registry()
+    bundled = [n for n, src in list_agents() if src == "bundled"]
+    assert bundled                                   # a user agent on the path is theirs to update
+    for name in bundled:
+        a = load_agent(name, registry=reg)
+        assert "{#speech}" in a.prompt and "{speech}" in a.prompt and "{/speech}" in a.prompt, name

@@ -63,6 +63,14 @@ def main() -> int:
                      "" if present else "comes with pipecat-ai[kokoro]"))
     elif s.tts == "piper":
         rows.append((WARN, "Piper TTS — run a local Piper server + voice model", "see docs/running.md"))
+    elif s.tts == "grok":
+        # Cloud TTS with speech tags (conjure/tts.py). The key lives with the VOICE client here — it is what
+        # calls the engine — so this is the one key the doctor checks for the mouth rather than the director.
+        rows.append((OK if s.xai_api_key else FAIL,
+                     f"Grok TTS (voice '{s.xai_tts_voice}', speech tags) — XAI_API_KEY "
+                     f"{'set' if s.xai_api_key else 'missing'}", "" if s.xai_api_key else "set it in .env"))
+        if not s.xai_api_key:
+            hard_fail = True
     else:
         rows.append((WARN, f"TTS='{s.tts}' (non-local) — ensure its key/deps are set", ""))
 
