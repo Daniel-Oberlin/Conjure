@@ -62,38 +62,68 @@ Components and where each can run. "Host" = the machine running the Conjure serv
 
 | # | Component | Runs on | Responsibility |
 |---|---|---|---|
-| 1 | **Voice / CLI clients** | host | Thin front-ends. Voice is a PipeCat pipeline (STT → WebSocket → TTS) plus a wake gate; the CLI is a terminal REPL. Neither holds state, keys, or command logic |
+| 1 | **Voice / CLI clients** | host | Thin front-ends. Voice is a PipeCat pipeline (VAD → STT → WebSocket → TTS) plus a wake gate; the CLI is a terminal REPL. Neither holds state, keys, or command logic. Whisper hears and Kokoro speaks, both local ([specs/voice.md](./specs/voice.md)) |
 | 2 | **Agent server** | host | The long-lived host of the deterministic **shell** (switch agent/LLM/session, navigate the namespace — no LLM) above the active **agent** — an experience loaded from `agents/<name>/` ([specs/agents.md](./specs/agents.md)): an orchestrating LLM, MCP **client** of its scoped servers, with a **roster of named LLMs** (one active) sharing a single transcript (§7). One shared conversation for every client; follows the world server's live state |
-| 3 | **World server** | host | Owns the world document; validates + applies patches; serves the WebXR app; MCP **server** of world-editing tools; broadcasts state |
+| 3 | **World server** | host | Owns the world document; validates + applies patches; serves the WebXR app, module scripts and the shared clock; MCP **server** of world-editing tools; broadcasts state and relays presence |
 | 4 | **Dynamic modules** | host (served) + client (run) | Live, animated, interactive effects the agent can **conjure** into a world — fireflies, a rippling Water Picture, object manipulation. Each is a folder + manifest whose entry script registers one A-Frame component; the server serves it and delivers its **config in the world snapshot**, so presence and state are shared for free. Built; specified in [specs/dynamics.md](./specs/dynamics.md) |
 | 4b | **Behavior runtime** 🔴 | host **and** client | QuickJS-WASM sandbox for **LLM-authored** behaviors + geometry code (decision #7). Designed, not built — §9. Distinct from row 4: modules are curated, first-party, trusted code |
 | 5 | **Asset pipeline** | host (+ remote model APIs) | Resolve / generate / convert / optimize / cache content |
-| 6 | **Memory** | host | World store, **space store**, asset store, vector index, connection graph, sessions. A **space** is the persistent record of a real physical environment — surfaces, boundary, geolocation, owner — shared across a user's worlds rather than copied into each ([specs/spaces.md](./specs/spaces.md)) |
+| 6 | **Memory** | host | World store, **space store**, the **library** (asset catalog: SQLite + FTS + vector index, [specs/library.md](./specs/library.md)), content-addressed blobs, connection graph, sessions. A **space** is the persistent record of a real physical environment — surfaces, boundary, geolocation, owner — shared across a user's worlds rather than copied into each ([specs/spaces.md](./specs/spaces.md)) |
 | 7 | **MCP modules** | anywhere | Pluggable MCP **servers**: content sources, engines, capability extensions, input providers. *Not* row 4 — see the naming note in §11a |
 | 8 | **Input layer** | host **and** client | Normalize + merge input devices into abstract actions/axes. The client half is built (`ConjurePointers`, §11b) |
-| 9 | **Model services** | cloud / local / home box | STT, LLM, TTS, image-gen, 3D-gen behind a provider abstraction (decision #1); per-slot defaults/options in [providers.md](./providers.md) |
-| 10 | **WebXR client** | Quest / any WebXR device | Render + interact; VR/AR/flat; applies patches; capability detection |
-| 11 | **Audio engine** | client (+ host gen) | Extensible, plugin-based: spatialized playback, programmatic/procedural synthesis (Web Audio / AudioWorklet), generated/streamed sources (§7 spec) |
+| 9 | **Model services** | cloud / local / home box | STT, LLM, TTS, image-gen, captioning, embeddings, a vision **judge** behind a provider abstraction (decision #1); per-slot defaults/options in [providers.md](./providers.md). 3D-gen is designed, not wired |
+| 10 | **WebXR client** | Quest / any WebXR device | Render + interact; VR/AR/flat; applies patches; capability detection; captures and registers the real space locally; drives figures and worn hands |
+| 11 | **Audio engine** 🔴 | client (+ host gen) | Extensible, plugin-based: spatialized playback, programmatic/procedural synthesis (Web Audio / AudioWorklet), generated/streamed sources (vision, Goals). Not built as an engine — what exists is spatialized playback of a figure clip's bundled audio (`THREE.PositionalAudio` in `figure-clip`); no synthesis, no plugin surface |
+| 12 | **Figures** | host (import) + client (run) | Rigged humanoids: import discovers a **per-model vocabulary** (humanoid bone map, anatomical axes, clothing parts, expression rig, bundled clips) and freezes it into the catalog; runtime is data lookup — pose by name, dress, play or retarget a clip, set an expression, wear a tracked hand ([specs/figures.md](./specs/figures.md)). The single largest subsystem by code and the one this document used to omit |
+| 13 | **Captures** | host (+ a browser extension) | The ingest path from someone else's published 3D web build to catalog rows: grabber → reconstruction into self-contained GLBs (`playcanvas.py`, `compose.py`) → import with relations ([specs/captures.md](./specs/captures.md)). A second source beside Poly Pizza (§10) |
 
+```mermaid
+flowchart TB
+  subgraph clients["Thin clients — host"]
+    CLI["CLI REPL<br/>conjure.cli"]
+    VOICE["Voice client<br/>conjure.voice<br/>VAD → STT → ws → TTS"]
+  end
+
+  subgraph agent["Agent server — :8770"]
+    SHELL["Shell — deterministic<br/>agent · llm · session · namespace"]
+    DIR["Director — the active agent<br/>LLM roster · one shared transcript<br/>context resources"]
+    SHELL --> DIR
+  end
+
+  MCP["mcp_server<br/>tool gate: allow-list + access"]
+
+  subgraph world["World server — :8080 — the single source of truth"]
+    WS["World document · patches · rev<br/>validator (placeholder) · owner gate"]
+    STORE[("Memory<br/>worlds · spaces · sessions · pointer<br/>library: SQLite + FTS + vec<br/>content-addressed blobs")]
+    WS --- STORE
+  end
+
+  subgraph xr["WebXR client — Quest / any browser"]
+    SCENE["A-Frame scene<br/>patches · dynamic modules · figures · space capture · input layer"]
+  end
+
+  MODELS["Model services<br/>LLM · image gen · captioner · embeddings<br/>one provider abstraction"]
+
+  CLI -- "ws /ws — turn · events" --> SHELL
+  VOICE -- "ws /ws — turn · events" --> SHELL
+  DIR -- "MCP over stdio" --> MCP
+  MCP -- "HTTP" --> WS
+  DIR -. "ws /ws — passive listener, follows live state" .-> WS
+  WS -- "ws /ws — snapshot · patch · presence · module_event" --> SCENE
+  WS -- "HTTPS — app · assets · /dynamics · /time" --> SCENE
+  DIR -- "chat" --> MODELS
+  WS -- "image gen · captions · embeddings" --> MODELS
 ```
-   voice · CLI  ─── WS ───▶  ┌──────────────┐
-   (thin clients)            │ Agent server │  shell + agent + shared transcript
-                             └──┬────────┬──┘
-                    MCP (stdio) │        │ rides /ws as a passive listener
-                         ┌──────▼──────┐ │      ┌─────────────┐   ┌────────────────┐
-                         │ mcp_server  │ │      │   Modules   │   │ Model services │
-                         │ + tool gate │ │      │ (NAS, IF,   │   │ (STT/LLM/TTS/  │
-                         └──────┬──────┘ │      │  input, …)  │   │  gen) provider │
-                        HTTP    │        │      └─────────────┘   │  abstraction   │
-                         ┌──────▼────────▼───┐                    └────────────────┘
-                         │   World server    │  the single source of truth
-                         │ + validator + MCP │  (worlds, sessions, spaces, pointer)
-                         └──┬─────────────┬──┘
-                            │ state (WS)  │ assets (HTTPS)
-   ┌────────────────────────┴─────────────┴─────────────────────────────────────────┐
-   │  WebXR client (Quest / any device): A-Frame scene · QuickJS behaviors · input   │
-   └────────────────────────── presence/high-rate channel ──────────────────────────┘
-```
+
+The processes behind the boxes, and what each needs to come up:
+
+| Process | Port | Needs to start | Needs to be useful |
+|---|---|---|---|
+| World server — `python -m conjure` | 8080 | disk | nothing else (walk your world with no AI) |
+| Agent server — `python -m conjure.agent_server` | 8770 | an agent def + its LLM keys; spawns `conjure.mcp_server` over stdio | the world server, for turns |
+| Voice — `python -m conjure.voice` | — | the agent server | a mic on the host |
+| CLI — `python -m conjure.cli` | — | the agent server | — |
+| Tunnel — `scripts/tunnel.sh` | — | — | only off-LAN ([running.md](./running.md)) |
 
 The two servers are deliberately separate and **order-independent**: the world server boots standalone
 from disk and renders to headsets with no agent server present (walk your world with no AI), and the
@@ -116,13 +146,16 @@ Six planes, deliberately separated by reliability and rate:
    Reliable, ordered. Carries **patches** with a monotonic `rev` (§5). Clients apply to their
    local A-Frame scene. Also delivers the initial world snapshot on join, and every snapshot carries the
    canonical live-state identifiers under `state` — so the headset and the agent server both reconcile
-   from one broadcast.
-3. **Presence / high-rate channel** 🟡. Per-user head/hand poses and vehicle kinematic pose.
-   High rate, lossy-tolerant, unordered-ok. **Default: server relay** (uniform LAN/WAN, keeps the
-   remote-bridge future open, decision #9). MAY use WebRTC datachannel / PeerJS P2P on LAN as an
-   optimization. Never persisted into world state.
-4. **Voice transport** 🟢. PipeCat WebRTC/WebSocket between the audio device (shared room mic or
-   per-headset, decision #5) and the voice agent.
+   from one broadcast. The same socket carries the out-of-band notices a client acts on (`notice`,
+   `evicted`, `recapture`, `world_renamed`).
+3. **Presence / high-rate channel** 🟢 relay built · 🟡 vehicle pose designed. Per-user head/hand
+   poses (`presence` / `presence_leave`, relayed on the state socket to the *other* clients, rendered as
+   avatars) and, designed, vehicle kinematic pose. High rate, lossy-tolerant, unordered-ok. **Server
+   relay** (uniform LAN/WAN, keeps the remote-bridge future open, decision #9); WebRTC / PeerJS P2P on
+   LAN remains an unexercised option. Never persisted into world state.
+4. **Voice transport** 🟢 host device · 🔴 per-headset. PipeCat's local audio transport on the host
+   (shared room mic, decision #5). Audio to and from a headset — a per-headset socket, one pipeline per
+   connection — is designed and not built ([backlogs/voice.md](./backlogs/voice.md)).
 5. **Module event bus** 🟢. A `module_event` message on the *same* `/ws` as the state channel, relayed
    to the **other** clients only (the sender never receives its own). It carries a **cause**, not an
    effect — a water touch, not the resulting distortion field — so each client runs its own simulation
@@ -244,7 +277,7 @@ Every change is a patch — the unit of live sync **and** undo/redo.
 }
 ```
 
-**Four ops exist** — `add`, `remove`, `update`, `env` (`world.py:194`); anything else raises
+**Four ops exist** — `add`, `remove`, `update`, `env` (`WorldStore.apply_patch`); anything else raises
 `unknown op`. The `occupy` / `exit` ops that embodiment (vision §7) implies are **not built** and are
 not reserved anywhere.
 
@@ -253,7 +286,7 @@ not reserved anywhere.
 - **Validation gate** 🔴 **not built.** The design is: every patch, regardless of origin, checked
   schema-valid, within performance **budget** (§4), permitted for the origin's capabilities, with
   resolvable asset references; rejects dropped with a logged reason and the originator notified. The
-  real `WorldStore._validate` (`world.py:239`) says *"Placeholder"* in its own docstring and checks
+  real `WorldStore._validate` says *"Placeholder"* in its own docstring and checks
   only that each op carries an `"op"` key. Nothing enforces the budget anywhere. This is the single
   largest gap between this document and the code, and it is load-bearing for §13: "every effect is a
   validated patch intent" is the whole containment story for a future sandbox.
@@ -323,8 +356,8 @@ The shell forwards anything that isn't a command to the active agent, which runs
    LLM. The prompt carries: the **live space**, injected via the `space://current` context resource
    ([specs/agents.md §5.3](./specs/agents.md)) so the agent needn't re-query it; the placed scene
    (`world://current`) and its conjurable modules (`dynamics://available`); the agent's scoped MCP
-   tools; and the session transcript. (`query_world` is still used where a prefetched snapshot would go
-   stale.)
+   tools; and the session transcript. (`query_world` is
+   still used where a prefetched snapshot would go stale.)
 2. **Plan & act** — the agent calls MCP tools (world-editing and/or module tools). It reads
    state back when an edit is context-dependent.
 3. **Apply** — tools mutate server world state through the validation gate → patches → broadcast.
@@ -368,15 +401,17 @@ The director's action vocabulary (vision §4). **The authoritative list is not h
 control tool `set_caller`, so a new tool cannot go silently un-granted ([specs/agents.md
 §3](./specs/agents.md)). What follows is the shape, not the roster; check the file for names.
 
-**Built — 45 tools**, in these groups:
+**Built — 56 tools** (57 `@mcp.tool`s minus `set_caller`), in these groups:
 
 - **World & session navigation:** `query_world`, `query_space`, `view_relative`, `list_worlds`,
   `new_world`, `switch_world`, `delete_world`, `reset_world`, `set_world_visibility`,
-  `set_space_visibility`
+  `set_space_visibility`, `name_room`
 - **Entities:** `add_entity`, `update_entity`, `move_entity`, `remove_entity`, `set_environment`
 - **Real surfaces** (a captured space is ordinary entities, §4): `show_surface`, `texture_surface`,
   `style_surface`, `show_edges`, `style_edges`, `show_annotations`, `style_annotations`,
-  `set_immersion`, `realign_space`
+  `set_immersion`, `realign_space`, `reset_world_frame`
+- **Figures** (§2 row 12, [specs/figures.md](./specs/figures.md)): `inspect_figure`, `pose_figure`,
+  `list_poses`, `dress_figure`, `set_expression`, `play_clip`, `stop_clip`, `list_clips`, `wear_hand`
 - **Library:** `place_asset`, `place_cached_asset`, `search_library`, `query_assets`, `update_asset`,
   `delete_asset`
 - **Images — procurement decoupled from scene use (decision #13):** *procure* (return an opaque
@@ -467,15 +502,21 @@ use the same sandbox and return geometry via the SDK with no I/O (decision #10).
 
 Flow: **resolve → (fetch | generate) → convert → optimize → cache → describe → place**.
 
-- **Resolve** 🟢 — cache hit by content hash, else fetch. **Poly Pizza is the one wired source**
-  (`AssetResolver`, `conjure/assets.py:48` — "searches Poly Pizza, downloads the best low-poly GLB");
-  the rest of vision §5's list is unwired, and generators are a separate path (images, §8).
-- **Convert** 🔴 **not built.** Nothing converts anything. `ModelImporter` accepts **`.glb` only**,
-  confirmed by the `glTF` magic bytes, and rejects everything else — so OBJ/FBX/USD/STL never enter the
-  pipeline at all. Blender, assimp and gltf-transform are design names with no call site; the one
-  "Blender" string in the tree is a docstring aside meaning *a `.glb` you may have exported from it*.
-  `trimesh` is loaded lazily in two places (`importer.py:131`, `assets.py:37`) purely to **read**
-  bbox/tris for the catalog — never to export.
+- **Resolve** 🟢 — cache hit by content hash, else fetch. **Poly Pizza is the one wired live source**
+  (`AssetResolver`, `conjure/assets.py` — "searches Poly Pizza, downloads the best low-poly GLB"); the
+  rest of vision §5's list is unwired, and generators are a separate path (images, §8). The other way in
+  is **offline import**: a file you have (`ModelImporter`, the `/library/import` route) or a whole
+  **capture** of someone else's published web build (§2 row 13, [specs/captures.md](./specs/captures.md)).
+- **Convert** 🔴 **mostly not built.** `ModelImporter` accepts **`.glb` and `.vrm`** (a VRM *is* a
+  GLB), confirmed by the `glTF` magic bytes, and rejects everything else — so OBJ/FBX/USD/STL never enter
+  the pipeline at all. Blender, assimp and gltf-transform are design names with no call site. The one
+  real conversion is the capture pipeline's **reconstruction** — rejoining a build's split-apart
+  materials and textures into self-contained GLBs — which is a repair of one source's format, not a
+  general converter. `trimesh` is loaded lazily purely to **read** triangle counts for the catalog —
+  never to export; bounds come from the GLB's own JSON, because trimesh mis-sizes rigged models.
+- **Describe** 🟢 — import records what the catalog needs to find and use a thing later: a figure's
+  humanoid map, axes, parts and expression rig (§2 row 12); a **captioner** (image → text, pluggable,
+  Gemini by default) backfills labels for images that have none; embeddings index the lot (§12).
 - **Process (pluggable ops)** 🟡 — **outpainting/extrapolation is built** (`outpaint_image`,
   `widen_scene_image`, `skybox_from_image` — photo → seamless skybox / 360 / panorama), as are
   arbitrary prompt edits (`edit_image`). **Up-res / super-resolution is not built** — no upscaling path
@@ -571,7 +612,7 @@ exists now; host devices, drivers and hotplug remain designed.
   (`Settings.bindings`, injected as `window.CONJURE_BINDINGS`), so re-binding is a settings change, not
   an edit in every module. A control may be **hand-qualified** (`"left.stickY"`), so one hand can hold
   an object while the other shapes it. Defaults: `select`/`resize` → trigger, `grab` → grip,
-  `reel`/`yaw` → right stick, `pitch`/`bank` → left stick.
+  `reel`/`yaw` → right stick, `pitch`/`bank` → left stick, `mark` → B, `surfaces` → A.
 - **Sharing is explicit.** Tick order isn't guaranteed and two modules can want the same control, so
   arbitration lives in the input layer: a **capture** (`claim`/`release`) holds a pointer for a whole
   gesture; a **reservation**, renewed every frame, says "I'd take the next press here". A reservation
@@ -597,7 +638,9 @@ are baseline; `flat` covers non-XR browsers (desktop preview, decision #8).
   all their worlds, so re-styling a wall in one world never touches the geometry or another world. Also
   the server's own solver geometry: pose-relative queries ("the wall I'm looking at") run against the
   seed. See [specs/spaces.md](./specs/spaces.md).
-- **Asset store** — content-addressed blobs + descriptors (§10).
+- **Asset store** — content-addressed blobs + descriptors (§10), catalogued by the **library**
+  (`library.py`, [specs/library.md](./specs/library.md)): one SQLite row per asset with its attributes,
+  relations (a clip to its figure, a capture to its parts) and the per-agent **scope** wall.
 - **Vector index** — **over assets, not worlds.** `library.py` loads the `sqlite-vec` extension and
   creates `assets_vec` lazily at the live embedder's dimension, beside an `assets_fts` FTS5 table; a
   search blends both. There is **no** world-level embedding, so semantic world recall ("the beach
