@@ -62,9 +62,9 @@ Components and where each can run. "Host" = the machine running the Conjure serv
 
 | # | Component | Runs on | Responsibility |
 |---|---|---|---|
-| 1 | **Voice / CLI clients** | host | Thin front-ends. Voice is a PipeCat pipeline (VAD → STT → WebSocket → TTS) plus a wake gate; the CLI is a terminal REPL. Neither holds state or command logic. Ears and mouth are two **independent profile registries** (`conjure/stt.py`, `conjure/tts.py`): Whisper or Grok STT, Kokoro or Grok TTS. A TTS engine's speech-tag vocabulary is **registered** with the agent server on connect, not hard-coded in a prompt (decision #32). The one key exception: a cloud STT/TTS engine's key lives here, because this process streams the audio ([specs/voice.md](./specs/voice.md)) |
+| 1 | **Voice / CLI clients** | host | Thin front-ends. Voice is a PipeCat pipeline (VAD → STT → WebSocket → TTS) plus a wake gate; the CLI is a terminal REPL. Neither holds state or command logic. Ears, mouth and audio door are three **independent profile registries** (`conjure/stt.py`, `conjure/tts.py`, `conjure/transport.py`): Whisper or Grok STT, Kokoro or Grok TTS, the host's own mic or a WebSocket that serves **one pipeline per headset** (`--serve`). A TTS engine's speech-tag vocabulary is **registered** with the agent server on connect, not hard-coded in a prompt (decision #32). The one key exception: a cloud STT/TTS engine's key lives here, because this process streams the audio ([specs/voice.md](./specs/voice.md)) |
 | 2 | **Agent server** | host | The long-lived host of the deterministic **shell** (switch agent/LLM/session, navigate the namespace — no LLM) above the active **agent** — an experience loaded from `agents/<name>/` ([specs/agents.md](./specs/agents.md)): an orchestrating LLM, MCP **client** of its scoped servers, with a **roster of named LLMs** (one active) sharing a single transcript (§7). One shared conversation for every client; follows the world server's live state |
-| 3 | **World server** | host | Owns the world document; validates + applies patches; serves the WebXR app, module scripts and the shared clock; MCP **server** of world-editing tools; broadcasts state and relays presence |
+| 3 | **World server** | host | Owns the world document; validates + applies patches; serves the WebXR app, module scripts and the shared clock; MCP **server** of world-editing tools; broadcasts state and relays presence; **relays headset audio** (`/audio`) to the voice server so the headset has one origin to talk to (decision #33) |
 | 4 | **Dynamic modules** | host (served) + client (run) | Live, animated, interactive effects the agent can **conjure** into a world — fireflies, a rippling Water Picture, object manipulation. Each is a folder + manifest whose entry script registers one A-Frame component; the server serves it and delivers its **config in the world snapshot**, so presence and state are shared for free. Built; specified in [specs/dynamics.md](./specs/dynamics.md) |
 | 4b | **Behavior runtime** 🔴 | host **and** client | QuickJS-WASM sandbox for **LLM-authored** behaviors + geometry code (decision #7). Designed, not built — §9. Distinct from row 4: modules are curated, first-party, trusted code |
 | 5 | **Asset pipeline** | host (+ remote model APIs) | Resolve / generate / convert / optimize / cache content |
@@ -72,8 +72,8 @@ Components and where each can run. "Host" = the machine running the Conjure serv
 | 7 | **MCP modules** | anywhere | Pluggable MCP **servers**: content sources, engines, capability extensions, input providers. *Not* row 4 — see the naming note in §11a |
 | 8 | **Input layer** | host **and** client | Normalize + merge input devices into abstract actions/axes. The client half is built (`ConjurePointers`, §11b) |
 | 9 | **Model services** | cloud / local / home box | STT, LLM, TTS, image-gen, captioning, embeddings, a vision **judge** behind a provider abstraction (decision #1); per-slot defaults/options in [providers.md](./providers.md). 3D-gen is designed, not wired |
-| 10 | **WebXR client** | Quest / any WebXR device | Render + interact; VR/AR/flat; applies patches; capability detection; captures and registers the real space locally; drives figures and worn hands |
-| 11 | **Audio engine** 🔴 | client (+ host gen) | Extensible, plugin-based: spatialized playback, programmatic/procedural synthesis (Web Audio / AudioWorklet), generated/streamed sources (vision, Goals). Not built as an engine — what exists is spatialized playback of a figure clip's bundled audio (`THREE.PositionalAudio` in `figure-clip`); no synthesis, no plugin surface |
+| 10 | **WebXR client** | Quest / any WebXR device | Render + interact; VR/AR/flat; applies patches; capability detection; captures and registers the real space locally; drives figures and worn hands; carries the headset's mic and speaker to the voice server (`voice-link`, §3 plane 4) |
+| 11 | **Audio engine** 🔴 | client (+ host gen) | Extensible, plugin-based: spatialized playback, programmatic/procedural synthesis (Web Audio / AudioWorklet), generated/streamed sources (vision, Goals). Not built as an engine — what exists is spatialized playback of a figure clip's bundled audio (`THREE.PositionalAudio` in `figure-clip`) and the voice link's capture/playback worklets; no synthesis, no plugin surface |
 | 12 | **Figures** | host (import) + client (run) | Rigged humanoids: import discovers a **per-model vocabulary** (humanoid bone map, anatomical axes, clothing parts, expression rig, bundled clips) and freezes it into the catalog; runtime is data lookup — pose by name, dress, play or retarget a clip, set an expression, wear a tracked hand ([specs/figures.md](./specs/figures.md)). The single largest subsystem by code and the one this document used to omit |
 | 13 | **Captures** | host (+ a browser extension) | The ingest path from someone else's published 3D web build to catalog rows: grabber → reconstruction into self-contained GLBs (`playcanvas.py`, `compose.py`) → import with relations ([specs/captures.md](./specs/captures.md)). A second source beside Poly Pizza (§10) |
 
@@ -81,7 +81,7 @@ Components and where each can run. "Host" = the machine running the Conjure serv
 flowchart TB
   subgraph clients["Thin clients — host"]
     CLI["CLI REPL<br/>conjure.cli"]
-    VOICE["Voice client<br/>conjure.voice<br/>VAD → STT → ws → TTS"]
+    VOICE["Voice client / voice server<br/>conjure.voice (:8771 when serving)<br/>VAD → STT → ws → TTS"]
   end
 
   subgraph agent["Agent server — :8770"]
@@ -95,11 +95,13 @@ flowchart TB
   subgraph world["World server — :8080 — the single source of truth"]
     WS["World document · patches · rev<br/>validator (placeholder) · owner gate"]
     STORE[("Memory<br/>worlds · spaces · sessions · pointer<br/>library: SQLite + FTS + vec<br/>content-addressed blobs")]
+    RELAY["/audio relay"]
     WS --- STORE
   end
 
   subgraph xr["WebXR client — Quest / any browser"]
     SCENE["A-Frame scene<br/>patches · dynamic modules · figures · space capture · input layer"]
+    LINK["voice-link<br/>mic + speaker worklets"]
   end
 
   MODELS["Model services<br/>LLM · STT · TTS · image gen · captioner · embeddings<br/>one provider abstraction"]
@@ -111,6 +113,8 @@ flowchart TB
   DIR -. "ws /ws — passive listener, follows live state" .-> WS
   WS -- "ws /ws — snapshot · patch · presence · module_event" --> SCENE
   WS -- "HTTPS — app · assets · /dynamics · /time" --> SCENE
+  LINK -- "ws /audio — Int16 PCM" --> RELAY
+  RELAY -- "ws /audio — one pipeline per headset" --> VOICE
   DIR -- "chat" --> MODELS
   VOICE -- "STT · TTS" --> MODELS
   WS -- "image gen · captions · embeddings" --> MODELS
@@ -122,7 +126,7 @@ The processes behind the boxes, and what each needs to come up:
 |---|---|---|---|
 | World server — `python -m conjure` | 8080 | disk | nothing else (walk your world with no AI) |
 | Agent server — `python -m conjure.agent_server` | 8770 | an agent def + its LLM keys; spawns `conjure.mcp_server` over stdio | the world server, for turns |
-| Voice — `python -m conjure.voice` | — | the agent server | a mic on the host |
+| Voice — `python -m conjure.voice` | — (`--serve`: 8771) | the agent server | a mic, or headsets through the relay |
 | CLI — `python -m conjure.cli` | — | the agent server | — |
 | Tunnel — `scripts/tunnel.sh` | — | — | only off-LAN ([running.md](./running.md)) |
 
@@ -157,9 +161,13 @@ Six planes, deliberately separated by reliability and rate:
    avatars) and, designed, vehicle kinematic pose. High rate, lossy-tolerant, unordered-ok. **Server
    relay** (uniform LAN/WAN, keeps the remote-bridge future open, decision #9); WebRTC / PeerJS P2P on
    LAN remains an unexercised option. Never persisted into world state.
-4. **Voice transport** 🟢 host device · 🔴 per-headset. PipeCat's local audio transport on the host
-   (shared room mic, decision #5). Audio to and from a headset — a per-headset socket, one pipeline per
-   connection — is designed and not built ([backlogs/voice.md](./backlogs/voice.md)).
+4. **Voice transport** 🟢. Raw audio between a microphone/speaker and the voice pipeline, by one of two
+   doors chosen per process: the **host's own device** (shared room mic, decision #5), or a **WebSocket
+   per headset** — the browser's `voice-link` streams Int16 PCM to the world server's `/audio`, which
+   relays it unchanged to the voice server; one PipeCat pipeline per connection, resampling at the edge,
+   `hello`/`ready`/`speaking`/`transcript`/`interrupt` as JSON on the same socket. WebRTC was rejected for
+   now because every serving tier in use is TCP-only (decision #33, [specs/voice.md
+   §11](./specs/voice.md)).
 5. **Module event bus** 🟢. A `module_event` message on the *same* `/ws` as the state channel, relayed
    to the **other** clients only (the sender never receives its own). It carries a **cause**, not an
    effect — a water touch, not the resulting distortion field — so each client runs its own simulation
@@ -618,7 +626,8 @@ exists now; host devices, drivers and hotplug remain designed.
   (`Settings.bindings`, injected as `window.CONJURE_BINDINGS`), so re-binding is a settings change, not
   an edit in every module. A control may be **hand-qualified** (`"left.stickY"`), so one hand can hold
   an object while the other shapes it. Defaults: `select`/`resize` → trigger, `grab` → grip,
-  `reel`/`yaw` → right stick, `pitch`/`bank` → left stick, `mark` → B, `surfaces` → A.
+  `reel`/`yaw` → right stick, `pitch`/`bank` → left stick, `mark` → B, `surfaces` → A,
+  `talk` → stick press (push-to-talk for the headset voice link).
 - **Sharing is explicit.** Tick order isn't guaranteed and two modules can want the same control, so
   arbitration lives in the input layer: a **capture** (`claim`/`release`) holds a pointer for a whole
   gesture; a **reservation**, renewed every frame, says "I'd take the next press here". A reservation
