@@ -38,6 +38,10 @@ def test_pipecat_surface_we_depend_on():
 
     assert hasattr(XAISTTService, "Settings")
     assert {"api_key", "sample_rate", "settings"} <= set(inspect.signature(XAISTTService.__init__).parameters)
+    # conjure.stt.GrokSTT overrides this private hook to submit each utterance once — pin what it relies on.
+    assert {"message", "speech_final", "language", "text"} <= set(
+        inspect.signature(XAISTTService._push_final_transcript).parameters)
+    assert hasattr(XAISTTService, "_language_for_frame") and hasattr(XAISTTService, "_handle_message")
     # --stt-corpus subclasses WhisperSTTService and taps run_stt: it must stay an ASYNC GENERATOR
     # (we iterate it and re-yield), it receives the audio bytes, and the text arrives on a
     # TranscriptionFrame.text. Drift in any of the three silently stops the corpus recording.

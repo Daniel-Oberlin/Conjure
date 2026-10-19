@@ -98,16 +98,90 @@ def _build_whisper(settings: "Settings", *, corpus: Optional["Corpus"] = None,
 
 # --------------------------------------------------------------------------- Grok (xAI, streaming)
 
+class Utterance:
+    """What of one spoken utterance has already gone downstream — so xAI's closing event adds only news.
+
+    xAI's streaming STT reports an utterance in two forms (measured 2026-10-19, `transcript.partial`):
+    each **segment** arrives once as `is_final` (only that chunk's words), and when the speaker stops,
+    `speech_final` arrives with **the whole utterance again** — every segment since the last close,
+    joined and sometimes re-punctuated. pipecat's `XAISTTService` forwards both as `TranscriptionFrame`s,
+    and the turn aggregator concatenates every frame of a turn, so each sentence was submitted twice
+    ("Whisper in my ear. Whisper in my ear.").
+
+    Segments go through as they arrive (the turn aggregator wants them early); `close` then returns only
+    the words the closing text adds beyond what was sent — usually nothing. Words are compared without
+    case or punctuation, because the close re-punctuates ("right now default." → "right now, default.").
+    A close that REVISES earlier words can't be honoured — those words are already downstream — so it
+    adds nothing rather than repeating them. Pure, so it is tested without a socket."""
+
+    def __init__(self) -> None:
+        self._sent: list[str] = []
+
+    @staticmethod
+    def _norm(word: str) -> str:
+        return "".join(ch for ch in word.lower() if ch.isalnum())
+
+    def segment(self, text: str) -> str:
+        """A final segment: send it, and remember its words."""
+        text = (text or "").strip()
+        self._sent += [w for w in (self._norm(t) for t in text.split()) if w]
+        return text
+
+    def close(self, text: str) -> str:
+        """The utterance's closing text → the part not yet sent ("" when it only repeats). Resets."""
+        sent, self._sent = self._sent, []
+        tokens = (text or "").split()
+        if not sent:
+            return " ".join(tokens)
+        normed = [self._norm(t) for t in tokens]
+        words = [(i, w) for i, w in enumerate(normed) if w]
+        if [w for _, w in words[:len(sent)]] != sent:
+            return ""                                   # a revision of words already sent — can't unsay them
+        if len(words) <= len(sent):
+            return ""
+        return " ".join(tokens[words[len(sent)][0]:])
+
+
 def _build_grok(settings: "Settings", *, corpus: Optional["Corpus"] = None,
                 may_record: Optional[MayRecord] = None):
+    from pipecat.frames.frames import TranscriptionFrame
     from pipecat.services.xai.stt import XAISTTService
     from pipecat.transcriptions.language import Language
+    from pipecat.utils.time import time_now_iso8601
+
+    class GrokSTT(XAISTTService):
+        """`XAISTTService` that submits each utterance ONCE (see `Utterance`). The override point is
+        pipecat's private `_push_final_transcript`; tests/test_contracts.py pins its signature."""
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._utterance = Utterance()
+
+        async def _push_final_transcript(self, message, *, speech_final, language=None, text=None):
+            text = text if text is not None else message.get("text", "")
+            if not speech_final:
+                text = self._utterance.segment(text)
+                if text:
+                    await super()._push_final_transcript(message, speech_final=False, language=language,
+                                                         text=text)
+                return
+            tail = self._utterance.close(text)
+            if tail:
+                await super()._push_final_transcript(message, speech_final=True, language=language, text=tail)
+                return
+            # Nothing new, but the close still MEANS something: the turn strategy ends the turn early on a
+            # `finalized` frame instead of waiting out its STT safety net. Empty text is dropped by the
+            # aggregator, so this signals without adding a word.
+            await self.push_frame(TranscriptionFrame("", self._user_id, time_now_iso8601(),
+                                                     language or self._language_for_frame(),
+                                                     result=message, finalized=True))
+            await self.stop_processing_metrics()
 
     # pipecat's service streams 16 kHz PCM to wss://api.x.ai/v1/stt and leaves the model, endpointing
     # (server default 400 ms) and interim results at their defaults. `interim_results` stay on: the turn
     # aggregator uses them to notice speech resuming, and they cost nothing extra.
-    return XAISTTService(api_key=settings.xai_api_key or "", sample_rate=16000,
-                         settings=XAISTTService.Settings(language=Language.EN))
+    return GrokSTT(api_key=settings.xai_api_key or "", sample_rate=16000,
+                   settings=XAISTTService.Settings(language=Language.EN))
 
 
 PROFILES: dict[str, HearingProfile] = {

@@ -98,6 +98,16 @@ arrive about every half second. Our VAD still runs — the turn aggregator keys 
 and that is what decides when a turn is submitted (§3's 0.8 s) — but no WAV is ever assembled, so
 the corpus tap (§9) has nothing to record. The §3 description below is the **Whisper** shape.
 
+**Grok says each utterance twice, and we pass it on once.** xAI sends every segment as a final
+transcript, then at `speech_final` sends the whole utterance again — the segments joined, sometimes
+re-punctuated (measured 2026-10-19). pipecat's `XAISTTService` forwards both, and the turn aggregator
+concatenates everything in a turn, so every spoken line reached the agent doubled. `GrokSTT` in
+`conjure/stt.py` forwards the segments as they arrive and, at the close, only words not yet sent —
+normally none. It then sends an empty `finalized` frame, which adds no text but still lets the turn end
+without waiting out the STT safety timeout. A close that *revises* a word already sent is dropped:
+the word is already downstream. The override is pipecat's private `_push_final_transcript`, pinned in
+`tests/test_contracts.py`.
+
 Note also that `AlwaysUserMuteStrategy` mutes *transcripts* while the bot speaks, not the microphone:
 with a streaming engine the bot's own speech is still streamed and billed. Earbuds remain the assumption
 (§6).

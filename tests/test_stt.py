@@ -54,3 +54,85 @@ def test_ears_and_mouth_are_independent_settings():
     assert speech_for(s).name == "kokoro"
     with pytest.raises(ValueError, match="CONJURE_STT=grok"):
         profile_for(s)
+
+
+# --------------------------------------------------------------------------- Grok: one utterance, once
+# The sequences below are what xAI sent for one recorded sentence (2026-10-19): segments arrive `is_final`
+# one chunk each, then `speech_final` repeats the whole utterance. Forwarding both doubled every turn.
+
+from conjure.stt import Utterance  # noqa: E402
+
+SENTENCE = "Let me check for you. You just have the one world right now default, and that's the one you're in."
+
+
+def test_a_close_that_repeats_the_one_segment_adds_nothing():
+    u = Utterance()
+    assert u.segment(SENTENCE) == SENTENCE
+    assert u.close(SENTENCE) == ""
+
+
+def test_a_close_that_joins_several_segments_adds_nothing_even_re_punctuated():
+    u = Utterance()
+    for seg in ("Let me check for you. You just have the one world right.", "Right now, default.",
+                "And that's the one you're in."):
+        u.segment(seg)
+    assert u.close("Let me check for you. You just have the one world right. Right now, default. "
+                   "And that's the one you're in.") == ""
+
+
+def test_each_close_resets_so_the_next_utterance_starts_clean():
+    u = Utterance()
+    u.segment("Let me check for you. You just have the one world right.")
+    assert u.close("Let me check for you. You just have the one world right.") == ""
+    u.segment("Right now, default.")
+    u.segment("And that's the one you're in.")
+    assert u.close("Right now, default. And that's the one you're in.") == ""
+
+
+def test_a_close_with_no_segments_is_the_whole_utterance():
+    assert Utterance().close("Whisper in my ear.") == "Whisper in my ear."
+
+
+def test_a_close_that_extends_the_segments_adds_only_the_new_words():
+    u = Utterance()
+    u.segment("Whisper in my")
+    assert u.close("Whisper in my ear, slowly.") == "ear, slowly."
+
+
+def test_a_close_that_revises_sent_words_adds_nothing_rather_than_repeating_them():
+    u = Utterance()
+    u.segment("Whisper in my year.")
+    assert u.close("Whisper in my ear.") == ""
+
+
+def test_the_grok_service_submits_each_utterance_once():
+    """The real subclass, driven by the event sequence xAI sent: one text frame, then an empty finalized
+    one — the turn aggregator drops empty text, the turn strategy still learns STT is done."""
+    import asyncio
+
+    from pipecat.frames.frames import TranscriptionFrame
+
+    svc = PROFILES["grok"].build(_settings(stt="grok", xai_api_key="k"))
+    pushed = []
+
+    async def capture(frame, *a, **k):
+        pushed.append(frame)
+
+    async def nothing(*a, **k):
+        return None
+
+    svc.push_frame = capture
+    svc.stop_processing_metrics = nothing
+    svc._trace_transcription = nothing
+
+    async def run():
+        await svc._handle_message({"type": "transcript.partial", "text": "Let me", "is_final": False})
+        await svc._handle_message({"type": "transcript.partial", "text": SENTENCE, "is_final": True,
+                                   "speech_final": False})
+        await svc._handle_message({"type": "transcript.partial", "text": SENTENCE, "is_final": True,
+                                   "speech_final": True})
+
+    asyncio.run(run())
+    finals = [f for f in pushed if type(f) is TranscriptionFrame]
+    assert [f.text for f in finals] == [SENTENCE, ""]
+    assert [f.finalized for f in finals] == [False, True]
