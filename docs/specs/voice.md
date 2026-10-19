@@ -305,7 +305,9 @@ TSV.
 The speech and hearing profiles are pure and tested without pipecat (`tests/test_tts.py`,
 `tests/test_stt.py`): the engines, the startup refusals, that the ears and the mouth resolve
 independently in every pairing, that the corpus is refused for a streaming recognizer, and that Grok's
-TTS registration carries every tag its prompt mentions. The stripper is
+TTS registration carries every tag its prompt mentions. `tests/test_stt.py` also replays the event
+sequences xAI actually sent (§4) through `Utterance` and through the real `GrokSTT`, asserting each
+utterance reaches the aggregator once, followed by an empty `finalized` frame. The stripper is
 tested in `tests/test_speech.py`; the registration protocol, the per-connection rendering and the
 re-bind survival in `tests/test_agent_server.py`; the `{speech}` injection in `tests/test_director.py`.
 
@@ -313,7 +315,8 @@ The real-time pipeline is not unit-tested. The **Tier-2 contract test** asserts 
 construct still have the shapes we call ([`testing.md`](../testing.md)) — including that
 `WhisperSTTService.run_stt` is still an async generator taking `audio`, since `--stt-corpus` taps it
 and drift there would stop recording *silently*, and that `XAIHttpTTSService` / `XAISTTService` still
-take `api_key` and `settings=`.
+take `api_key` and `settings=` — and that `XAISTTService._push_final_transcript`, the private hook
+`GrokSTT` overrides, still takes the arguments it passes.
 
 Accuracy itself is still covered by no automated test; that is what a labelled corpus exists to make
 possible.

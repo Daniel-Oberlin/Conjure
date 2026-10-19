@@ -281,6 +281,14 @@ row**, not an edit. Two things the STT seam left open:
 
 - **Grok STT accuracy is unmeasured.** A cloud streaming recognizer has to beat `small.en` on the
   Bluetooth corpus, not on a demo; read the investigation before calling it better. Which needs —
+- **The Grok de-duplication assumes xAI's current close.** `Utterance.close` (spec §4) expects the
+  `speech_final` text to be the whole utterance, and treats a close that doesn't start with the words
+  already sent as a *revision* and drops it. That reading is inferred from the live events — xAI
+  documents no sequence, and pipecat's service reads the flags Deepgram's way, where the close carries
+  only the last chunk. If xAI ever moves to that shape, the last chunk of every sentence would be
+  dropped **silently**. The hardening is small: a close whose first words don't match the first words
+  sent is a new chunk, not a revision — pass it through. Worth doing before relying on Grok STT
+  unattended; a pipecat upgrade that fixes the doubling upstream would also need this re-checked.
 - **The corpus tap is Whisper-only.** `--stt-corpus` records the WAV a segmented recognizer decoded;
   a streaming engine decodes no WAV, so the tap is refused up front rather than recording nothing.
   Scoring Grok against the corpus therefore means the scorer running clips through the REST
