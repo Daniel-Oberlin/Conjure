@@ -141,7 +141,7 @@ the pipecat service, its sample rate, and what it can render:
 | `CONJURE_TTS` | Engine | Speech tags | Needs |
 |---|---|---|---|
 | `kokoro` (default) | Kokoro, voice `af_heart`, local | none | the `[voice]` extra |
-| `grok` | xAI Grok TTS over `POST https://api.x.ai/v1/tts`, PCM; voice `CONJURE_XAI_TTS_VOICE` (`ara`; also `eve`, `rex`, `sal`, `leo`) | 26, below | `XAI_API_KEY` |
+| `grok` | xAI Grok TTS over `POST https://api.x.ai/v1/tts`, PCM; voice `CONJURE_XAI_TTS_VOICE` (`eve`; also `ara`, `rex`, `sal`, `leo`) | 26, below | `XAI_API_KEY` |
 
 An unknown name, or Grok without its key, is refused **at startup** with the fix in the message — a
 pipeline that starts and then fails on the first reply hides which line was wrong. `conjure-doctor`

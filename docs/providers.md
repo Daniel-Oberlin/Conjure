@@ -52,7 +52,7 @@ The roster (casual name → vendor/key/models/roles) lives in **one place**: the
 | Option | Hosting | Notes |
 |---|---|---|
 | ✅ **Kokoro** | local | 82M, Apache-2.0, studio-grade for its size; real-time on Apple Silicon (MLX). PipeCat-native. **Best voice quality (local).** No speech tags. `CONJURE_TTS=kokoro` (default). |
-| ✅ **xAI Grok TTS** | cloud | `CONJURE_TTS=grok` + `XAI_API_KEY`. Five voices (`CONJURE_XAI_TTS_VOICE`, default `ara`), 24 kHz PCM over `POST /v1/tts` (pipecat's `XAIHttpTTSService`). **Speech tags** — `[laugh]`, `[sigh]`, `<whisper>…</whisper>`, `<slow>…</slow>`, 26 in all — which the voice client *registers* with the agent server so the director is prompted for them and text clients never see them ([specs/voice.md](./specs/voice.md) §5.1). The engine is the one thing that knows a tag: `conjure/tts.py`. |
+| ✅ **xAI Grok TTS** | cloud | `CONJURE_TTS=grok` + `XAI_API_KEY`. Five voices (`CONJURE_XAI_TTS_VOICE`, default `eve`), 24 kHz PCM over `POST /v1/tts` (pipecat's `XAIHttpTTSService`). **Speech tags** — `[laugh]`, `[sigh]`, `<whisper>…</whisper>`, `<slow>…</slow>`, 26 in all — which the voice client *registers* with the agent server so the director is prompted for them and text clients never see them ([specs/voice.md](./specs/voice.md) §5.1). The engine is the one thing that knows a tag: `conjure/tts.py`. |
 | 🟢 Piper | local | Sub-50ms first-audio; runs Pi → Mac; PipeCat-native. **Lowest latency / most Pi-friendly.** No voice cloning. Not wired to `CONJURE_TTS` (a profile row in `conjure/tts.py` would do it). |
 | 💡 Cartesia | cloud | Very low latency, high quality. |
 | 💡 ElevenLabs | cloud | Top quality, slightly more latency. |

@@ -354,7 +354,7 @@ class Settings:
     #                                                  positional Settings(...) in tests stay valid
     xai_director_model: str = "grok-4"               # Grok director model (grok-4.x / grok-3 also valid)
     xai_image_model: str = "grok-imagine-image-2.0"  # Grok image generator (generate-only)
-    xai_tts_voice: str = "ara"                       # Grok TTS voice when CONJURE_TTS=grok (conjure.tts):
+    xai_tts_voice: str = "eve"                       # Grok TTS voice when CONJURE_TTS=grok (conjure.tts):
     #                                                  eve (energetic) · ara (warm) · rex (confident) ·
     #                                                  sal (smooth) · leo (authoritative). Boot-tier: the
     #                                                  voice client reads it once, when its pipeline starts.
@@ -576,7 +576,7 @@ def get_settings() -> Settings:
         xai_api_key=os.environ.get("XAI_API_KEY") or None,
         xai_director_model=os.environ.get("CONJURE_XAI_DIRECTOR_MODEL", "grok-4"),
         xai_image_model=os.environ.get("CONJURE_XAI_IMAGE_MODEL", "grok-imagine-image-2.0"),
-        xai_tts_voice=(os.environ.get("CONJURE_XAI_TTS_VOICE", "ara").strip().lower() or "ara"),
+        xai_tts_voice=(os.environ.get("CONJURE_XAI_TTS_VOICE", "eve").strip().lower() or "eve"),
         debug_log=os.environ.get("CONJURE_DEBUG_LOG", "1").strip().lower() not in ("0", "false", "no", "off"),
         debug_registration=os.environ.get("CONJURE_DEBUG_REGISTRATION", "").strip().lower() in ("1", "true", "yes", "on"),
         debug_jitter=os.environ.get("CONJURE_DEBUG_JITTER", "").strip().lower() in ("1", "true", "yes", "on"),
