@@ -127,3 +127,71 @@ def test_audio_socket_runs_one_pipeline_per_connection_as_that_user():
             time.sleep(0.02)
         assert ("cancelled", "alice") in seen
         assert c.get("/health").json()["connections"] == 0
+
+
+# --------------------------------------------------------------------------- what the client is told
+# The page sends the barge-in `interrupt` only while it believes the bot is speaking, so `speaking` must
+# reach it. It didn't: the message was read after the recognizer, from Bot*SpeakingFrames that never
+# climbed that far, and on the first headset run a held talk button over a reply did nothing (2026-10-20).
+
+async def _drive(processor, frames, direction):
+    from pipecat.processors.frame_processor import FrameDirection
+    from pipecat.tests.utils import run_test
+
+    return await run_test(processor, frames_to_send=frames,
+                          frames_to_send_direction=getattr(FrameDirection, direction))
+
+
+def _messages(frames):
+    from pipecat.frames.frames import OutputTransportMessageFrame
+
+    return [f.message for f in frames if isinstance(f, OutputTransportMessageFrame)]
+
+
+async def test_the_bot_starting_and_stopping_reaches_the_client_as_speaking_messages():
+    from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame
+
+    from conjure.voice import client_wire
+
+    _, Speaking = client_wire()
+    down, up = await _drive(Speaking(), [BotStartedSpeakingFrame(), BotStoppedSpeakingFrame()], "UPSTREAM")
+    assert _messages(down) == [{"type": "speaking", "on": True}, {"type": "speaking", "on": False}]
+    assert [type(f).__name__ for f in up] == ["BotStartedSpeakingFrame", "BotStoppedSpeakingFrame"]
+
+
+async def test_only_the_upstream_copy_counts_so_the_client_hears_each_change_once():
+    """The output transport pushes each Bot*SpeakingFrame BOTH ways; the downstream copy never passes this
+    processor in the real pipeline, but if it did it must not double the message."""
+    from pipecat.frames.frames import BotStartedSpeakingFrame
+
+    from conjure.voice import client_wire
+
+    _, Speaking = client_wire()
+    down, _ = await _drive(Speaking(), [BotStartedSpeakingFrame()], "DOWNSTREAM")
+    assert _messages(down) == []
+
+
+async def test_a_transcript_is_told_once_on_its_way_down_and_never_for_empty_text():
+    from pipecat.frames.frames import TranscriptionFrame
+
+    from conjure.voice import client_wire
+
+    Wire, _ = client_wire()
+    heard = TranscriptionFrame("Make the ceilings white.", "u", "t")
+    closing = TranscriptionFrame("", "u", "t", finalized=True)          # GrokSTT's "nothing new" close
+    down, _ = await _drive(Wire(), [heard, closing], "DOWNSTREAM")
+    assert _messages(down) == [{"type": "transcript", "text": "Make the ceilings white."}]
+    _, up = await _drive(Wire(), [heard], "UPSTREAM")
+    assert _messages(up) == []                                          # no message for an upstream copy
+
+
+def test_the_speaking_processor_sits_right_before_the_output_transport():
+    """Placement IS the fix — next to the transport that pushes the frames and serializes the message."""
+    import inspect
+
+    from conjure import voice
+
+    src = inspect.getsource(voice.run_pipeline)
+    order = [line.split("#")[0].strip().rstrip(",") for line in src.split("Pipeline(", 1)[1].split("]", 1)[0]
+             .splitlines() if line.split("#")[0].strip()]
+    assert order[order.index("transport.output()") - 1] == "speaking"

@@ -22,6 +22,7 @@
   var ACT = (window.CONJURE_VOICE_ACTIVATION || "ptt").toLowerCase();
   var TAIL_MS = 350;              // keep sending this long after `talk` is released, so the last word lands
   var FRAME_MS = 20;
+  var GAP_MS = 600;               // reply audio this recent still counts as "speaking" (the gap between sentences)
   // Mirrors conjure-client.js's debugLog: console + POST /client_log → temp/conjure.log, gated the same way,
   // so a headset's voice link can be diagnosed from the host without remote debugging.
   var log = function (m) {
@@ -67,7 +68,7 @@
       // playback node was once `this.play`, which replaced Component.play with null, so the scene's
       // start-up threw on this component and its tick — push-to-talk — never ran (2026-10-20).
       this.ctx = null; this.ws = null; this.cap = null; this.speaker = null; this.stream = null;
-      this.sending = false; this.tailUntil = 0; this.speaking = false; this.armed = false;
+      this.sending = false; this.tailUntil = 0; this.speaking = false; this.armed = false; this.lastAudio = 0;
       this.stats = { sent: 0, recv: 0, since: performance.now() };
       // The ENTER AR tap is the one user gesture we get before the session: take the mic and resume the
       // context on it, in the capture phase so we run before scene.enterVR. Also on a plain click anywhere
@@ -132,7 +133,7 @@
       };
       ws.onclose = function () { log("audio link closed — retrying in 2s"); setTimeout(function () { if (self.ws === ws) self.connect(); }, 2000); };
       ws.onmessage = function (ev) {
-        if (ev.data instanceof ArrayBuffer) { self.stats.recv++; if (self.speaker) self.speaker.port.postMessage(ev.data, [ev.data]); return; }
+        if (ev.data instanceof ArrayBuffer) { self.stats.recv++; self.lastAudio = performance.now(); if (self.speaker) self.speaker.port.postMessage(ev.data, [ev.data]); return; }
         var msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
         if (msg.type === "ready") { if (self.speaker) self.speaker.port.postMessage({ rate: msg.out_rate || 24000 }); log("ready out_rate=" + msg.out_rate); }
         else if (msg.type === "speaking") { self.speaking = !!msg.on; self.el.emit("voice-speaking", { on: self.speaking }); }
@@ -158,7 +159,10 @@
       }
       if (held !== this.sending) {
         this.setSending(held);
-        if (held && this.speaking && this.ws && this.ws.readyState === 1) {
+        // "Speaking" = the server says so, OR reply audio arrived moments ago: the server reports stopped
+        // between two TTS sentences (~0.7 s), and a press landing in that gap must still interrupt.
+        var talking = this.speaking || performance.now() - this.lastAudio < GAP_MS;
+        if (held && talking && this.ws && this.ws.readyState === 1) {
           // Pressing to talk while the bot is speaking IS the barge-in gesture: drop what is queued here
           // and tell the server (C3b). Deliberate, not acoustic — no AEC quality required.
           this.speaker.port.postMessage("flush");

@@ -383,6 +383,16 @@ which cancels that connection's in-flight turn, broadcasts *[user interrupted]* 
 `turn_done`. Deliberate interruption needs no echo-cancellation quality at all; VAD-driven barge-in in
 `open` mode waits on spike 1's measurement.
 
+**The page has to know the bot is speaking**, because that is what makes a press a barge-in rather than
+a new turn. Two signals, either sufficient: the server's `{type:"speaking", on}`, and reply audio received
+in the last 600 ms (the server reports *stopped* for ~0.7 s between two TTS sentences). `speaking` is sent
+by a processor placed **immediately before the output transport** — the processor that pushes the
+`Bot*SpeakingFrame`s. It used to be read after the recognizer, from the upstream copies, and those never
+climbed past the TTS / bridge / aggregator: the page never got `on: true`, never sent `interrupt`, and the
+words spoken over the reply were dropped by mute-while-speaking (first headset run, 2026-10-20; reproduced
+and verified with a scripted stand-in: interrupt → zero further reply frames, the new line answered).
+`tests/test_voice.py` pins both the messages and the placement.
+
 **Corpus from the headset.** With `--stt-corpus`, a headset's clips are tagged `browser:<user>` as
 their condition — the thing the corpus exists to compare — in place of the host's PortAudio device,
 which heard none of it.

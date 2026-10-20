@@ -104,6 +104,45 @@ def _agent_reachable(url: str) -> bool:
         return False
 
 
+def client_wire():
+    """The two processors that tell a client what the pipeline is doing → `(WireMessages,
+    SpeakingMessages)`. Module-level (pipecat imported lazily, like the rest of this file) so tests can
+    drive them one at a time; `run_pipeline` places them."""
+    from pipecat.frames.frames import (BotStartedSpeakingFrame, BotStoppedSpeakingFrame,
+                                       OutputTransportMessageFrame, TranscriptionFrame)
+    from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+
+    # What the CLIENT is told about the pipeline's state, in two processors because the two facts are
+    # born at opposite ends. `transcript` (what was heard — the on-headset diagnostic for mis-hearings) is
+    # read right after the recognizer, on the way down.
+    class WireMessages(FrameProcessor):
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            await self.push_frame(frame, direction)
+            if (isinstance(frame, TranscriptionFrame) and direction == FrameDirection.DOWNSTREAM
+                    and (frame.text or "").strip()):
+                await self.push_frame(OutputTransportMessageFrame(
+                    message={"type": "transcript", "text": frame.text.strip()}), FrameDirection.DOWNSTREAM)
+
+    # `speaking` is read right BEFORE the output transport, the processor that pushes the Bot*Speaking
+    # frames. It used to be read in WireMessages, after the recognizer, trusting the upstream copies to
+    # climb past the TTS, the bridge and the user aggregator — and BotStarted never arrived there, so the
+    # page never learned the bot was talking and never sent the barge-in `interrupt` (found on the first
+    # headset run, 2026-10-20). Here the frame arrives from the very next processor, and the message goes
+    # straight into the transport that serializes it. The page needs it: PTT-while-speaking IS barge-in.
+    class SpeakingMessages(FrameProcessor):
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            await self.push_frame(frame, direction)
+            if isinstance(frame, (BotStartedSpeakingFrame, BotStoppedSpeakingFrame)) \
+                    and direction == FrameDirection.UPSTREAM:
+                on = isinstance(frame, BotStartedSpeakingFrame)
+                await self.push_frame(OutputTransportMessageFrame(message={"type": "speaking", "on": on}),
+                                      FrameDirection.DOWNSTREAM)
+
+    return WireMessages, SpeakingMessages
+
+
 async def run_pipeline(settings: Settings, *, user: str, transport, wake_word: Optional[str] = None,
                        corpus: Optional["Corpus"] = None, profile: Optional[SpeechProfile] = None,
                        hearing: Optional[HearingProfile] = None, handle_sigint: bool = True,
@@ -116,14 +155,13 @@ async def run_pipeline(settings: Settings, *, user: str, transport, wake_word: O
     # Heavy imports are local so the package stays importable on a base (no-voice) install.
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.audio.vad.vad_analyzer import VADParams
-    from pipecat.frames.frames import (BotStartedSpeakingFrame, BotStoppedSpeakingFrame, InputTransportMessageFrame,
-                                       InterruptionFrame, OutputTransportMessageFrame, TranscriptionFrame,
-                                       TTSSpeakFrame)
+    from pipecat.frames.frames import (InputTransportMessageFrame, InterruptionFrame,
+                                       OutputTransportMessageFrame, TTSSpeakFrame)
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
     from pipecat.pipeline.task import PipelineParams, PipelineTask
     from pipecat.processors.audio.vad_processor import VADProcessor
-    from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+    from pipecat.processors.frame_processor import FrameProcessor
     from pipecat.processors.aggregators.llm_context import LLMContext
     from pipecat.processors.aggregators.llm_response_universal import (
         LLMContextAggregatorPair,
@@ -203,24 +241,6 @@ async def run_pipeline(settings: Settings, *, user: str, transport, wake_word: O
                 except Exception as exc:  # noqa: BLE001
                     print(f"voice send error: {exc}", file=sys.stderr)
 
-    # What the CLIENT is told about the pipeline's state, placed right after the recognizer so it sees
-    # every TranscriptionFrame on its way down and the output transport's Bot*SpeakingFrames on their way
-    # up. `speaking` drives an indicator on the headset (and, if echo cancellation proves insufficient,
-    # gates its capture); `transcript` shows what was heard — the on-headset diagnostic for mis-hearings.
-    class WireMessages(FrameProcessor):
-        async def process_frame(self, frame, direction):
-            await super().process_frame(frame, direction)
-            await self.push_frame(frame, direction)
-            if isinstance(frame, TranscriptionFrame) and (frame.text or "").strip():
-                await self.push_frame(OutputTransportMessageFrame(
-                    message={"type": "transcript", "text": frame.text.strip()}), FrameDirection.DOWNSTREAM)
-            elif isinstance(frame, BotStartedSpeakingFrame):
-                await self.push_frame(OutputTransportMessageFrame(message={"type": "speaking", "on": True}),
-                                      FrameDirection.DOWNSTREAM)
-            elif isinstance(frame, BotStoppedSpeakingFrame):
-                await self.push_frame(OutputTransportMessageFrame(message={"type": "speaking", "on": False}),
-                                      FrameDirection.DOWNSTREAM)
-
     # In pipecat 1.3.x, VAD is a pipeline PROCESSOR, not a transport param (passing it to the
     # transport is silently ignored). The VADProcessor emits the speaking frames that both STT
     # (to segment utterances) and the turn aggregator consume. min_volume=0 because a desk mic
@@ -239,7 +259,9 @@ async def run_pipeline(settings: Settings, *, user: str, transport, wake_word: O
     tts = profile.build(settings)
 
     bridge = VoiceBridge()
+    WireMessages, SpeakingMessages = client_wire()
     wire = WireMessages()
+    speaking = SpeakingMessages()
 
     # Listener: turn agent-server events into speech. Reconnects with backoff. `backlog=False` so a fresh
     # connection doesn't get the whole transcript spoken at us — just the current context (which voice
@@ -308,6 +330,7 @@ async def run_pipeline(settings: Settings, *, user: str, transport, wake_word: O
             aggregator.user(),       # detect end-of-turn + mute while speaking
             bridge,                  # sends turns to the agent server; speaks its replies as TTS frames
             tts,                     # reply text → speech
+            speaking,                # tells the client when the bot starts/stops talking (barge-in)
             transport.output(),      # speaker (host device, or the browser's playback worklet)
             aggregator.assistant(),  # (context unused, kept so the pair is wired normally)
         ]
