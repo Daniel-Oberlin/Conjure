@@ -353,9 +353,16 @@ the serializer (pipecat's input transport does not; SOXR `HQ`, measured 21 ms of
 37). Back come `ready {out_rate}`, binary PCM paced to real time, and `speaking {on}`, `transcript
 {text}` (what STT heard — the on-headset diagnostic for every mis-hearing), `notice {text}`.
 
-**Permission and the gesture.** The mic prompt cannot render inside an immersive session and an
-AudioContext created outside a user gesture starts suspended, so `voice-link` takes both on the
-ENTER AR tap (a capture-phase click listener, before `enterVR`). Capture asks for
+**Permission and the gesture.** An AudioContext created outside a user gesture starts suspended, and
+`getUserMedia` wants one too, so `voice-link` takes both on the ENTER AR tap (a capture-phase click
+listener, before `enterVR`). That is enough **only once the site already holds the permission.** On a
+site the headset hasn't granted, the prompt opens on the same tap that starts the session and waits
+behind it, unseen: the request neither resolves nor fails, and the link never opens (first headset run,
+2026-10-20). Exiting AR shows the prompt; allowing it opens the link, and re-entering works. A
+cloudflared quick tunnel is a new site every run, so it asks every run; `adb reverse` (a stable
+`localhost`) asks once. The page logs `asking for the microphone`, and after 5 s unanswered says to exit
+AR, so the wait is no longer silent. A pre-AR microphone button is the real fix
+([backlogs/voice.md](../backlogs/voice.md)). Capture asks for
 `echoCancellation: true, noiseSuppression: false, autoGainControl: false` — the backlog's "NR off,
 AEC on": Chromium's canceller uses audio *this browser renders* as its reference, which is why the
 reply is played by the page and not positionally.

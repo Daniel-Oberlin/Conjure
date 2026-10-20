@@ -63,7 +63,10 @@
     init: function () {
       if (ACT === "off") { log("activation off — no microphone"); return; }
       var self = this;
-      this.ctx = null; this.ws = null; this.cap = null; this.play = null; this.stream = null;
+      // NEVER name a field after an A-Frame lifecycle method (init/update/play/pause/tick/remove): the
+      // playback node was once `this.play`, which replaced Component.play with null, so the scene's
+      // start-up threw on this component and its tick — push-to-talk — never ran (2026-10-20).
+      this.ctx = null; this.ws = null; this.cap = null; this.speaker = null; this.stream = null;
       this.sending = false; this.tailUntil = 0; this.speaking = false; this.armed = false;
       this.stats = { sent: 0, recv: 0, since: performance.now() };
       // The ENTER AR tap is the one user gesture we get before the session: take the mic and resume the
@@ -82,13 +85,21 @@
       if (!AC || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { log("no Web Audio / getUserMedia here"); return; }
       this.ctx = new AC();
       var cons = { audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false, channelCount: 1 } };
+      // A request nobody answers neither resolves nor fails, so say so: on a site the headset has not
+      // granted yet, the prompt opens behind the AR session this same tap starts, and waits there unseen.
+      // (A cloudflared quick tunnel is a new site every run, so it asks every time.)
+      log("asking for the microphone");
+      var unanswered = setTimeout(function () {
+        log("no answer to the microphone request after 5 s — its prompt can't show inside AR; exit AR to answer it");
+      }, 5000);
       navigator.mediaDevices.getUserMedia(cons).then(function (stream) {
+        clearTimeout(unanswered);
         self.stream = stream;
         var t = stream.getAudioTracks()[0], st = t && t.getSettings ? t.getSettings() : {};
         log("mic granted: rate=" + self.ctx.sampleRate + " aec=" + st.echoCancellation + " ns=" + st.noiseSuppression + " agc=" + st.autoGainControl);
         var url = URL.createObjectURL(new Blob([WORKLET_SRC], { type: "application/javascript" }));
         return self.ctx.audioWorklet.addModule(url).then(function () { self.wire(stream); });
-      }).catch(function (e) { log("mic refused: " + e); self.armed = false; });
+      }).catch(function (e) { clearTimeout(unanswered); log("mic refused: " + e); self.armed = false; });
     },
 
     wire: function (stream) {
@@ -97,8 +108,8 @@
       var src = ctx.createMediaStreamSource(stream);
       this.cap = new AudioWorkletNode(ctx, "conjure-cap", { numberOfInputs: 1, numberOfOutputs: 0 });
       src.connect(this.cap);
-      this.play = new AudioWorkletNode(ctx, "conjure-play", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1] });
-      this.play.connect(ctx.destination);
+      this.speaker = new AudioWorkletNode(ctx, "conjure-play", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1] });
+      this.speaker.connect(ctx.destination);
       this.cap.port.onmessage = function (e) {
         var now = performance.now();
         var send = self.sending || now < self.tailUntil;
@@ -121,9 +132,9 @@
       };
       ws.onclose = function () { log("audio link closed — retrying in 2s"); setTimeout(function () { if (self.ws === ws) self.connect(); }, 2000); };
       ws.onmessage = function (ev) {
-        if (ev.data instanceof ArrayBuffer) { self.stats.recv++; if (self.play) self.play.port.postMessage(ev.data, [ev.data]); return; }
+        if (ev.data instanceof ArrayBuffer) { self.stats.recv++; if (self.speaker) self.speaker.port.postMessage(ev.data, [ev.data]); return; }
         var msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
-        if (msg.type === "ready") { if (self.play) self.play.port.postMessage({ rate: msg.out_rate || 24000 }); log("ready out_rate=" + msg.out_rate); }
+        if (msg.type === "ready") { if (self.speaker) self.speaker.port.postMessage({ rate: msg.out_rate || 24000 }); log("ready out_rate=" + msg.out_rate); }
         else if (msg.type === "speaking") { self.speaking = !!msg.on; self.el.emit("voice-speaking", { on: self.speaking }); }
         else if (msg.type === "transcript") { log("heard: " + msg.text); self.el.emit("voice-transcript", { text: msg.text }); }
         else if (msg.type === "notice") { log(msg.text); }
@@ -150,7 +161,7 @@
         if (held && this.speaking && this.ws && this.ws.readyState === 1) {
           // Pressing to talk while the bot is speaking IS the barge-in gesture: drop what is queued here
           // and tell the server (C3b). Deliberate, not acoustic — no AEC quality required.
-          this.play.port.postMessage("flush");
+          this.speaker.port.postMessage("flush");
           this.ws.send(JSON.stringify({ type: "interrupt" }));
         }
       }
