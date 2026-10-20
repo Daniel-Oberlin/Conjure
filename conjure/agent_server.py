@@ -35,7 +35,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from .config import DEFAULT_USER, USERS_DIR, VOID, Settings
 from .director import Busy
 from .llm import Turn
-from .shell import Shell, default_cwd
+from .shell import Shell, default_cwd, spoken_command
 from .speech import for_speech, strip_tags
 from .world import MIGRATED_SID, SessionRepository
 
@@ -434,6 +434,8 @@ async def _handle_turn(app: FastAPI, conn: Conn, text: str) -> None:
     hub: Hub = app.state.hub
     try:
         cmd = shell.as_command(text, conn.in_shell)
+        if cmd is not None and conn.kind == "voice":
+            cmd = spoken_command(cmd)                    # before the mode toggles: "open shell." must open it
         if cmd is None:                                  # ---- an utterance to the agent
             if app.state.turn_active:                    # single floor (D4): reject a concurrent turn
                 await conn.send({"type": "busy"})

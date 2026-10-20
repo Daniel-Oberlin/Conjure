@@ -61,6 +61,19 @@ def wake_pattern(words) -> "re.Pattern":
 # than a code change: "conjure" isn't in most STT vocabularies and comes back as "coinjure" often
 # enough that a command silently reached the agent as content (config.DEFAULT_WAKE_WORDS).
 _WAKE = wake_pattern(WAKE_WORDS)
+# A recognizer writes sentences: "Conjure agent erotic." arrives with a capital, a full stop, and
+# sometimes a comma ("agent, erotic"). Typed, nobody adds them, so the command table never expected them
+# — and `agent` accepts dots in a name, so the period became part of it ("No agent 'erotic.'"), which a
+# listener hears as a refusal. Five tries over several days before it was traced (2026-10-20).
+_SPOKEN_TRAIL = re.compile(r"[\s.!?…,;:]+$")
+
+
+def spoken_command(cmd: str) -> str:
+    """A command as a recognizer wrote it → as it would have been typed: trailing sentence punctuation
+    dropped, commas read as pauses. VOICE ONLY — a typed `cd ..` must keep its dots."""
+    return re.sub(r"\s*,\s*", " ", _SPOKEN_TRAIL.sub("", cmd.strip())).strip()
+
+
 # Spoken aliases for `llm <name>`. Voice only: in text these would claim every LLM name as a reserved
 # word, so the canonical typed form is the noun command, consistent with `agent`/`world`/`session`.
 _SPOKEN_LLM = re.compile(r"^(?:talk\s+to|switch\s+to|use|become|be)\s+(?P<name>[a-z0-9]+)$", re.I)
@@ -532,8 +545,9 @@ class Shell:
         self._voice = voice
         self._cwd = cwd or default_cwd(self._acting, self._agent_name())
         self._cwd_display = cwd_display or self._cwd
-        if voice:                                             # spoken aliases for `llm <name>`
-            sm = _SPOKEN_LLM.match(cmd)
+        if voice:
+            cmd = spoken_command(cmd)                         # "agent erotic." → "agent erotic" (idempotent)
+            sm = _SPOKEN_LLM.match(cmd)                       # spoken aliases for `llm <name>`
             if sm and await self._switch_llm(on_text, sm):
                 return
         for rx, handler, _, is_voice in self._table:

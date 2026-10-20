@@ -1231,3 +1231,30 @@ def test_a_flag_like_word_inside_a_filename_is_not_a_flag():
     from conjure.shell import Shell
     path, filters = Shell._listing_filters("notes--kind.txt")
     assert path == "notes--kind.txt" and filters == {}
+
+
+# --------------------------------------------------------------------------- commands as a recognizer writes them
+
+def test_a_spoken_command_loses_the_sentence_punctuation_a_recognizer_adds():
+    from conjure.shell import spoken_command
+
+    assert spoken_command("agent erotic.") == "agent erotic"
+    assert spoken_command("agent, erotic.") == "agent erotic"
+    assert spoken_command("open shell!") == "open shell"
+    assert spoken_command("talk to Gemini?  ") == "talk to Gemini"
+    assert spoken_command("agent erotic") == "agent erotic"            # idempotent on a clean command
+
+
+async def test_conjure_agent_x_spoken_as_a_sentence_switches_the_agent():
+    """The transcript was "Conjure agent erotic." — five tries, five "No agent 'erotic.'" (2026-10-20)."""
+    sh, d, out, on_text = _shell()
+    cmd = sh.as_command("Conjure agent scratch.", False)
+    assert cmd == "agent scratch."                                     # the wake word strips; the period stays…
+    await sh._dispatch(cmd, on_text, voice=True)
+    assert not any("No agent" in t for _, t in out), out               # …and voice drops it
+
+
+async def test_a_typed_command_keeps_its_dots():
+    sh, d, out, on_text = _shell()
+    await sh._dispatch("agent scratch.", on_text, voice=False)
+    assert any("No agent 'scratch.'" in t for _, t in out)             # typed text is taken literally

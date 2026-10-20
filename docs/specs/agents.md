@@ -492,6 +492,13 @@ Voice also gets spoken aliases for `llm <name>` — `talk to gemini`, `switch to
 These are **voice-only**: in text they would claim every LLM name as a reserved word, so the canonical
 typed form is the noun command.
 
+**A spoken command is read as it would have been typed.** A recognizer writes sentences — "Conjure agent
+erotic." — and the command table was written for what people type. Before a voice line is matched
+(`spoken_command`, applied by the agent server ahead of the open/leave toggles, and again in `_dispatch`),
+trailing sentence punctuation is dropped and commas read as pauses: `agent, erotic.` → `agent erotic`.
+Typed lines are untouched, because a typed `cd ..` means its dots. Without this, `agent` — whose names may
+contain dots — took `erotic.` as the name and answered "No agent 'erotic.'", which sounds like a refusal.
+
 **The `voice` flag also selects the OUTPUT.** Which commands exist is one registry; how their answers
 read is not. Every listing the shell prints is a column of rows with `*` or `@` marking the current one,
 which is instant on a screen and useless aloud — the marker is a character a TTS engine mispronounces

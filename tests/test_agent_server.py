@@ -861,3 +861,15 @@ async def test_the_follow_loop_still_ignores_everything_that_is_not_a_notice(mon
     monkeypatch.setattr(websockets, "connect", lambda *_a, **_k: _WS())
     await a._follow_world_state(app)
     assert sent == []
+
+
+async def test_a_spoken_open_shell_with_a_full_stop_still_opens_it():
+    """The mode toggles are matched HERE, before the shell sees the line — so a recognizer's sentence
+    ("Conjure, open shell.") has to be cleaned before them, not only inside the shell's dispatch."""
+    shell = FakeShell()
+    voice, cli = FakeConn("alice", kind="voice"), FakeConn("alice", kind="cli")
+    app = _app(shell, [voice, cli])
+    await _handle_turn(app, voice, "Conjure, open shell.")
+    assert voice.in_shell is True
+    await _handle_turn(app, cli, "conjure open shell.")                # typed: taken literally, not a toggle
+    assert cli.in_shell is False
