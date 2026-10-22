@@ -554,6 +554,19 @@ def main() -> int:
                          "clip and its label are hours of work and cannot be regenerated")
     args = ap.parse_args()
 
+    # The pipeline's own story — VAD start/stop, mute/unmute, STT (re)connects, interruptions, errors —
+    # goes to a rotated file as well as the console. The console is usually an mprocs pane nobody can
+    # read back: a headset session that went deaf after an AR re-entry (2026-10-22) left no trace beyond
+    # "audio sent, nothing heard". Set here, in the CLI entry, so importing this module (tests) never
+    # opens it.
+    if args.serve:
+        from loguru import logger
+
+        from .config import ROOT
+
+        logger.add(ROOT / "temp" / "voice-server.log", level="DEBUG", rotation="10 MB", retention=3,
+                   enqueue=True, backtrace=False, diagnose=False)
+
     if args.stt_corpus_purge:
         return _purge_cli(include_reviewed=args.all)
 
