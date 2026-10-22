@@ -376,7 +376,7 @@ and `CONJURE_VOICE_ACTIVATION` picks how the mic reaches the server:
 
 | `voice_activation` | Behaviour |
 |---|---|
-| `ptt` (default — decision #5's shared mode) | the worklet captures continuously (AEC stays converged) but frames are **sent** only while `talk` is held, plus a 350 ms tail; the server's VAD then sees silence and closes the segment. Nothing is streamed while nobody is pressing — which also makes the streaming-STT billing note in §4 moot |
+| `ptt` (default — decision #5's shared mode) | the worklet captures continuously (AEC stays converged) but frames are **sent** only while `talk` is held, then 350 ms more of the mic, then **digital silence until 1 s after release**. The silence is load-bearing: both recognizers end a sentence on silence they *hear* (xAI after ~400 ms, our VAD after 0.6 s), and audio that just stops isn't silence — with only the 350 ms tail, a sentence released on its last word was held until the next press, then arrived glued to it or drew a `busy` (measured 2026-10-20/22). Zeros rather than the mic, so nothing said after letting go is sent. Nothing is streamed while nobody is pressing — which also makes the streaming-STT billing note in §4 moot |
 | `open` | always streaming; solo mode, relies on AEC and mute-while-speaking |
 | `off` | no microphone; the component is inert |
 

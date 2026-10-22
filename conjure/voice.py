@@ -178,6 +178,27 @@ async def run_pipeline(settings: Settings, *, user: str, transport, wake_word: O
     from .agent_client import ws_url
 
     holder: dict = {"ws": None}          # the current agent-server socket (None while (re)connecting)
+
+    # What crossed this pipeline's agent-server socket, in the shared log (temp/conjure.log, tag
+    # `voice-server:<user>`) as well as the console. Neither end recorded it, so "One moment — I'm still
+    # working on the last request" could not be traced to the turn that drew it (2026-10-22), and five
+    # spoken "No agent 'erotic.'" replies went unseen for days. Fire-and-forget: never in the audio path.
+    def diag(msg: str) -> None:
+        print(f"{tag} {msg}", flush=True)
+        if not getattr(settings, "debug_log", False):
+            return
+
+        async def post() -> None:
+            try:
+                import httpx
+
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    await client.post(f"{settings.world_url}/client_log",
+                                      json={"tag": f"voice-server:{user}", "msg": msg})
+            except Exception:  # noqa: BLE001 — a diagnostic must never break the pipeline
+                pass
+
+        asyncio.get_running_loop().create_task(post())
     stop = asyncio.Event()
     tag = f"[voice{(':' + label) if label else ''}]"
 
@@ -227,12 +248,14 @@ async def run_pipeline(settings: Settings, *, user: str, transport, wake_word: O
             if ws is None:
                 await self.speak("The agent server isn't connected yet.")
                 return
+            diag(f"→ turn {text!r}")
             try:
                 await ws.send(json.dumps({"type": "turn", "text": text}))
             except Exception as exc:  # noqa: BLE001 — a send failure shouldn't tear down the pipeline
                 print(f"voice send error: {exc}", file=sys.stderr)
 
         async def interrupt(self) -> None:
+            diag("→ interrupt (talk pressed while the reply was playing)")
             await self.push_frame(InterruptionFrame())       # downstream: TTS + output flush what's queued
             ws = holder["ws"]
             if ws is not None:
@@ -280,11 +303,14 @@ async def run_pipeline(settings: Settings, *, user: str, transport, wake_word: O
                     async for raw in ws:
                         ev = json.loads(raw)
                         t = ev.get("type")
+                        if t == "notice" and ev.get("text"):
+                            diag(f"← notice {ev['text'][:200]!r}")
                         if t in ("assistant_delta", "assistant_final", "notice"):
                             txt = ev.get("text")
                             if txt and txt.strip():
                                 await bridge.speak(txt)
                         elif t == "busy":
+                            diag("← busy: a turn was already in flight, so the last one was refused")
                             await bridge.speak("One moment — I'm still working on the last request.")
                         elif t == "context" and "public" in ev:
                             session["public"] = bool(ev["public"])   # gates corpus capture; never spoken
@@ -314,6 +340,9 @@ async def run_pipeline(settings: Settings, *, user: str, transport, wake_word: O
     async def _on_user_turn(aggr, strategy, message):
         text = (getattr(message, "content", "") or "").strip()
         if not text:
+            # A turn that closed with nothing heard — usually the recognizer still holding the words,
+            # which then arrive glued to the NEXT turn. Worth a line: it was invisible before.
+            diag("turn ended with no transcript yet")
             return
         cmd = gate(text)
         if cmd:

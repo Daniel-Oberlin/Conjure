@@ -21,6 +21,12 @@
   "use strict";
   var ACT = (window.CONJURE_VOICE_ACTIVATION || "ptt").toLowerCase();
   var TAIL_MS = 350;              // keep sending this long after `talk` is released, so the last word lands
+  // …and then SILENCE until this long after release. The recognizers end a sentence on silence they
+  // HEAR — xAI after ~400 ms, our VAD after 0.6 s — and audio that simply stops is not silence: the
+  // sentence was held until the next press, then arrived glued to it, or drew "One moment — I'm still
+  // working on the last request" (measured 2026-10-20/22: a 350 ms tail held it; 700 ms+ never did).
+  // Digital zeros, not the mic, so nothing said after letting go is ever sent.
+  var RELEASE_MS = 1000;
   var FRAME_MS = 20;
   var GAP_MS = 600;
   // What starts an immersive session: our own ENTER AR (conjure-client.js marks it) and A-Frame's buttons.
@@ -70,7 +76,7 @@
       // playback node was once `this.play`, which replaced Component.play with null, so the scene's
       // start-up threw on this component and its tick — push-to-talk — never ran (2026-10-20).
       this.ctx = null; this.ws = null; this.cap = null; this.speaker = null; this.stream = null;
-      this.sending = false; this.tailUntil = 0; this.speaking = false; this.armed = false; this.lastAudio = 0;
+      this.sending = false; this.tailUntil = 0; this.silenceUntil = 0; this.speaking = false; this.armed = false; this.lastAudio = 0;
       this.stats = { sent: 0, recv: 0, since: performance.now() };
       // The ENTER AR tap is the one user gesture we get before the session: take the mic and resume the
       // context on it, in the capture phase so we run before scene.enterVR. Also on a plain click anywhere
@@ -160,6 +166,10 @@
       this.cap.port.onmessage = function (e) {
         var now = performance.now();
         var send = self.sending || now < self.tailUntil;
+        if (!send && now < self.silenceUntil && self.ws && self.ws.readyState === 1) {
+          self.ws.send(new ArrayBuffer(e.data.byteLength)); self.stats.sent++;   // zeros: silence, heard
+          return;
+        }
         if (send && self.ws && self.ws.readyState === 1) { self.ws.send(e.data); self.stats.sent++; }
       };
       this.setSending(ACT === "open");
@@ -191,7 +201,7 @@
     setSending: function (on) {
       if (on === this.sending) return;
       this.sending = on;
-      if (!on) this.tailUntil = performance.now() + TAIL_MS;
+      if (!on) { var t = performance.now(); this.tailUntil = t + TAIL_MS; this.silenceUntil = t + RELEASE_MS; }
     },
 
     // Push-to-talk reads the `talk` action through the input layer each frame — a controller's stick
