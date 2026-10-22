@@ -7,7 +7,7 @@ import types
 
 import pytest
 
-from conjure.shell import Shell
+from conjure.shell import Shell, spoken_command
 
 
 class FakeDirector:
@@ -1258,3 +1258,30 @@ async def test_a_typed_command_keeps_its_dots():
     sh, d, out, on_text = _shell()
     await sh._dispatch("agent scratch.", on_text, voice=False)
     assert any("No agent 'scratch.'" in t for _, t in out)             # typed text is taken literally
+
+
+# Grok punctuates the wake word as a sentence of its own: "Conjure. Agent erotic." (2026-10-22).
+@pytest.mark.parametrize("line", ["Conjure. Agent scratch.", "Conjure, agent scratch.", "Conjure... agent scratch",
+                                  "conjure agent scratch"])
+def test_the_wake_word_may_end_with_any_punctuation(line):
+    sh, *_ = _shell()
+    assert spoken_command(sh.as_command(line, False)).lower() == "agent scratch"
+
+
+def test_a_bare_wake_word_with_a_full_stop_opens_the_shell():
+    sh, *_ = _shell()
+    assert sh.as_command("Conjure.", False) == "open shell"
+
+
+def test_the_wake_word_is_still_the_wake_word_inside_the_shell():
+    sh, *_ = _shell()
+    assert spoken_command(sh.as_command("Conjure. Agent scratch.", True)) == "Agent scratch"
+    assert sh.as_command("agent scratch", True) == "agent scratch"           # no wake word: the line itself
+    assert sh.as_command("conjured a dragon", False) is None                  # a word that only STARTS like it
+
+
+async def test_conjure_full_stop_agent_x_switches_by_voice_in_either_mode():
+    for in_shell in (False, True):
+        sh, d, out, on_text = _shell()
+        await sh._dispatch(sh.as_command("Conjure. Agent scratch.", in_shell), on_text, voice=True)
+        assert not any("Unknown command" in t or "No agent" in t for _, t in out), (in_shell, out)

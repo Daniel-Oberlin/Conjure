@@ -52,9 +52,12 @@ OnText = Callable[..., Awaitable[None]]
 OnTool = Callable[..., Awaitable[None]]
 
 def wake_pattern(words) -> "re.Pattern":
-    """The inline-escape matcher for a wake-word list. STT rarely punctuates, so the comma is optional."""
+    """The inline-escape matcher for a wake-word list. Punctuation after the word is optional AND may be
+    a sentence end: Whisper rarely punctuates, but Grok writes "Conjure. Agent erotic." — and with only
+    `[,:]` allowed, the full stop stayed in the command (". Agent erotic", read aloud as "dot agent
+    erotic"), and a bare "Conjure." became the command "." instead of opening the shell (2026-10-22)."""
     alts = "|".join(re.escape(w) for w in words) or "conjure"
-    return re.compile(rf"^(?:{alts})\b[,:]?\s*(?P<rest>.*)$", re.I | re.S)
+    return re.compile(rf"^(?:{alts})\b[\s,:;.!?…]*(?P<rest>.*)$", re.I | re.S)
 
 
 # "conjure …" inline escape. Built from the CONFIGURED list, so a mis-hearing is a config line rather
@@ -509,9 +512,12 @@ class Shell:
         = open shell). **Mode is a parameter**, not instance state, so one shell serves many connections
         each with their own mode (the agent server passes each connection's `in_shell`)."""
         s = raw.strip()
-        if in_shell:
-            return s                                          # shell mode: every line is a command
         m = _WAKE.match(s)
+        if in_shell:
+            # Shell mode: every line is a command — and a leading wake word is still just the wake word.
+            # Saying "conjure agent erotic" in the shell is natural, and taking it literally answered
+            # "Unknown command: 'Conjure. Agent erotic'" (2026-10-22).
+            return (m.group("rest").strip() or "open shell") if m else s
         if m:
             return m.group("rest").strip() or "open shell"   # bare "conjure" → open the shell
         return None                                           # agent mode, no wake word → not a command

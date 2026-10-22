@@ -499,6 +499,11 @@ trailing sentence punctuation is dropped and commas read as pauses: `agent, erot
 Typed lines are untouched, because a typed `cd ..` means its dots. Without this, `agent` — whose names may
 contain dots — took `erotic.` as the name and answered "No agent 'erotic.'", which sounds like a refusal.
 
+**The wake word may be its own sentence.** Grok writes "Conjure. Agent erotic." — so any punctuation may
+follow the wake word (`[\s,:;.!?…]*`), and a bare "Conjure." opens the shell like "conjure" does. And in
+shell mode a leading wake word is still stripped: every line there is a command, but "conjure agent
+erotic" spoken out of habit means `agent erotic`, not a command named *Conjure*.
+
 **The `voice` flag also selects the OUTPUT.** Which commands exist is one registry; how their answers
 read is not. Every listing the shell prints is a column of rows with `*` or `@` marking the current one,
 which is instant on a screen and useless aloud — the marker is a character a TTS engine mispronounces
