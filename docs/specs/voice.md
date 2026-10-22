@@ -380,6 +380,17 @@ and `CONJURE_VOICE_ACTIVATION` picks how the mic reaches the server:
 | `open` | always streaming; solo mode, relies on AEC and mute-while-speaking |
 | `off` | no microphone; the component is inert |
 
+**The capture reports its own health, and repairs a dead one.** Each press logs its length and the peak
+level of the mic audio actually sent (`press: 26 frames over 516 ms, peak -12 dBFS`); the mic track's
+`mute`/`unmute`/`ended` and the AudioContext's state changes are logged; entering AR logs the context and
+track state. A press that carried **nothing but digital zeros**, an ended track, or a track that isn't live
+on entering AR triggers a fresh `getUserMedia` on the same constraints (permission already granted: no
+prompt, no gesture) and re-attaches it to the capture worklet. Motivation: after leaving and re-entering AR
+on the same page, the page kept sending frames while the voice server's VAD never fired once — almost
+certainly a capture delivering silence (2026-10-22). Verified in headless Chrome by disabling the track:
+the silent press is reported, the mic re-acquired, and the next press carries sound. Not yet confirmed to
+be the Quest's failure mode — the press levels are what will say.
+
 **Barge-in (C3b) is a gesture, not an acoustic guess.** Pressing `talk` while the bot is speaking flushes
 the playback ring buffer and sends `{type:"interrupt"}`; the bridge pushes an `InterruptionFrame`
 (TTS and transport flush what is queued) and forwards the reserved `interrupt` to the agent server,

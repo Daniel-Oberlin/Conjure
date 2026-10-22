@@ -77,6 +77,7 @@
       // playback node was once `this.play`, which replaced Component.play with null, so the scene's
       // start-up threw on this component and its tick — push-to-talk — never ran (2026-10-20).
       this.ctx = null; this.ws = null; this.cap = null; this.speaker = null; this.stream = null;
+      this.press = { frames: 0, peak: 0, at: 0 }; this.src = null; this._reacquiring = false;
       this.sending = false; this.tailUntil = 0; this.silenceUntil = 0; this.speaking = false; this.armed = false; this.lastAudio = 0;
       this.stats = { sent: 0, recv: 0, since: performance.now() };
       // The ENTER AR tap is the one user gesture we get before the session: take the mic and resume the
@@ -110,6 +111,11 @@
       this.el.sceneEl.addEventListener("exit-vr", function () { self.setSending(ACT === "open"); });
       this.el.sceneEl.addEventListener("enter-vr", function () {
         var h = document.getElementById("voice-link-hint"); if (h) h.style.display = "none";
+        if (!self.stream) return;
+        var t = self.stream.getAudioTracks()[0];
+        log("entered AR: context=" + (self.ctx && self.ctx.state) + " track=" + (t ? t.readyState + (t.muted ? " (muted)" : "") : "none"));
+        if (self.ctx && self.ctx.state !== "running") self.ctx.resume();
+        if (!t || t.readyState !== "live") self.reacquire("the track was not live on entering AR");
       });
     },
 
@@ -136,7 +142,7 @@
       var AC = window.AudioContext || window.webkitAudioContext;
       if (!AC || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { log("no Web Audio / getUserMedia here"); return; }
       this.ctx = new AC();
-      var cons = { audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false, channelCount: 1 } };
+      var cons = this.cons = { audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false, channelCount: 1 } };
       // A request nobody answers neither resolves nor fails, so say so: on a site the headset has not
       // granted yet, the prompt opens behind the AR session this same tap starts, and waits there unseen.
       // (A cloudflared quick tunnel is a new site every run, so it asks every time.)
@@ -159,9 +165,13 @@
     wire: function (stream) {
       var self = this, ctx = this.ctx;
       if (ctx.state !== "running") ctx.resume();
-      var src = ctx.createMediaStreamSource(stream);
       this.cap = new AudioWorkletNode(ctx, "conjure-cap", { numberOfInputs: 1, numberOfOutputs: 0 });
-      src.connect(this.cap);
+      this.attach(stream);
+      // A context the browser suspends stops the worklet outright; say so, and take it back.
+      ctx.onstatechange = function () {
+        log("audio context → " + ctx.state);
+        if (ctx.state === "suspended" || ctx.state === "interrupted") ctx.resume();
+      };
       this.speaker = new AudioWorkletNode(ctx, "conjure-play", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1] });
       this.speaker.connect(ctx.destination);
       this.cap.port.onmessage = function (e) {
@@ -171,7 +181,16 @@
           self.ws.send(new ArrayBuffer(e.data.byteLength)); self.stats.sent++;   // zeros: silence, heard
           return;
         }
-        if (send && self.ws && self.ws.readyState === 1) { self.ws.send(e.data); self.stats.sent++; }
+        if (send && self.ws && self.ws.readyState === 1) {
+          // The level of what is actually sent. A press that carries only digital zeros means the capture
+          // went dead under us — seen after leaving and re-entering AR on the same page (2026-10-22): the
+          // page kept sending, the server's VAD heard nothing, and no log could tell silence from speech.
+          var a = new Int16Array(e.data), pk = 0;
+          for (var i = 0; i < a.length; i++) { var v = a[i] < 0 ? -a[i] : a[i]; if (v > pk) pk = v; }
+          if (pk > self.press.peak) self.press.peak = pk;
+          self.press.frames++;
+          self.ws.send(e.data); self.stats.sent++;
+        }
       };
       this.setSending(ACT === "open");
       this.connect();
@@ -199,8 +218,43 @@
       };
     },
 
+    // (Re)connect a mic stream to the capture worklet. Used once on arm and again whenever the stream dies.
+    attach: function (stream) {
+      var self = this;
+      if (this.src) { try { this.src.disconnect(); } catch (e) {} }
+      if (this.stream && this.stream !== stream) this.stream.getTracks().forEach(function (t) { t.stop(); });
+      this.stream = stream;
+      this.src = this.ctx.createMediaStreamSource(stream);
+      this.src.connect(this.cap);
+      var t = stream.getAudioTracks()[0];
+      if (t) {
+        t.onmute = function () { log("mic track muted by the browser"); };
+        t.onunmute = function () { log("mic track unmuted"); };
+        t.onended = function () { log("mic track ended"); self.reacquire("the track ended"); };
+      }
+    },
+
+    // A fresh getUserMedia — the permission is already granted, so no prompt and no gesture needed.
+    reacquire: function (why) {
+      var self = this;
+      if (this._reacquiring || !this.cap) return;
+      this._reacquiring = true;
+      log("re-acquiring the microphone: " + why);
+      navigator.mediaDevices.getUserMedia(this.cons).then(function (stream) {
+        self._reacquiring = false;
+        self.attach(stream);
+        log("microphone re-acquired");
+      }).catch(function (e) { self._reacquiring = false; log("microphone re-acquire failed: " + e); });
+    },
+
     setSending: function (on) {
       if (on === this.sending) return;
+      if (on) this.press = { frames: 0, peak: 0, at: performance.now() };
+      else if (this.press && this.press.frames) {
+        var pk = this.press.peak, db = pk ? (20 * Math.log10(pk / 32768)).toFixed(0) + " dBFS" : "SILENT (digital zero)";
+        log("press: " + this.press.frames + " frames over " + Math.round(performance.now() - this.press.at) + " ms, peak " + db);
+        if (!pk) this.reacquire("a whole press carried nothing but zeros");
+      }
       this.sending = on;
       if (!on) { var t = performance.now(); this.tailUntil = t + TAIL_MS; this.silenceUntil = t + RELEASE_MS; }
     },
