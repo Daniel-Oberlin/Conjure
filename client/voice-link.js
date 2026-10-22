@@ -26,6 +26,7 @@
   // sentence was held until the next press, then arrived glued to it, or drew "One moment — I'm still
   // working on the last request" (measured 2026-10-20/22: a 350 ms tail held it; 700 ms+ never did).
   // Digital zeros, not the mic, so nothing said after letting go is ever sent.
+  // TEMPORARY — a push-to-talk workaround: delete it with PTT (docs/backlogs/voice.md).
   var RELEASE_MS = 1000;
   var FRAME_MS = 20;
   var GAP_MS = 600;

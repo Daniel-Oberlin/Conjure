@@ -281,6 +281,12 @@ row**, not an edit. Two things the STT seam left open:
 
 - **Grok STT accuracy is unmeasured.** A cloud streaming recognizer has to beat `small.en` on the
   Bluetooth corpus, not on a demo; read the investigation before calling it better. Which needs —
+- **Remove the post-release silence when push-to-talk goes.** Daniel wants to drop the stick soon
+  (open mic / VAD-driven turns). The 1 s of digital zeros `voice-link.js` sends after `talk` is released
+  (`RELEASE_MS`, spec §11) exists only because PTT *stops* the audio, and the recognizers need to hear
+  silence to end a sentence. With an always-streaming mic they hear the room's real silence, so the
+  padding — and `silenceUntil` with it — should be deleted in the same change that retires PTT, not
+  left as dead weight. (In `open` mode today it already fires only once, on leaving AR.)
 - **The Grok de-duplication assumes xAI's current close.** `Utterance.close` (spec §4) expects the
   `speech_final` text to be the whole utterance, and treats a close that doesn't start with the words
   already sent as a *revision* and drops it. That reading is inferred from the live events — xAI
