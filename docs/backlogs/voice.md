@@ -281,10 +281,6 @@ row**, not an edit. Two things the STT seam left open:
 
 - **Grok STT accuracy is unmeasured.** A cloud streaming recognizer has to beat `small.en` on the
   Bluetooth corpus, not on a demo; read the investigation before calling it better. Which needs —
-- **Ask for the microphone before ENTER AR.** The ENTER AR tap can't carry a first-time permission
-  prompt — it opens behind the session (spec §11). A mic button on the 2D page, shown while the
-  permission state is `prompt` (`navigator.permissions.query({name: "microphone"})`), would grant it
-  where it can be seen; ENTER AR then only resumes the AudioContext. Every quick-tunnel run hits this.
 - **The Grok de-duplication assumes xAI's current close.** `Utterance.close` (spec §4) expects the
   `speech_final` text to be the whole utterance, and treats a close that doesn't start with the words
   already sent as a *revision* and drops it. That reading is inferred from the live events — xAI

@@ -3414,6 +3414,7 @@
       var scene = document.querySelector("a-scene");
       var btn = document.createElement("button");
       btn.textContent = "ENTER AR";
+      btn.dataset.xrEnter = "ar";        // voice-link.js holds this tap while the mic permission is unasked
       btn.style.cssText =
         "position:fixed;bottom:20px;left:20px;z-index:99999;padding:12px 22px;" +
         "font:bold 14px sans-serif;color:#fff;background:#1a8cff;border:none;" +

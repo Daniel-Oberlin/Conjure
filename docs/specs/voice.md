@@ -358,11 +358,15 @@ the serializer (pipecat's input transport does not; SOXR `HQ`, measured 21 ms of
 listener, before `enterVR`). That is enough **only once the site already holds the permission.** On a
 site the headset hasn't granted, the prompt opens on the same tap that starts the session and waits
 behind it, unseen: the request neither resolves nor fails, and the link never opens (first headset run,
-2026-10-20). Exiting AR shows the prompt; allowing it opens the link, and re-entering works. A
-cloudflared quick tunnel is a new site every run, so it asks every run; `adb reverse` (a stable
-`localhost`) asks once. The page logs `asking for the microphone`, and after 5 s unanswered says to exit
-AR, so the wait is no longer silent. A pre-AR microphone button is the real fix
-([backlogs/voice.md](../backlogs/voice.md)). Capture asks for
+2026-10-20). A cloudflared quick tunnel is a new site every run, so it asks every run; `adb reverse` (a
+stable `localhost`) asks once. **So while the permission is still `prompt`, the ENTER tap is held:**
+`voice-link` reads the state through the Permissions API, and a click on anything that starts a session
+(`[data-xr-enter]` — conjure-client's ENTER AR carries it — or A-Frame's enter buttons) is stopped before
+it reaches the button. The prompt then opens on the 2D page, a hint beside the button says "Allow the
+microphone, then tap ENTER AR again", and the next tap — permission granted — enters with the link
+already open. Granted, denied, or no Permissions API: the tap passes as before. The page logs the state
+(`microphone permission: prompt`), the hold, and — for the unknown-state case — a request unanswered
+after 5 s. Capture asks for
 `echoCancellation: true, noiseSuppression: false, autoGainControl: false` — the backlog's "NR off,
 AEC on": Chromium's canceller uses audio *this browser renders* as its reference, which is why the
 reply is played by the page and not positionally.

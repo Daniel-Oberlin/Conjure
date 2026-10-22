@@ -22,7 +22,9 @@
   var ACT = (window.CONJURE_VOICE_ACTIVATION || "ptt").toLowerCase();
   var TAIL_MS = 350;              // keep sending this long after `talk` is released, so the last word lands
   var FRAME_MS = 20;
-  var GAP_MS = 600;               // reply audio this recent still counts as "speaking" (the gap between sentences)
+  var GAP_MS = 600;
+  // What starts an immersive session: our own ENTER AR (conjure-client.js marks it) and A-Frame's buttons.
+  var ENTER_XR = "[data-xr-enter], .a-enter-vr-button, .a-enter-ar-button";               // reply audio this recent still counts as "speaking" (the gap between sentences)
   // Mirrors conjure-client.js's debugLog: console + POST /client_log → temp/conjure.log, gated the same way,
   // so a headset's voice link can be diagnosed from the host without remote debugging.
   var log = function (m) {
@@ -73,9 +75,51 @@
       // The ENTER AR tap is the one user gesture we get before the session: take the mic and resume the
       // context on it, in the capture phase so we run before scene.enterVR. Also on a plain click anywhere
       // (desktop testing).
-      var arm = function () { self.arm(); };
-      document.addEventListener("click", arm, true);
+      //
+      // …but a FIRST-TIME permission prompt can't ride that tap: it opens behind the session the same tap
+      // starts and waits there unseen, so the first entry on a new site had no voice until you exited,
+      // answered and re-entered (2026-10-20/22; a cloudflared quick tunnel is a new site every run). So
+      // while the permission is still `prompt`, the ENTER tap is HELD: the prompt shows on the 2D page,
+      // and the next ENTER tap — permission now granted — goes straight in. Unknown state (no Permissions
+      // API) or denied → the tap passes, as before.
+      this.perm = "unknown";
+      if (navigator.permissions && navigator.permissions.query) {
+        navigator.permissions.query({ name: "microphone" }).then(function (st) {
+          self.perm = st.state;
+          log("microphone permission: " + st.state);
+          st.onchange = function () { self.perm = st.state; log("microphone permission → " + st.state); };
+        }).catch(function () {});
+      }
+      var onClick = function (ev) {
+        var t = ev.target, enter = t && t.closest && t.closest(ENTER_XR);
+        if (enter && self.perm === "prompt" && !self.stream) {
+          ev.stopImmediatePropagation(); ev.preventDefault();
+          log("held the ENTER tap: asking for the microphone first");
+          self.hint("Allow the microphone, then tap " + ((enter.textContent || "ENTER").trim() || "ENTER") + " again.");
+        }
+        self.arm();
+      };
+      document.addEventListener("click", onClick, true);
       this.el.sceneEl.addEventListener("exit-vr", function () { self.setSending(ACT === "open"); });
+      this.el.sceneEl.addEventListener("enter-vr", function () {
+        var h = document.getElementById("voice-link-hint"); if (h) h.style.display = "none";
+      });
+    },
+
+    // A short line on the 2D page, beside the ENTER button — the one place a person looks at that moment.
+    hint: function (text) {
+      var el = document.getElementById("voice-link-hint");
+      if (!el) {
+        el = document.createElement("div");
+        el.id = "voice-link-hint";
+        el.style.cssText = "position:fixed;bottom:76px;left:20px;z-index:99999;max-width:320px;padding:10px 14px;" +
+          "font:14px sans-serif;color:#fff;background:rgba(20,30,50,0.92);border-radius:8px;";
+        document.body.appendChild(el);
+      }
+      el.textContent = text;
+      el.style.display = "";
+      clearTimeout(this._hintTimer);
+      this._hintTimer = setTimeout(function () { el.style.display = "none"; }, 8000);
     },
 
     arm: function () {
@@ -91,12 +135,14 @@
       // (A cloudflared quick tunnel is a new site every run, so it asks every time.)
       log("asking for the microphone");
       var unanswered = setTimeout(function () {
-        log("no answer to the microphone request after 5 s — its prompt can't show inside AR; exit AR to answer it");
+        log("no answer to the microphone request after 5 s — if you're in AR its prompt is hidden; exit AR to answer it");
       }, 5000);
       navigator.mediaDevices.getUserMedia(cons).then(function (stream) {
         clearTimeout(unanswered);
         self.stream = stream;
         var t = stream.getAudioTracks()[0], st = t && t.getSettings ? t.getSettings() : {};
+        var h = document.getElementById("voice-link-hint");
+        if (h && h.style.display !== "none") self.hint("Microphone on — now tap ENTER AR.");
         log("mic granted: rate=" + self.ctx.sampleRate + " aec=" + st.echoCancellation + " ns=" + st.noiseSuppression + " agc=" + st.autoGainControl);
         var url = URL.createObjectURL(new Blob([WORKLET_SRC], { type: "application/javascript" }));
         return self.ctx.audioWorklet.addModule(url).then(function () { self.wire(stream); });
