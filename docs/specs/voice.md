@@ -442,8 +442,9 @@ server, `conjure.voice --serve --no-mic`):
 
 Spike 1 — mic capture inside `immersive-ar` and how much AEC3 cancels on the Quest's open-air speakers
 — needs the headset: open `/static/audio-spike.html` on it, tap **1**, then **2**, **3**, **4**; every
-result line lands in `temp/conjure.log` under `audio-spike`. Until it has run, `ptt` is the default
-and VAD barge-in stays off (`open` itself no longer waits on it — the echo gate doesn't rely on AEC). Spike 3's render-loop check (`--debug-jitter` with the link up) and spike 4's
+result line lands in `temp/conjure.log` under `audio-spike`. Until it has run, VAD barge-in stays off.
+`open` no longer waits on it (the echo gate doesn't rely on AEC); `ptt` stays the default because
+decision #5 makes shared mode the safe default, and `open` is how a solo user declares otherwise. Spike 3's render-loop check (`--debug-jitter` with the link up) and spike 4's
 push-to-talk on a real controller are likewise waiting on a headset session.
 
 ## Related

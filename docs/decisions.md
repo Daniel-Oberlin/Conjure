@@ -127,6 +127,10 @@ mediated by capability (decision #13). Gemini chosen as default for best-in-clas
 
 Final activation form still OPEN, but the space is narrow. See vision §3 and §12.
 
+**On the headset (2026-10-23):** solo is declared per deployment with `CONJURE_VOICE_ACTIVATION=open` —
+no press to talk; the page's echo gate silences the mic while its own reply plays, and the `talk` press
+remains the interrupt. `ptt` stays the default, as this decision requires (voice spec §11).
+
 ### 6. Behavior execution split — 🔶 EASED by #7
 What runs client-side (low-latency interaction) vs server-side (authoritative/persistent). The
 #7 choice makes behaviors **portable** (same JS runtime both sides), so placement becomes a

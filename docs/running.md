@@ -137,8 +137,8 @@ streams its microphone to it through the world server, and the reply plays in th
 python -m conjure.voice --serve            # host mic AND headsets;  --no-mic for headsets only
 ```
 
-Push-to-talk is the stick press by default (`CONJURE_VOICE_ACTIVATION=ptt|open|off`, `talk` in
-`CONJURE_BINDINGS`). The first headset session should start with the measurement page:
+Push-to-talk is the stick press by default (`talk` in `CONJURE_BINDINGS`); alone in the room, set
+`CONJURE_VOICE_ACTIVATION=open` to just talk — the stick then only interrupts a reply. The first headset session should start with the measurement page:
 `/static/audio-spike.html` on the Quest, tap 1–4, read the results in `temp/conjure.log`. A world server
 started before this landed has no `/audio` relay — restart it.
 
