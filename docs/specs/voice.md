@@ -398,6 +398,12 @@ which cancels that connection's in-flight turn, broadcasts *[user interrupted]* 
 `turn_done`. Deliberate interruption needs no echo-cancellation quality at all; VAD-driven barge-in in
 `open` mode waits on spike 1's measurement.
 
+**Reply audio already in flight is dropped too.** Frames the server sent before the interrupt reached it
+land after the page's flush — too few to fill the 120 ms priming buffer, so they used to wait there and
+play just before the *new* reply. After a barge-in the page discards all reply audio until that press's
+`transcript` arrives (it precedes the new reply's audio on the same socket), or 2 s after release if no
+transcript comes; it logs `barge-in: dropped N late frames of the interrupted reply`.
+
 **The page has to know the bot is speaking**, because that is what makes a press a barge-in rather than
 a new turn. Two signals, either sufficient: the server's `{type:"speaking", on}`, and reply audio received
 in the last 600 ms (the server reports *stopped* for ~0.7 s between two TTS sentences). `speaking` is sent

@@ -29,9 +29,10 @@
   // TEMPORARY — a push-to-talk workaround: delete it with PTT (docs/backlogs/voice.md).
   var RELEASE_MS = 1000;
   var FRAME_MS = 20;
-  var GAP_MS = 600;
+  var GAP_MS = 600;               // reply audio this recent still counts as "speaking" (the gap between sentences)
+  var DISCARD_MS = 2000;          // after a barge-in release, a turn with no transcript stops discarding reply audio here
   // What starts an immersive session: our own ENTER AR (conjure-client.js marks it) and A-Frame's buttons.
-  var ENTER_XR = "[data-xr-enter], .a-enter-vr-button, .a-enter-ar-button";               // reply audio this recent still counts as "speaking" (the gap between sentences)
+  var ENTER_XR = "[data-xr-enter], .a-enter-vr-button, .a-enter-ar-button";
   // Mirrors conjure-client.js's debugLog: console + POST /client_log → temp/conjure.log, gated the same way,
   // so a headset's voice link can be diagnosed from the host without remote debugging.
   var log = function (m) {
@@ -78,7 +79,7 @@
       // start-up threw on this component and its tick — push-to-talk — never ran (2026-10-20).
       this.ctx = null; this.ws = null; this.cap = null; this.speaker = null; this.stream = null;
       this.press = { frames: 0, peak: 0, at: 0 }; this.src = null; this._reacquiring = false;
-      this.sending = false; this.tailUntil = 0; this.silenceUntil = 0; this.speaking = false; this.armed = false; this.lastAudio = 0;
+      this.sending = false; this.tailUntil = 0; this.silenceUntil = 0; this.speaking = false; this.armed = false; this.lastAudio = 0; this.discard = false; this.discardUntil = 0; this.discarded = 0;
       this.stats = { sent: 0, recv: 0, since: performance.now() };
       // The ENTER AR tap is the one user gesture we get before the session: take the mic and resume the
       // context on it, in the capture phase so we run before scene.enterVR. Also on a plain click anywhere
@@ -209,11 +210,18 @@
       };
       ws.onclose = function () { log("audio link closed — retrying in 2s"); setTimeout(function () { if (self.ws === ws) self.connect(); }, 2000); };
       ws.onmessage = function (ev) {
-        if (ev.data instanceof ArrayBuffer) { self.stats.recv++; self.lastAudio = performance.now(); if (self.speaker) self.speaker.port.postMessage(ev.data, [ev.data]); return; }
+        if (ev.data instanceof ArrayBuffer) {
+          self.stats.recv++;
+          if (self.discard) {
+            if (performance.now() < self.discardUntil) { self.discarded++; return; }
+            self.endDiscard("no transcript came");
+          }
+          self.lastAudio = performance.now(); if (self.speaker) self.speaker.port.postMessage(ev.data, [ev.data]); return;
+        }
         var msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
         if (msg.type === "ready") { if (self.speaker) self.speaker.port.postMessage({ rate: msg.out_rate || 24000 }); log("ready out_rate=" + msg.out_rate); }
         else if (msg.type === "speaking") { self.speaking = !!msg.on; self.el.emit("voice-speaking", { on: self.speaking }); }
-        else if (msg.type === "transcript") { log("heard: " + msg.text); self.el.emit("voice-transcript", { text: msg.text }); }
+        else if (msg.type === "transcript") { if (self.discard) self.endDiscard("the new turn was heard"); log("heard: " + msg.text); self.el.emit("voice-transcript", { text: msg.text }); }
         else if (msg.type === "notice") { log(msg.text); }
       };
     },
@@ -256,7 +264,12 @@
         if (!pk) this.reacquire("a whole press carried nothing but zeros");
       }
       this.sending = on;
-      if (!on) { var t = performance.now(); this.tailUntil = t + TAIL_MS; this.silenceUntil = t + RELEASE_MS; }
+      if (!on) { var t = performance.now(); this.tailUntil = t + TAIL_MS; this.silenceUntil = t + RELEASE_MS; if (this.discard) this.discardUntil = t + DISCARD_MS; }
+    },
+
+    endDiscard: function (why) {
+      if (this.discarded) log("barge-in: dropped " + this.discarded + " late frames of the interrupted reply (" + why + ")");
+      this.discard = false; this.discarded = 0;
     },
 
     // Push-to-talk reads the `talk` action through the input layer each frame — a controller's stick
@@ -277,6 +290,10 @@
           // Pressing to talk while the bot is speaking IS the barge-in gesture: drop what is queued here
           // and tell the server (C3b). Deliberate, not acoustic — no AEC quality required.
           this.speaker.port.postMessage("flush");
+          // Reply audio already in flight still lands after this flush — too little to fill the 120 ms
+          // priming buffer, so it waited there and played just before the NEW reply (2026-10-23). Drop
+          // all reply audio until this press's transcript arrives, which precedes the new reply's audio.
+          this.discard = true; this.discardUntil = Infinity; this.discarded = 0;
           this.ws.send(JSON.stringify({ type: "interrupt" }));
         }
       }
