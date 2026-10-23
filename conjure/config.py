@@ -351,7 +351,7 @@ class Settings:
                                                      # (docs/specs/voice.md §11). Boot-tier on both.
     voice_activation: str = "ptt"                    # how a headset's mic reaches the voice server: ptt (hold
                                                      # the `talk` action — decision #5's shared-mode default)
-                                                     # | open (always streaming; solo mode) | off (no mic)
+                                                     # | open (streams in AR; echo-gated; solo mode) | off
     gemini_model: str = "gemini-2.5-flash"           # Gemini director model
     openai_director_model: str = "gpt-4.1"           # OpenAI ("Chat") director model
     openai_image_model: str = "gpt-image-1"          # OpenAI image generator model
@@ -698,7 +698,7 @@ SETTABLE: dict[str, tuple[str, str]] = {
     # -- client: stored now, applied when the headset next loads
     "foveation":             ("client", "0..1 peripheral render reduction; higher = cheaper, blurrier edges"),
     "occlusion":             ("client", "real-world depth occlusion: off | hands | hands-solid"),
-    "voice_activation":      ("client", "headset mic: ptt (hold `talk`) | open (always on) | off"),
+    "voice_activation":      ("client", "headset mic: ptt (hold `talk`) | open (always on in AR; `talk` interrupts) | off"),
     "pose_tau":              ("client", "seconds of pose smoothing; 0 snaps"),
     "geo_slice_ms":          ("client", "per-frame budget for mesh rebuilds"),
     "capture_interval":      ("client", "seconds between room recaptures"),

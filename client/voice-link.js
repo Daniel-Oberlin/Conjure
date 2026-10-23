@@ -17,6 +17,8 @@
 //     CONJURE_VOICE_ACTIVATION picks ptt (hold it — decision #5's shared-mode default) | open | off.
 //     In ptt the worklet captures continuously (AEC stays converged) but frames are SENT only while the
 //     action is held plus a short tail; the server's VAD then sees silence and closes the segment.
+//     In open the mic streams for the whole AR session, except while this page's own reply is playing
+//     (plus ECHO_MS) — the echo gate — and `talk` stays as the barge-in button.
 (function () {
   "use strict";
   var ACT = (window.CONJURE_VOICE_ACTIVATION || "ptt").toLowerCase();
@@ -30,6 +32,10 @@
   var RELEASE_MS = 1000;
   var FRAME_MS = 20;
   var GAP_MS = 600;               // reply audio this recent still counts as "speaking" (the gap between sentences)
+  // Open mode: the mic sends silence while the reply plays and this long after, so the reply's tail never
+  // comes back as a turn. The server's mute-while-speaking ends when it has SENT the reply; this page is
+  // still playing it then (the 120 ms priming buffer, the network, the device's output latency).
+  var ECHO_MS = 300;
   var DISCARD_MS = 2000;          // after a barge-in release, a turn with no transcript stops discarding reply audio here
   // What starts an immersive session: our own ENTER AR (conjure-client.js marks it) and A-Frame's buttons.
   var ENTER_XR = "[data-xr-enter], .a-enter-vr-button, .a-enter-ar-button";
@@ -57,13 +63,13 @@
     // (24k→48k on the Quest). ~120 ms is buffered before playing starts so network jitter does not gap it.
     "class Play extends AudioWorkletProcessor {",
     "  constructor(){ super(); this.q=[]; this.qn=0; this.rate=24000; this.pos=0; this.cur=null; this.ci=0; this.primed=false; this.under=0;",
-    "    this.port.onmessage=(e)=>{ var d=e.data; if(d&&d.rate){this.rate=d.rate; return;} if(d==='flush'){this.q=[]; this.qn=0; this.cur=null; this.primed=false; return;}",
+    "    this.port.onmessage=(e)=>{ var d=e.data; if(d&&d.rate){this.rate=d.rate; return;} if(d==='flush'){this.q=[]; this.qn=0; this.cur=null; if(this.primed) this.port.postMessage('off'); this.primed=false; return;}",
     "      var a=new Int16Array(d); this.q.push(a); this.qn+=a.length; }; }",
     "  process(_i, outputs){ var out=outputs[0][0]; if(!out) return true; var step=this.rate/sampleRate;",
-    "    if(!this.primed){ if(this.qn<this.rate*0.12){ out.fill(0); return true;} this.primed=true; }",
+    "    if(!this.primed){ if(this.qn<this.rate*0.12){ out.fill(0); return true;} this.primed=true; this.port.postMessage('on'); }",
     "    for(var i=0;i<out.length;i++){",
     "      while(this.cur&&this.ci>=this.cur.length-1){ this.cur=null; }",
-    "      if(!this.cur){ if(this.q.length){ this.cur=this.q.shift(); this.qn-=this.cur.length; this.ci=0; this.pos=0; } else { out.fill(0,i); this.primed=false; this.under++; return true; } }",
+    "      if(!this.cur){ if(this.q.length){ this.cur=this.q.shift(); this.qn-=this.cur.length; this.ci=0; this.pos=0; } else { out.fill(0,i); this.primed=false; this.under++; this.port.postMessage('off'); return true; } }",
     "      var a=this.cur[this.ci]/32768, b=this.cur[this.ci+1]/32768, f=this.pos-Math.floor(this.pos);",
     "      out[i]=a+(b-a)*f; this.pos+=step; this.ci=Math.floor(this.pos); }",
     "    return true; } }",
@@ -80,6 +86,7 @@
       this.ctx = null; this.ws = null; this.cap = null; this.speaker = null; this.stream = null;
       this.press = { frames: 0, peak: 0, at: 0 }; this.src = null; this._reacquiring = false;
       this.sending = false; this.tailUntil = 0; this.silenceUntil = 0; this.speaking = false; this.armed = false; this.lastAudio = 0; this.discard = false; this.discardUntil = 0; this.discarded = 0;
+      this.held = false; this.playing = false; this.playEnd = 0;
       this.stats = { sent: 0, recv: 0, since: performance.now() };
       // The ENTER AR tap is the one user gesture we get before the session: take the mic and resume the
       // context on it, in the capture phase so we run before scene.enterVR. Also on a plain click anywhere
@@ -109,7 +116,8 @@
         self.arm();
       };
       document.addEventListener("click", onClick, true);
-      this.el.sceneEl.addEventListener("exit-vr", function () { self.setSending(ACT === "open"); });
+      // Open mode streams only inside AR: nobody is talking to Conjure from the 2D page, and streaming STT bills.
+      this.el.sceneEl.addEventListener("exit-vr", function () { self.setSending(false); });
       this.el.sceneEl.addEventListener("enter-vr", function () {
         var h = document.getElementById("voice-link-hint"); if (h) h.style.display = "none";
         if (!self.stream) return;
@@ -117,6 +125,7 @@
         log("entered AR: context=" + (self.ctx && self.ctx.state) + " track=" + (t ? t.readyState + (t.muted ? " (muted)" : "") : "none"));
         if (self.ctx && self.ctx.state !== "running") self.ctx.resume();
         if (!t || t.readyState !== "live") self.reacquire("the track was not live on entering AR");
+        if (ACT === "open") self.setSending(true);
       });
     },
 
@@ -182,6 +191,10 @@
           self.ws.send(new ArrayBuffer(e.data.byteLength)); self.stats.sent++;   // zeros: silence, heard
           return;
         }
+        if (send && self.echoGated(now) && self.ws && self.ws.readyState === 1) {
+          self.ws.send(new ArrayBuffer(e.data.byteLength)); self.stats.sent++;   // the reply is playing: silence
+          return;
+        }
         if (send && self.ws && self.ws.readyState === 1) {
           // The level of what is actually sent. A press that carries only digital zeros means the capture
           // went dead under us — seen after leaving and re-entering AR on the same page (2026-10-22): the
@@ -193,7 +206,11 @@
           self.ws.send(e.data); self.stats.sent++;
         }
       };
-      this.setSending(ACT === "open");
+      this.speaker.port.onmessage = function (e) {
+        if (e.data === "on") self.playing = true;
+        else if (e.data === "off") { self.playing = false; self.playEnd = performance.now(); }
+      };
+      this.setSending(ACT === "open" && this.el.sceneEl.is("vr-mode"));
       this.connect();
     },
 
@@ -240,8 +257,8 @@
         t.onunmute = function () { log("mic track unmuted"); };
         t.onended = function () {
           // Out of AR the Quest ends the track, and ends a re-acquired one again ~15 s later — a loop that
-          // held the mic while nobody was talking (2026-10-23). Push-to-talk waits for AR or the next press.
-          if (ACT === "open" || self.el.sceneEl.is("vr-mode")) { log("mic track ended"); self.reacquire("the track ended"); }
+          // held the mic while nobody was talking (2026-10-23). Out of AR it waits for AR or the next press.
+          if (self.el.sceneEl.is("vr-mode")) { log("mic track ended"); self.reacquire("the track ended"); }
           else log("mic track ended — re-acquired on entering AR or the next press");
         };
       }
@@ -269,11 +286,17 @@
       }
       else if (this.press && this.press.frames) {
         var pk = this.press.peak, db = pk ? (20 * Math.log10(pk / 32768)).toFixed(0) + " dBFS" : "SILENT (digital zero)";
-        log("press: " + this.press.frames + " frames over " + Math.round(performance.now() - this.press.at) + " ms, peak " + db);
-        if (!pk) this.reacquire("a whole press carried nothing but zeros");
+        log((ACT === "open" ? "listened: " : "press: ") + this.press.frames + " frames over " + Math.round(performance.now() - this.press.at) + " ms, peak " + db);
+        if (!pk) this.reacquire("everything sent carried nothing but zeros");
       }
       this.sending = on;
-      if (!on) { var t = performance.now(); this.tailUntil = t + TAIL_MS; this.silenceUntil = t + RELEASE_MS; if (this.discard) this.discardUntil = t + DISCARD_MS; }
+      if (!on) { var t = performance.now(); this.tailUntil = t + TAIL_MS; this.silenceUntil = t + RELEASE_MS; }
+    },
+
+    // Open mode's echo gate: while this page's reply is audible, the mic sends silence — unless `talk` is
+    // held, which is the user deliberately talking over it (the barge-in press).
+    echoGated: function (now) {
+      return ACT === "open" && !this.held && (this.playing || now < this.playEnd + ECHO_MS);
     },
 
     endDiscard: function (why) {
@@ -281,17 +304,20 @@
       this.discard = false; this.discarded = 0;
     },
 
-    // Push-to-talk reads the `talk` action through the input layer each frame — a controller's stick
-    // press by default (CONJURE_BINDINGS), or whatever the user binds. Any pointer holding it talks.
+    // `talk` is read through the input layer each frame — a controller's stick press by default
+    // (CONJURE_BINDINGS), or whatever the user binds. Any pointer holding it talks. In ptt it gates the
+    // mic; in open the mic is already on and it is only the barge-in button (and lifts the echo gate).
     tick: function () {
-      if (ACT !== "ptt" || !this.cap) return;
+      if (!this.cap) return;
       var P = window.ConjurePointers, held = false;
       if (P && P.acting) {
         var ps = P.acting(this.el.sceneEl);
         for (var i = 0; i < ps.length; i++) { if (ps[i].active("talk")) { held = true; break; } }
       }
-      if (held !== this.sending) {
-        this.setSending(held);
+      if (held !== this.held) {
+        this.held = held;
+        if (ACT === "ptt") this.setSending(held);
+        if (!held && this.discard) this.discardUntil = performance.now() + DISCARD_MS;
         // "Speaking" = the server says so, OR reply audio arrived moments ago: the server reports stopped
         // between two TTS sentences (~0.7 s), and a press landing in that gap must still interrupt.
         var talking = this.speaking || performance.now() - this.lastAudio < GAP_MS;

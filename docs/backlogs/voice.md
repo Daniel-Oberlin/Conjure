@@ -305,8 +305,10 @@ profiles, the second one serving a headset's page through the world server's `/a
 The host end was exercised end to end with a browser stand-in; what is still owed is the headset:
 
 - **Spike 1** — mic capture inside `immersive-ar`, and how much AEC3 removes on open-air speakers.
-  `/static/audio-spike.html`, results in `temp/conjure.log`. Decides whether `open` activation and
-  VAD-driven barge-in are usable on a headset; `ptt` is the default until then.
+  `/static/audio-spike.html`, results in `temp/conjure.log`. Decides whether VAD-driven barge-in —
+  interrupting by voice, no press — is usable on a headset: it would need the echo gate lifted while the
+  reply plays, so AEC alone must keep the reply out. (`open` activation itself works without it since
+  2026-10-23: the page's echo gate silences the mic while its own reply is audible.)
 - **Render-loop cost** of the two worklets and the socket — `--debug-jitter` with the link up.
 - **Push-to-talk on a real controller** (`talk` = `stickPress` by default) and a hand gesture for it:
   `poke` is the free vocabulary, and whether poke-to-talk feels right is a headset question.
