@@ -385,7 +385,9 @@ level of the mic audio actually sent (`press: 26 frames over 516 ms, peak -12 dB
 `mute`/`unmute`/`ended` and the AudioContext's state changes are logged; entering AR logs the context and
 track state. A press that carried **nothing but digital zeros**, an ended track, or a track that isn't live
 on entering AR triggers a fresh `getUserMedia` on the same constraints (permission already granted: no
-prompt, no gesture) and re-attaches it to the capture worklet. Motivation: after leaving and re-entering AR
+prompt, no gesture) and re-attaches it to the capture worklet. Under push-to-talk an ended track is only
+re-acquired in AR: out of AR the Quest ends the track, and ends a re-acquired one again every ~15 s, so
+there the page waits for entering AR or the next press (whose first moments are lost to the re-acquire). Motivation: after leaving and re-entering AR
 on the same page, the page kept sending frames while the voice server's VAD never fired once — almost
 certainly a capture delivering silence (2026-10-22). Verified in headless Chrome by disabling the track:
 the silent press is reported, the mic re-acquired, and the next press carries sound. Not yet confirmed to

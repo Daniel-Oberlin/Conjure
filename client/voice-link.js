@@ -238,7 +238,12 @@
       if (t) {
         t.onmute = function () { log("mic track muted by the browser"); };
         t.onunmute = function () { log("mic track unmuted"); };
-        t.onended = function () { log("mic track ended"); self.reacquire("the track ended"); };
+        t.onended = function () {
+          // Out of AR the Quest ends the track, and ends a re-acquired one again ~15 s later — a loop that
+          // held the mic while nobody was talking (2026-10-23). Push-to-talk waits for AR or the next press.
+          if (ACT === "open" || self.el.sceneEl.is("vr-mode")) { log("mic track ended"); self.reacquire("the track ended"); }
+          else log("mic track ended — re-acquired on entering AR or the next press");
+        };
       }
     },
 
@@ -257,7 +262,11 @@
 
     setSending: function (on) {
       if (on === this.sending) return;
-      if (on) this.press = { frames: 0, peak: 0, at: performance.now() };
+      if (on) {
+        this.press = { frames: 0, peak: 0, at: performance.now() };
+        var tr = this.stream && this.stream.getAudioTracks()[0];
+        if (tr && tr.readyState !== "live") this.reacquire("the track had ended before this press");
+      }
       else if (this.press && this.press.frames) {
         var pk = this.press.peak, db = pk ? (20 * Math.log10(pk / 32768)).toFixed(0) + " dBFS" : "SILENT (digital zero)";
         log("press: " + this.press.frames + " frames over " + Math.round(performance.now() - this.press.at) + " ms, peak " + db);
