@@ -304,11 +304,10 @@ row**, not an edit. Two things the STT seam left open:
 profiles, the second one serving a headset's page through the world server's `/audio` relay (spec §11).
 The host end was exercised end to end with a browser stand-in; what is still owed is the headset:
 
-- **Spike 1** — mic capture inside `immersive-ar`, and how much AEC3 removes on open-air speakers.
-  `/static/audio-spike.html`, results in `temp/conjure.log`. Decides whether VAD-driven barge-in —
-  interrupting by voice, no press — is usable on a headset: it would need the echo gate lifted while the
-  reply plays, so AEC alone must keep the reply out. (`open` activation itself works without it since
-  2026-10-23: the page's echo gate silences the mic while its own reply is audible.)
+- ~~**Spike 1**~~ — ran 2026-10-26 (spec §11): in AR with AEC on, the reply reaches the mic ~5 dB over
+  the floor. Voice barge-in is built on it. Still owed: **tune `BARGE_DB` from real replies** — each one
+  logs `reply heard at the mic: loudest frame …`; a reply that interrupts itself, or speech that doesn't,
+  is the signal to move it.
 - **Render-loop cost** of the two worklets and the socket — `--debug-jitter` with the link up.
 - **Push-to-talk on a real controller** (`talk` = `stickPress` by default) and a hand gesture for it:
   `poke` is the free vocabulary, and whether poke-to-talk feels right is a headset question.

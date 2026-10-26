@@ -121,7 +121,7 @@ Speech (Whisper STT,
 Kokoro TTS) runs **locally** — no keys; `CONJURE_TTS=grok` swaps in xAI's Grok TTS (expressive speech
 tags) and `CONJURE_STT=grok` its streaming recognizer, independently (both need `XAI_API_KEY`). Run the
 voice loop with `--serve` and the **headset itself** is the microphone and speaker (push-to-talk on the
-stick, or `CONJURE_VOICE_ACTIVATION=open` to just talk; the stick then only interrupts). Full prerequisites + the doctor:
+stick, or `CONJURE_VOICE_ACTIVATION=open` to just talk — and talk over a reply to interrupt it). Full prerequisites + the doctor:
 [docs/running.md](./docs/running.md). Provider options: [docs/providers.md](./docs/providers.md).
 
 > **Audio note:** use **earbuds**. On an open room mic+speaker the director's own TTS feeds back

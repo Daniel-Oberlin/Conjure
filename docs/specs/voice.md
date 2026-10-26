@@ -377,7 +377,7 @@ and `CONJURE_VOICE_ACTIVATION` picks how the mic reaches the server:
 | `voice_activation` | Behaviour |
 |---|---|
 | `ptt` (default — decision #5's shared mode) | the worklet captures continuously (AEC stays converged) but frames are **sent** only while `talk` is held, then 350 ms more of the mic, then **digital silence until 1 s after release**. The silence is load-bearing: both recognizers end a sentence on silence they *hear* (xAI after ~400 ms, our VAD after 0.6 s), and audio that just stops isn't silence — with only the 350 ms tail, a sentence released on its last word was held until the next press, then arrived glued to it or drew a `busy` (measured 2026-10-20/22). Zeros rather than the mic, so nothing said after letting go is sent. Nothing is streamed while nobody is pressing — which also makes the streaming-STT billing note in §4 moot |
-| `open` | no stick needed: the mic streams for the whole AR session (nothing out of AR — streaming STT bills by the second). The **echo gate** sends digital silence while this page's reply is playing and for 300 ms (`ECHO_MS`) after: the server's mute-while-speaking ends when it has *sent* the reply, but the headset is still playing it (priming buffer, network, output latency), and that tail came back as a turn. The page's playback worklet reports `on`/`off`, so the gate follows what is actually audible and does not depend on AEC quality. `talk` stays as the barge-in button — held, it also lifts the gate so you are heard over the reply. Solo mode: everything said is a turn unless the voice server runs with a wake word (§7) |
+| `open` | no stick needed: the mic streams for the whole AR session (nothing out of AR — streaming STT bills by the second). The **echo gate** sends digital silence while this page's reply is playing and for 300 ms (`ECHO_MS`) after: the server's mute-while-speaking ends when it has *sent* the reply, but the headset is still playing it (priming buffer, network, output latency), and that tail came back as a turn. The page's playback worklet reports `on`/`off`, so the gate follows what is actually audible and does not depend on AEC quality. Talking over the reply interrupts it (below); `talk` also still does — held, it lifts the gate so you are heard over the reply. Solo mode: everything said is a turn unless the voice server runs with a wake word (§7) |
 | `off` | no microphone; the component is inert |
 
 **The capture reports its own health, and repairs a dead one.** Each press logs its length and the peak
@@ -398,8 +398,18 @@ the playback ring buffer and sends `{type:"interrupt"}`; the bridge pushes an `I
 (TTS and transport flush what is queued) and forwards the reserved `interrupt` to the agent server,
 which cancels that connection's in-flight turn, broadcasts *[user interrupted]* and still fires one
 `turn_done`. Deliberate interruption needs no echo-cancellation quality at all, and works the same in
-`open` mode. Interrupting by *voice alone* (no press) waits on spike 1's measurement: the echo gate
-silences the mic while the reply plays, so today a spoken interruption is simply not heard.
+`open` mode.
+
+**In `open` mode, talking over the reply interrupts it — no press.** The echo gate doesn't send the mic
+while the reply plays, but it listens to it: a 20 ms frame louder than −45 dBFS (`BARGE_DB`) counts as
+voice, and 12 such frames in the last 20 (`BARGE_FRAMES`/`BARGE_WINDOW` — about a quarter second of
+talking, not a cough or a bump) is the barge-in. It takes the same path as the press (flush, drop late
+frames, `interrupt`), opens the gate until the next reply plays, and sends the speech that triggered it —
+the last 20 frames, held until the server reports it stopped speaking (or 600 ms, `HOLD_MS`), because its
+mute-while-speaking would drop them. The threshold rests on spike 1: inside AR, with AEC on, a loud test
+signal reached the mic about 5 dB above the room floor, near −89 dBFS, while speech at the headset's mic
+is some 50 dB above that. Each reply that ends without a barge-in logs `reply heard at the mic: loudest
+frame X dBFS` — the real-reply number to re-tune `BARGE_DB` against.
 
 **Reply audio already in flight is dropped too.** Frames the server sent before the interrupt reached it
 land after the page's flush — too few to fill the 120 ms priming buffer, so they used to wait there and
@@ -440,7 +450,23 @@ server, `conjure.voice --serve --no-mic`):
 | heard | *"What worlds do I have?"* — the clip's label, verbatim |
 | reply (4.9 s, transcribed back through Grok STT) | *"Let me check for you. You just have the one world right now default, and that's the one you're in."* |
 
-Spike 1 — mic capture inside `immersive-ar` and how much AEC3 cancels on the Quest's open-air speakers
+**Spike 1 ran on 2026-10-26** (Quest, headset speakers at listening volume, 3 s loud multi-tone + chirp;
+"residual" = level during the signal minus the quiet floor, so lower is better):
+
+| where | AEC | NS | AGC | floor dBFS | during dBFS | residual |
+|---|---|---|---|---|---|---|
+| immersive-ar | on | off | off | −94.5 | −89.4 | **5.1 dB** |
+| 2D page | on | off | off | −97.1 | −82.7 | 14.4 dB |
+| 2D page | off | off | off | −90.1 | −73.7 | 16.4 dB |
+| 2D page | on | on | off | −90.6 | −87.8 | 2.8 dB |
+| 2D page | on | on | on | −93.4 | −80.1 | 13.3 dB |
+
+Capture kept running in-session (759 frames in 2 s, no gaps). Even with AEC off the headset's own sound
+reaches its mic only ~16 dB above the floor; in AR with our constraints it is near the floor. (The combo
+rows' absolute dBFS read low — the page left earlier taps attached — but each row's residual is a ratio
+and stands.) Voice barge-in was built on it (§11).
+
+The spike itself — mic capture inside `immersive-ar` and how much AEC3 cancels on the Quest's open-air speakers
 — needs the headset: open `http://<mac-ip>:8080/spike` on it (→ `/static/audio-spike.html` through the tunnel — the mic needs https), tap **1**, then **2**, **3**, **4**; every
 result line lands in `temp/conjure.log` under `audio-spike`. Until it has run, VAD barge-in stays off.
 `open` no longer waits on it (the echo gate doesn't rely on AEC); `ptt` stays the default because

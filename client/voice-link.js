@@ -36,6 +36,13 @@
   // comes back as a turn. The server's mute-while-speaking ends when it has SENT the reply; this page is
   // still playing it then (the 120 ms priming buffer, the network, the device's output latency).
   var ECHO_MS = 300;
+  // Open mode: talking over the reply interrupts it — no press. Spike 1 on the Quest (2026-10-26): with
+  // AEC on, inside AR, a loud test signal reached the mic ~5 dB above the room floor, at about -89 dBFS;
+  // speech at the headset's own mic is some 50 dB above that. So a frame louder than BARGE_DB counts as
+  // voice, and BARGE_FRAMES of the last BARGE_WINDOW frames (20 ms each) is talking, not a cough or a bump.
+  var BARGE_DB = -45;
+  var BARGE_WINDOW = 20, BARGE_FRAMES = 12;
+  var HOLD_MS = 600;              // the speech that triggered it waits this long, at most, for the server to unmute
   var DISCARD_MS = 2000;          // after a barge-in release, a turn with no transcript stops discarding reply audio here
   // What starts an immersive session: our own ENTER AR (conjure-client.js marks it) and A-Frame's buttons.
   var ENTER_XR = "[data-xr-enter], .a-enter-vr-button, .a-enter-ar-button";
@@ -87,6 +94,7 @@
       this.press = { frames: 0, peak: 0, at: 0 }; this.src = null; this._reacquiring = false;
       this.sending = false; this.tailUntil = 0; this.silenceUntil = 0; this.speaking = false; this.armed = false; this.lastAudio = 0; this.discard = false; this.discardUntil = 0; this.discarded = 0;
       this.held = false; this.playing = false; this.playEnd = 0;
+      this.over = null; this.bargeOpen = false; this.pending = null; this.pendingUntil = 0;
       this.stats = { sent: 0, recv: 0, since: performance.now() };
       // The ENTER AR tap is the one user gesture we get before the session: take the mic and resume the
       // context on it, in the capture phase so we run before scene.enterVR. Also on a plain click anywhere
@@ -192,10 +200,19 @@
           return;
         }
         if (send && self.echoGated(now) && self.ws && self.ws.readyState === 1) {
-          self.ws.send(new ArrayBuffer(e.data.byteLength)); self.stats.sent++;   // the reply is playing: silence
-          return;
-        }
+          if (!self.hearOverReply(e.data)) {
+            self.ws.send(new ArrayBuffer(e.data.byteLength)); self.stats.sent++;   // the reply is playing: silence
+            return;
+          }
+        } else if (self.over) self.overEnded();
         if (send && self.ws && self.ws.readyState === 1) {
+          // A voice barge-in's speech waits until the server has stopped speaking (its mute-while-speaking
+          // would drop it), then goes out in order — the words that triggered it included.
+          if (self.pending) {
+            if (self.speaking && now < self.pendingUntil) { self.pending.push(e.data); return; }
+            var q = self.pending; self.pending = null;
+            for (var j = 0; j < q.length; j++) { self.ws.send(q[j]); self.stats.sent++; self.press.frames++; }
+          }
           // The level of what is actually sent. A press that carries only digital zeros means the capture
           // went dead under us — seen after leaving and re-entering AR on the same page (2026-10-22): the
           // page kept sending, the server's VAD heard nothing, and no log could tell silence from speech.
@@ -207,7 +224,7 @@
         }
       };
       this.speaker.port.onmessage = function (e) {
-        if (e.data === "on") self.playing = true;
+        if (e.data === "on") { self.playing = true; self.bargeOpen = false; }
         else if (e.data === "off") { self.playing = false; self.playEnd = performance.now(); }
       };
       this.setSending(ACT === "open" && this.el.sceneEl.is("vr-mode"));
@@ -296,7 +313,45 @@
     // Open mode's echo gate: while this page's reply is audible, the mic sends silence — unless `talk` is
     // held, which is the user deliberately talking over it (the barge-in press).
     echoGated: function (now) {
-      return ACT === "open" && !this.held && (this.playing || now < this.playEnd + ECHO_MS);
+      return ACT === "open" && !this.held && !this.bargeOpen && (this.playing || now < this.playEnd + ECHO_MS);
+    },
+
+    // A frame of mic heard while the gate is closed. It is not sent, but it is listened to: enough loud
+    // frames in a row is the user talking over the reply — the barge-in, by voice. True = it just fired
+    // (the gate is open again and this frame is the newest of the speech waiting to go).
+    hearOverReply: function (buf) {
+      var a = new Int16Array(buf), sum = 0;
+      for (var i = 0; i < a.length; i++) sum += a[i] * a[i];
+      var db = 10 * Math.log10(sum / a.length / 1073741824 + 1e-12);
+      var o = this.over || (this.over = { frames: 0, max: -120, win: [], ring: [] });
+      o.frames++; if (db > o.max) o.max = db;
+      o.win.push(db > BARGE_DB); if (o.win.length > BARGE_WINDOW) o.win.shift();
+      o.ring.push(buf); if (o.ring.length > BARGE_WINDOW) o.ring.shift();
+      var loud = 0; for (var k = 0; k < o.win.length; k++) if (o.win[k]) loud++;
+      if (loud < BARGE_FRAMES || !this.ws || this.ws.readyState !== 1) return false;
+      log("barge-in by voice: " + loud + " of the last " + o.win.length + " frames over " + BARGE_DB + " dBFS (loudest " + o.max.toFixed(0) + ")");
+      this.pending = o.ring.slice(0, -1); this.pendingUntil = performance.now() + HOLD_MS;
+      this.over = null; this.bargeOpen = true;
+      this.interruptReply();
+      this.discardUntil = performance.now() + DISCARD_MS;
+      return true;
+    },
+
+    // The gate opened with no barge-in: log how loud the reply was at the mic — the number BARGE_DB is
+    // tuned against, from real replies rather than the spike's test signal.
+    overEnded: function () {
+      var o = this.over; this.over = null;
+      if (o.frames >= 25) log("reply heard at the mic: loudest frame " + o.max.toFixed(0) + " dBFS over " + o.frames + " frames");
+    },
+
+    // Barge-in, by press or by voice: drop what is queued here and tell the server (C3b).
+    interruptReply: function () {
+      this.speaker.port.postMessage("flush");
+      // Reply audio already in flight still lands after this flush — too little to fill the 120 ms
+      // priming buffer, so it waited there and played just before the NEW reply (2026-10-23). Drop
+      // all reply audio until this turn's transcript arrives, which precedes the new reply's audio.
+      this.discard = true; this.discardUntil = Infinity; this.discarded = 0;
+      this.ws.send(JSON.stringify({ type: "interrupt" }));
     },
 
     endDiscard: function (why) {
@@ -322,14 +377,8 @@
         // between two TTS sentences (~0.7 s), and a press landing in that gap must still interrupt.
         var talking = this.speaking || performance.now() - this.lastAudio < GAP_MS;
         if (held && talking && this.ws && this.ws.readyState === 1) {
-          // Pressing to talk while the bot is speaking IS the barge-in gesture: drop what is queued here
-          // and tell the server (C3b). Deliberate, not acoustic — no AEC quality required.
-          this.speaker.port.postMessage("flush");
-          // Reply audio already in flight still lands after this flush — too little to fill the 120 ms
-          // priming buffer, so it waited there and played just before the NEW reply (2026-10-23). Drop
-          // all reply audio until this press's transcript arrives, which precedes the new reply's audio.
-          this.discard = true; this.discardUntil = Infinity; this.discarded = 0;
-          this.ws.send(JSON.stringify({ type: "interrupt" }));
+          // Pressing to talk while the bot is speaking IS the barge-in gesture — deliberate, not acoustic.
+          this.interruptReply();
         }
       }
       // A line a minute in the log is the whole instrumentation: frames sent/received, so a silent

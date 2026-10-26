@@ -138,7 +138,7 @@ python -m conjure.voice --serve            # host mic AND headsets;  --no-mic fo
 ```
 
 Push-to-talk is the stick press by default (`talk` in `CONJURE_BINDINGS`); alone in the room, set
-`CONJURE_VOICE_ACTIVATION=open` to just talk — the stick then only interrupts a reply. The first headset session should start with the measurement page:
+`CONJURE_VOICE_ACTIVATION=open` to just talk — talking over a reply interrupts it (so does the stick). The first headset session should start with the measurement page:
 `http://<your-mac-ip>:8080/spike` on the Quest (the audio-spike page, via the tunnel), tap 1–4, read the results in `temp/conjure.log`. A world server
 started before this landed has no `/audio` relay — restart it.
 

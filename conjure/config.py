@@ -698,7 +698,7 @@ SETTABLE: dict[str, tuple[str, str]] = {
     # -- client: stored now, applied when the headset next loads
     "foveation":             ("client", "0..1 peripheral render reduction; higher = cheaper, blurrier edges"),
     "occlusion":             ("client", "real-world depth occlusion: off | hands | hands-solid"),
-    "voice_activation":      ("client", "headset mic: ptt (hold `talk`) | open (always on in AR; `talk` interrupts) | off"),
+    "voice_activation":      ("client", "headset mic: ptt (hold `talk`) | open (always on in AR; talking over a reply interrupts) | off"),
     "pose_tau":              ("client", "seconds of pose smoothing; 0 snaps"),
     "geo_slice_ms":          ("client", "per-frame budget for mesh rebuilds"),
     "capture_interval":      ("client", "seconds between room recaptures"),
