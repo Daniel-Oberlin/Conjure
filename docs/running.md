@@ -139,7 +139,7 @@ python -m conjure.voice --serve            # host mic AND headsets;  --no-mic fo
 
 Push-to-talk is the stick press by default (`talk` in `CONJURE_BINDINGS`); alone in the room, set
 `CONJURE_VOICE_ACTIVATION=open` to just talk — the stick then only interrupts a reply. The first headset session should start with the measurement page:
-`/static/audio-spike.html` on the Quest, tap 1–4, read the results in `temp/conjure.log`. A world server
+`http://<your-mac-ip>:8080/spike` on the Quest (the audio-spike page, via the tunnel), tap 1–4, read the results in `temp/conjure.log`. A world server
 started before this landed has no `/audio` relay — restart it.
 
 The world server runs **standalone** — it boots from disk and renders to headsets with no agent server
@@ -437,7 +437,8 @@ the current URL so the server can redirect to it:
 On the Quest (same Wi-Fi as the Mac) always open the **fixed** address it prints —
 `http://<your-mac-ip>:8080/tunnel` — and the server 307-redirects to the current `trycloudflare.com`
 URL. Type it once; it never changes. The redirect page is plain HTTP on your LAN and bounces you to the
-HTTPS tunnel where WebXR actually runs.
+HTTPS tunnel where WebXR actually runs. `http://<your-mac-ip>:8080/spike` does the same for the audio
+measurement page (`/static/audio-spike.html`), which needs https for the mic.
 
 The script writes the URL to **`$CACHE_ROOT/tunnel_url`** — the user-home cache
 (`~/.cache/conjure/tunnel_url` by default), the same path `server.py`'s `TUNNEL_FILE` reads. It resolves

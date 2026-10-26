@@ -441,7 +441,7 @@ server, `conjure.voice --serve --no-mic`):
 | reply (4.9 s, transcribed back through Grok STT) | *"Let me check for you. You just have the one world right now default, and that's the one you're in."* |
 
 Spike 1 — mic capture inside `immersive-ar` and how much AEC3 cancels on the Quest's open-air speakers
-— needs the headset: open `/static/audio-spike.html` on it, tap **1**, then **2**, **3**, **4**; every
+— needs the headset: open `http://<mac-ip>:8080/spike` on it (→ `/static/audio-spike.html` through the tunnel — the mic needs https), tap **1**, then **2**, **3**, **4**; every
 result line lands in `temp/conjure.log` under `audio-spike`. Until it has run, VAD barge-in stays off.
 `open` no longer waits on it (the echo gate doesn't rely on AEC); `ptt` stays the default because
 decision #5 makes shared mode the safe default, and `open` is how a solo user declares otherwise. Spike 3's render-loop check (`--debug-jitter` with the link up) and spike 4's

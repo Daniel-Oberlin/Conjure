@@ -262,7 +262,8 @@ Unfinished work and known problems: [docs/backlogs/agents.md](./docs/backlogs/ag
   Quest browser and enter VR. Full step-by-step: [docs/running.md §3](./docs/running.md).
 - **Wireless (HTTPS):** [docs/running.md §4](./docs/running.md) — cloudflared (fastest), Caddy
   + Let's Encrypt, or Tailscale. Tip: `./scripts/tunnel.sh` runs cloudflared and lets you open a
-  fixed `http://<mac-ip>:8080/tunnel` on the Quest that redirects to the current tunnel URL.
+  fixed `http://<mac-ip>:8080/tunnel` on the Quest that redirects to the current tunnel URL
+  (`/spike` likewise, to the audio measurement page).
 
 ## Layout
 

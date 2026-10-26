@@ -1024,6 +1024,15 @@ def test_tunnel_redirects_to_published_url(srv, client, tmp_path, monkeypatch):
     assert r.headers.get("cache-control") == "no-store"
 
 
+def test_spike_redirects_to_the_measurement_page_through_the_tunnel(srv, client, tmp_path, monkeypatch):
+    """The spike page needs the mic, which only https grants — so it is reached through the tunnel too."""
+    f = tmp_path / "tunnel_url"
+    f.write_text("https://abc-def.trycloudflare.com\n")
+    monkeypatch.setattr(srv, "TUNNEL_FILE", f)
+    r = client.get("/spike", follow_redirects=False)
+    assert r.status_code == 307 and r.headers["location"] == "https://abc-def.trycloudflare.com/static/audio-spike.html"
+
+
 def test_tunnel_404_when_none_running(srv, client, tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "TUNNEL_FILE", tmp_path / "absent")
     assert client.get("/tunnel", follow_redirects=False).status_code == 404

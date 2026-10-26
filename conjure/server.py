@@ -1655,6 +1655,18 @@ async def tunnel(request: Request, user: str = DEFAULT_USER) -> RedirectResponse
     overlay that does not work. What the caller typed wins over anything in the tunnel file, and the
     `/tunnel/<user>` path form still wins over both, since naming a user in the path is the more
     specific request."""
+    return _tunnel_redirect(request, user)
+
+
+@app.get("/spike")
+async def spike(request: Request) -> RedirectResponse:
+    """The audio measurement page through the tunnel — `http://<this-machine>:<port>/spike` on the Quest.
+    The page needs the mic, which the browser only grants over https; `/static/audio-spike.html` on the
+    LAN address failed with "cannot read addModule of undefined" (2026-10-26)."""
+    return _tunnel_redirect(request, DEFAULT_USER, path="/static/audio-spike.html")
+
+
+def _tunnel_redirect(request: Request, user: str, path: str = "") -> RedirectResponse:
     url = TUNNEL_FILE.read_text().strip() if TUNNEL_FILE.exists() else ""
     if not url:
         raise HTTPException(status_code=404, detail="No tunnel running — start one with scripts/tunnel.sh")
@@ -1663,6 +1675,8 @@ async def tunnel(request: Request, user: str = DEFAULT_USER) -> RedirectResponse
     params.update({k: v for k, v in request.query_params.items()})
     if user and user != DEFAULT_USER:
         params["user"] = user
+    if path:
+        parts = parts._replace(path=path)
     url = urlunsplit(parts._replace(query=urlencode(params)))
     # Temporary (the URL changes each run) + no-store so the browser never caches a stale tunnel.
     return RedirectResponse(url, status_code=307, headers=_NO_STORE)
