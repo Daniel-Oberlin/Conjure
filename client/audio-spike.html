@@ -61,6 +61,9 @@ after you take the headset off.</p>
   function settingsOf(st) { var t = st.getAudioTracks()[0]; return t && t.getSettings ? t.getSettings() : {}; }
 
   async function requestMic() {
+    // Over plain http the browser hides the mic and AudioWorklet entirely — the errors were "cannot read
+    // addModule / getUserMedia of undefined" (2026-10-26). Say what is actually wrong.
+    if (!window.isSecureContext) throw new Error("this page was opened over http — the browser only allows the mic on https. Open it at the same https address as the Conjure page");
     if (!ctx) {
       ctx = new (window.AudioContext || window.webkitAudioContext)();
       var url = URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" }));
