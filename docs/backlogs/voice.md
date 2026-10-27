@@ -308,9 +308,30 @@ The host end was exercised end to end with a browser stand-in; what is still owe
   the floor. Voice barge-in is built on it. Still owed: **tune `BARGE_DB` from real replies** — each one
   logs `reply heard at the mic: loudest frame …`; a reply that interrupts itself, or speech that doesn't,
   is the signal to move it.
+- **An interrupted reply should be remembered as heard** (discussed 2026-10-27). Today the history is
+  wrong both ways. The model writes a reply in a second or two and speaking it takes far longer, so a
+  barge-in usually lands after the turn has finished: `interrupt` cancels nothing and the *whole* reply
+  stays in the transcript, as if the user heard it all. And a barge-in that does land mid-turn cancels
+  `Director._handle` before it appends anything — the user's utterance and the partial reply both
+  vanish (any tool effects remain). The design:
+  1. **What was heard** — the voice server knows it: pipecat's output transport releases `TTSTextFrame`s
+     in step with their audio (sentence-level for Grok HTTP TTS and Kokoro), so at the interrupt the
+     sentences already started are known; within the current one, estimate the word from how far its
+     audio had played. Mapping back to the stored reply must align by words and skip speech tags
+     (`[whisper]`, `<laugh>` — spoken text ≠ stored text, decision #32).
+  2. **`interrupt` carries it** — `{type:"interrupt", heard:"…"}` to the agent server.
+  3. **The agent server rewrites the record** — a finished turn: truncate the last assistant turn to
+     the heard text plus a marker (`… move the table over to the — [cut off]`); a turn still running:
+     keep the user turn and save the heard partial the same way, instead of dropping both. The
+     persisted transcript too, not only the model's view.
+  Leanings, not yet decided: keep the marker (the model then knows it was cut off and doesn't assume
+  the rest was heard); the CLI prints a `— cut off after "…"` line rather than silently diverging from
+  what it displayed; in a shared session the truncation still applies (the record follows what was
+  said aloud).
 - **Render-loop cost** of the two worklets and the socket — `--debug-jitter` with the link up.
-- **Push-to-talk on a real controller** (`talk` = `stickPress` by default) and a hand gesture for it:
-  `poke` is the free vocabulary, and whether poke-to-talk feels right is a headset question.
+- ~~**Push-to-talk on a real controller**~~ — works on the Quest (2026-10-20, after the `this.play`
+  fix). Still open: a **hand gesture** for `talk` — `poke` is the free vocabulary — now mostly for
+  interrupting, since `open` mode needs no press to talk.
 - **Before the third headset:** one Whisper model shared across pipelines; a speech cache keyed on
   `(engine, voice, text)` so a reply is synthesised once.
 - **Opus over the socket** (WebCodecs `AudioEncoder`, Chromium ≥ 94) when a headset sits behind a
@@ -339,7 +360,8 @@ client and one imagined client is usually wrong for the imagined one.
 - **Input device is unpinned.** `input_device_index=None` follows the system default, and virtual
   devices (NoMachine, Teams) are present on the dev machine. If one became the default input, quality
   would degrade silently with no message anywhere. At minimum, name the chosen device at startup.
-- **Barge-in** — blocked on echo cancellation; see spec §6 and the Quest tension above.
+- **Barge-in on the host** (`--serve` with the Mac's own mic) — still blocked on echo cancellation;
+  see spec §6. The headset has it, by press and by voice (spec §11).
 
 ## Related
 
