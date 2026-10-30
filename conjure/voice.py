@@ -95,6 +95,111 @@ def _make_wake_gate(wake_word: Optional[str]) -> Callable[[str], Optional[str]]:
     return gate
 
 
+# How long a pause may run before a sentence the turn model judged UNFINISHED is taken as said anyway —
+# a speaker who trails off ("make the doors…") and stops. A finished-sounding sentence goes at once.
+UNFINISHED_PAUSE_SECS = 2.0
+
+
+def stop_strategies(activation: str) -> list:
+    """How this pipeline decides the speaker has finished → the aggregator's `stop` strategies.
+
+    Push-to-talk ends a turn with the RELEASE: the page sends a second of silence and then nothing, so a
+    plain silence timer is exactly right (and a model waiting for more silence would wait forever — no
+    frames come). Everywhere else the mic is open and a pause is all there is, and a silence timer split
+    "make the doors… solid black" into two requests at the "…" (2026-10-30): the first was answered as
+    a question, the second refused as `busy`. There the Smart Turn model (pipecat's, local, on the audio)
+    judges whether the sentence SOUNDS finished, and an unfinished one waits for more."""
+    if activation == "ptt":
+        from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
+
+        return [SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.8)]
+    from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
+    from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+    from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
+
+    return [TurnAnalyzerUserTurnStopStrategy(turn_analyzer=LocalSmartTurnAnalyzerV3(
+        params=SmartTurnParams(stop_secs=UNFINISHED_PAUSE_SECS)))]
+
+
+class TurnFloor:
+    """This pipeline's side of the agent server's single floor: what it has in flight, and what to do with
+    speech that arrives meanwhile. Pure bookkeeping — `submit` and `on_event` return the actions for the
+    bridge to take, `("turn", text)` or `("interrupt",)`, so the rules are testable without a pipeline.
+
+    The server answers a second line during a turn with `busy` and drops it; voice used to say "One
+    moment — I'm still working on the last request" and lose the words. Speech is never dropped now:
+
+    - **joined** — the request in flight has not touched the world (no tool call yet): it is the first
+      half of a sentence cut at a pause. Cancel it (a cancelled turn leaves no trace in the transcript)
+      and send both halves as one.
+    - **held** — it already acted, or the reply was barged over (a new thought, not a continuation):
+      the speech waits and goes as its own request when the turn is done.
+    - **refused** — another client holds the floor: it waits and is offered again when that turn ends
+      (the `context` refresh every turn ends with)."""
+
+    def __init__(self) -> None:
+        self.inflight: Optional[str] = None   # the line the server is on for us; None = the floor is free
+        self.acted = False                    # a tool call landed during it
+        self.joining = False                  # cancelled so that `inflight` can be re-sent whole
+        self.barged = False                   # the reply was talked over: what comes next is new
+        self.refused = False                  # the server said `busy`
+        self.waiting: list[str] = []
+
+    def _send(self, text: str) -> list:
+        self.inflight, self.acted, self.joining, self.barged, self.refused = text, False, False, False, False
+        return [("turn", text)]
+
+    def submit(self, text: str) -> list:
+        if self.inflight is None:
+            self.waiting.append(text)
+            return self._flush()
+        if self.joining:
+            self.inflight = f"{self.inflight} {text}"
+            return []
+        if self.acted or self.barged or self.refused:
+            self.waiting.append(text)
+            return []
+        self.inflight, self.joining = f"{self.inflight} {text}", True
+        return [("interrupt",)]
+
+    def interrupted(self) -> None:
+        """The client barged over the reply (its own `interrupt`, not one of ours)."""
+        if self.inflight is not None:
+            self.barged = True
+
+    def on_event(self, ev: dict) -> list:
+        t = ev.get("type")
+        if t == "tool_call" and self.inflight is not None:
+            self.acted = True
+        elif t == "busy" and self.inflight is not None:
+            self.refused = True
+        elif t == "turn_done" and self.inflight is not None:
+            text, joining, refused = self.inflight, self.joining, self.refused
+            self.inflight = None
+            if joining:
+                return self._send(text)
+            if refused:
+                self.waiting.insert(0, text)
+                return []
+            return self._flush()
+        elif t == "context" and self.inflight is None:
+            return self._flush()
+        return []
+
+    def _flush(self) -> list:
+        if not self.waiting:
+            return []
+        text = " ".join(self.waiting)
+        self.waiting.clear()
+        return self._send(text)
+
+    def reset(self) -> None:
+        """The agent-server socket dropped: nothing is in flight on the new one. Held speech stays."""
+        if self.inflight is not None and (self.joining or self.refused):
+            self.waiting.insert(0, self.inflight)
+        self.inflight, self.acted, self.joining, self.barged, self.refused = None, False, False, False, False
+
+
 def _agent_reachable(url: str) -> bool:
     try:
         with urllib.request.urlopen(f"{url}/health", timeout=2.0) as resp:
@@ -146,10 +251,13 @@ def client_wire():
 async def run_pipeline(settings: Settings, *, user: str, transport, wake_word: Optional[str] = None,
                        corpus: Optional["Corpus"] = None, profile: Optional[SpeechProfile] = None,
                        hearing: Optional[HearingProfile] = None, handle_sigint: bool = True,
-                       ready: Optional[asyncio.Event] = None, label: str = "") -> None:
+                       ready: Optional[asyncio.Event] = None, label: str = "",
+                       activation: str = "open") -> None:
     """ONE voice pipeline, on `transport`, acting as `user`. The host-mic client runs one of these; the
     voice server runs one per headset connection. Everything between the transport's two ends is the same
-    chain: VAD → STT profile → turn aggregator → bridge (its own agent-server socket) → TTS profile."""
+    chain: VAD → STT profile → turn aggregator → bridge (its own agent-server socket) → TTS profile.
+    `activation` is how the mic is gated (`ptt` | `open`) — it picks how the end of a turn is found
+    (`stop_strategies`). The host mic is always open."""
     profile = profile or profile_for(settings)   # the mouth: which engine, its rate, its tags (conjure/tts.py)
     hearing = hearing or hearing_for(settings, corpus=corpus is not None)   # the ears (conjure/stt.py)
     # Heavy imports are local so the package stays importable on a base (no-voice) install.
@@ -168,7 +276,6 @@ async def run_pipeline(settings: Settings, *, user: str, transport, wake_word: O
         LLMUserAggregatorParams,
     )
     from pipecat.turns.user_mute.always_user_mute_strategy import AlwaysUserMuteStrategy
-    from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
     from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
     import json
@@ -244,25 +351,39 @@ async def run_pipeline(settings: Settings, *, user: str, transport, wake_word: O
             await self.push_frame(OutputTransportMessageFrame(message=message))
 
         async def submit(self, text: str) -> None:
-            ws = holder["ws"]
-            if ws is None:
+            if holder["ws"] is None:
                 await self.speak("The agent server isn't connected yet.")
                 return
-            diag(f"→ turn {text!r}")
+            actions = floor.submit(text)
+            if not actions:
+                diag(f"… {text!r} {'joins the request it finishes' if floor.joining else 'held until the floor is free'}")
+            await self.act(actions)
+
+        async def act(self, actions: list) -> None:
+            """Carry out `floor`'s decisions on the agent-server socket."""
+            for action in actions:
+                if action[0] == "turn":
+                    diag(f"→ turn {action[1]!r}")
+                    await self.send({"type": "turn", "text": action[1]})
+                elif action[0] == "interrupt":
+                    diag(f"→ interrupt (the request was half a sentence; re-sending it whole: {floor.inflight!r})")
+                    await self.push_frame(InterruptionFrame())   # its early "On it!" stops too
+                    await self.send({"type": "interrupt"})
+
+        async def send(self, message: dict) -> None:
+            ws = holder["ws"]
+            if ws is None:
+                return
             try:
-                await ws.send(json.dumps({"type": "turn", "text": text}))
+                await ws.send(json.dumps(message))
             except Exception as exc:  # noqa: BLE001 — a send failure shouldn't tear down the pipeline
                 print(f"voice send error: {exc}", file=sys.stderr)
 
         async def interrupt(self) -> None:
-            diag("→ interrupt (talk pressed while the reply was playing)")
+            diag("→ interrupt (the reply was talked over)")
+            floor.interrupted()
             await self.push_frame(InterruptionFrame())       # downstream: TTS + output flush what's queued
-            ws = holder["ws"]
-            if ws is not None:
-                try:
-                    await ws.send(json.dumps({"type": "interrupt"}))
-                except Exception as exc:  # noqa: BLE001
-                    print(f"voice send error: {exc}", file=sys.stderr)
+            await self.send({"type": "interrupt"})
 
     # In pipecat 1.3.x, VAD is a pipeline PROCESSOR, not a transport param (passing it to the
     # transport is silently ignored). The VADProcessor emits the speaking frames that both STT
@@ -281,6 +402,7 @@ async def run_pipeline(settings: Settings, *, user: str, transport, wake_word: O
 
     tts = profile.build(settings)
 
+    floor = TurnFloor()                  # what this pipeline has in flight on the agent server's single floor
     bridge = VoiceBridge()
     WireMessages, SpeakingMessages = client_wire()
     wire = WireMessages()
@@ -305,18 +427,23 @@ async def run_pipeline(settings: Settings, *, user: str, transport, wake_word: O
                         t = ev.get("type")
                         if t == "notice" and ev.get("text"):
                             diag(f"← notice {ev['text'][:200]!r}")
+                        joining = floor.joining
+                        if t == "busy":
+                            diag(f"← busy: another client holds the floor — {floor.inflight!r} goes when it is free")
+                        await bridge.act(floor.on_event(ev))
                         if t in ("assistant_delta", "assistant_final", "notice"):
                             txt = ev.get("text")
+                            # Our own cancel of a half sentence is bookkeeping, not news to speak.
+                            if joining and t == "notice" and txt and txt.endswith(" interrupted]"):
+                                continue
                             if txt and txt.strip():
                                 await bridge.speak(txt)
-                        elif t == "busy":
-                            diag("← busy: a turn was already in flight, so the last one was refused")
-                            await bridge.speak("One moment — I'm still working on the last request.")
                         elif t == "context" and "public" in ev:
                             session["public"] = bool(ev["public"])   # gates corpus capture; never spoken
-                        # context / user_turn / tool_call / turn_done / interrupted → not spoken
+                        # context / user_turn / tool_call / turn_done / interrupted / busy → not spoken
             except Exception:  # noqa: BLE001 — agent server down/restarting: back off and reconnect
                 holder["ws"] = None
+                floor.reset()
                 session["public"] = None         # lost the server ⇒ lost the privacy state ⇒ stop recording
                 if stop.is_set():
                     return
@@ -328,9 +455,7 @@ async def run_pipeline(settings: Settings, *, user: str, transport, wake_word: O
     aggregator = LLMContextAggregatorPair(
         LLMContext(messages=[]),
         user_params=LLMUserAggregatorParams(
-            user_turn_strategies=UserTurnStrategies(
-                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.8)],
-            ),
+            user_turn_strategies=UserTurnStrategies(stop=stop_strategies(activation)),
             user_mute_strategies=[AlwaysUserMuteStrategy()],
         ),
     )
@@ -338,7 +463,7 @@ async def run_pipeline(settings: Settings, *, user: str, transport, wake_word: O
     gate = _make_wake_gate(wake_word)   # mic-activation gate: only speech after the wake word is submitted
     @aggregator.user().event_handler("on_user_turn_stopped")
     async def _on_user_turn(aggr, strategy, message):
-        text = (getattr(message, "content", "") or "").strip()
+        text = " ".join((getattr(message, "content", "") or "").split())   # the halves of a paused sentence
         if not text:
             # A turn that closed with nothing heard — usually the recognizer still holding the words,
             # which then arrive glued to the NEXT turn. Worth a line: it was invisible before.
@@ -439,6 +564,8 @@ def build_voice_app(settings: Settings, *, wake_word: Optional[str] = None, corp
     async def audio(websocket: WebSocket) -> None:
         await websocket.accept()
         user = websocket.query_params.get("user") or DEFAULT_USER
+        # How the page gates its mic. A page from before it said so held a button: `ptt`.
+        activation = websocket.query_params.get("activation") or "ptt"
         serializer = make_wire_serializer()
         transport = TRANSPORTS["websocket"].build(settings, in_rate=hearing.sample_rate,
                                                   out_rate=profile.sample_rate, websocket=websocket,
@@ -450,14 +577,15 @@ def build_voice_app(settings: Settings, *, wake_word: Optional[str] = None, corp
             from .stt_corpus import Corpus as _Corpus
             link_corpus = _Corpus(corpus.root, device=f"browser:{user}")
         live[user] = live.get(user, 0) + 1
-        print(f"[voice:{user}] browser connected ({sum(live.values())} live)")
+        print(f"[voice:{user}] browser connected, {activation} ({sum(live.values())} live)")
         pipeline_task = None
         try:
             await websocket.send_json({"type": "ready", "out_rate": profile.sample_rate})
             ready = asyncio.Event()
             pipeline_task = asyncio.create_task(run(
                 settings, user=user, transport=transport, wake_word=wake_word, corpus=link_corpus,
-                profile=profile, hearing=hearing, handle_sigint=False, ready=ready, label=user))
+                profile=profile, hearing=hearing, handle_sigint=False, ready=ready, label=user,
+                activation=activation))
 
             @transport.event_handler("on_client_disconnected")
             async def _gone(_t, _ws):

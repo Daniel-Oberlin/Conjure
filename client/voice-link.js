@@ -235,7 +235,9 @@
       var self = this;
       var proto = location.protocol === "https:" ? "wss" : "ws";
       var u = new URLSearchParams(location.search).get("user") || "";
-      var ws = new WebSocket(proto + "://" + location.host + "/audio" + (u ? "?user=" + encodeURIComponent(u) : ""));
+      // The activation rides along: it decides how the server finds the end of a turn (the release, or —
+      // with an open mic — whether the sentence sounds finished).
+      var ws = new WebSocket(proto + "://" + location.host + "/audio?activation=" + ACT + (u ? "&user=" + encodeURIComponent(u) : ""));
       ws.binaryType = "arraybuffer";
       this.ws = ws;
       ws.onopen = function () {

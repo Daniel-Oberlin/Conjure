@@ -749,8 +749,8 @@ def build_app(settings: Settings, *, agent: Optional[str] = None, user: str = DE
             #
             # So the handler runs as a task and we keep reading. Serialization is unchanged — one command
             # at a time, exactly as before — but a line that arrives mid-flight now gets told so. `busy`
-            # is the existing reply the clients already render ("One moment — I'm still working on the
-            # last request"); it could never fire for a same-connection follow-up before, because the
+            # is the existing reply (the CLI shows it; voice holds the speech for the floor — `TurnFloor`
+            # in conjure/voice.py); it could never fire for a same-connection follow-up before, because the
             # follow-up was never read.
             inflight: Optional[asyncio.Task] = None
             while True:

@@ -106,8 +106,8 @@ def test_audio_socket_runs_one_pipeline_per_connection_as_that_user():
 
     seen: list = []
 
-    async def fake_pipeline(settings, *, user, transport, ready=None, label="", **kw):
-        seen.append((user, type(transport).__name__, label))
+    async def fake_pipeline(settings, *, user, transport, ready=None, label="", activation=None, **kw):
+        seen.append((user, type(transport).__name__, label, activation))
         ready.set()
         try:
             await asyncio.sleep(3600)
@@ -120,7 +120,14 @@ def test_audio_socket_runs_one_pipeline_per_connection_as_that_user():
         with c.websocket_connect("/audio?user=alice") as ws:
             assert ws.receive_json() == {"type": "ready", "out_rate": 24000}
             assert c.get("/health").json()["connections"] == 1
-            assert seen[0] == ("alice", "FastAPIWebsocketTransport", "alice")
+            assert seen[0] == ("alice", "FastAPIWebsocketTransport", "alice", "ptt")   # a page that didn't say
+        with c.websocket_connect("/audio?activation=open&user=alice") as ws:
+            ws.receive_json()
+            for _ in range(100):
+                if len(seen) > 2:
+                    break
+                time.sleep(0.02)
+            assert seen[-1] == ("alice", "FastAPIWebsocketTransport", "alice", "open")
         for _ in range(100):                                   # the disconnect lands in the finally
             if ("cancelled", "alice") in seen:
                 break
@@ -195,3 +202,72 @@ def test_the_speaking_processor_sits_right_before_the_output_transport():
     order = [line.split("#")[0].strip().rstrip(",") for line in src.split("Pipeline(", 1)[1].split("]", 1)[0]
              .splitlines() if line.split("#")[0].strip()]
     assert order[order.index("transport.output()") - 1] == "speaking"
+
+
+# --------------------------------------------------------------------------- the end of a turn
+# "Make the doors… solid black" (2026-10-30): an open mic's silence timer cut the sentence at the pause,
+# the first half was answered as a question, and the second was refused `busy` and lost.
+
+def test_push_to_talk_ends_a_turn_on_silence_and_an_open_mic_asks_the_turn_model():
+    from pipecat.turns.user_stop import (SpeechTimeoutUserTurnStopStrategy,
+                                         TurnAnalyzerUserTurnStopStrategy)
+
+    from conjure.voice import stop_strategies
+
+    assert [type(s) for s in stop_strategies("ptt")] == [SpeechTimeoutUserTurnStopStrategy]
+    assert [type(s) for s in stop_strategies("open")] == [TurnAnalyzerUserTurnStopStrategy]
+
+
+def test_the_second_half_of_a_sentence_joins_a_request_that_has_not_acted():
+    from conjure.voice import TurnFloor
+
+    f = TurnFloor()
+    assert f.submit("Make the doors") == [("turn", "Make the doors")]
+    assert f.on_event({"type": "assistant_delta", "text": "On it!"}) == []
+    assert f.submit("solid black.") == [("interrupt",)]
+    assert f.on_event({"type": "interrupted"}) == []
+    assert f.on_event({"type": "turn_done"}) == [("turn", "Make the doors solid black.")]
+    assert f.on_event({"type": "turn_done"}) == [] and f.inflight is None
+
+
+def test_speech_after_the_request_acted_waits_and_goes_on_its_own():
+    from conjure.voice import TurnFloor
+
+    f = TurnFloor()
+    f.submit("make the doors black")
+    f.on_event({"type": "tool_call", "name": "patch"})
+    assert f.submit("and the windows") == []                       # held, not joined: the doors are done
+    assert f.submit("too") == []
+    assert f.on_event({"type": "turn_done"}) == [("turn", "and the windows too")]
+
+
+def test_speech_after_a_barge_in_is_a_new_request_not_a_continuation():
+    from conjure.voice import TurnFloor
+
+    f = TurnFloor()
+    f.submit("tell me a long story")
+    f.interrupted()
+    assert f.submit("make the walls red") == []
+    assert f.on_event({"type": "turn_done"}) == [("turn", "make the walls red")]
+
+
+def test_refused_speech_is_offered_again_when_the_other_clients_turn_ends():
+    from conjure.voice import TurnFloor
+
+    f = TurnFloor()
+    f.submit("make the doors black")
+    assert f.on_event({"type": "busy"}) == []
+    assert f.on_event({"type": "turn_done"}) == []                 # the refusal's own turn_done
+    assert f.inflight is None
+    assert f.on_event({"type": "context"}) == [("turn", "make the doors black")]
+
+
+def test_a_dropped_agent_socket_keeps_held_speech_and_frees_the_floor():
+    from conjure.voice import TurnFloor
+
+    f = TurnFloor()
+    f.submit("make the doors")
+    f.submit("black")                                              # joining
+    f.reset()
+    assert f.inflight is None
+    assert f.submit("please") == [("turn", "make the doors black please")]

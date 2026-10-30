@@ -72,11 +72,33 @@ Segmentation is inherited from pipecat's `SegmentedSTTService`, and its shape ma
 | Threshold | Value | What it ends |
 |---|---|---|
 | `VADParams.stop_secs` | 0.6 s | the **audio segment** — closes the buffer, runs Whisper |
-| `SpeechTimeoutUserTurnStopStrategy` | 0.8 s | the **turn** — what gets submitted to the agent server |
+| `SpeechTimeoutUserTurnStopStrategy` (push-to-talk) | 0.8 s | the **turn** — what gets submitted to the agent server |
+| Smart Turn v3 (open mic: the host mic, a headset in `open`) | judged, else 2 s (`UNFINISHED_PAUSE_SECS`) | the **turn** |
 
-So a mid-sentence pause between 0.6 s and 0.8 s produces *two* Whisper calls on two fragments, which the
+So a mid-sentence pause longer than 0.6 s produces *two* Whisper calls on two fragments, which the
 turn aggregator then concatenates. Whisper decodes each fragment without the other's context. Whether
 this measurably hurts is **untested** — see the investigation.
+
+**How the turn ends depends on how the mic is gated** (`stop_strategies` in `conjure/voice.py`). Under
+push-to-talk the release IS the end — the page sends a second of silence and then nothing (§11) — so a
+silence timer is exact. With an open mic a pause is all there is, and the timer cut "make the doors…
+solid black" at the "…" (2026-10-30): the first half was answered as a question, the second refused.
+There pipecat's **Smart Turn v3** (a local ONNX model, bundled with pipecat; it reads the audio, so
+intonation counts) decides at each VAD stop whether the sentence *sounds* finished: finished goes at
+once, unfinished waits for more, and a speaker who trails off is taken as done after 2 s of silence.
+On the recorded clips from that session it judged "Make the doors" unfinished and sent one request.
+Pipecat logs once per pipeline that our 0.6 s VAD stop differs from its recommended 0.2 s; 0.6 is kept
+because Whisper decodes per segment, and shorter segments are more context-free fragments.
+
+**Speech is never dropped at the floor** (`TurnFloor`). The agent server runs one request at a time and
+answers a second with `busy`. A pause the model misjudges still splits a sentence, so when more speech
+arrives while this pipeline's request is in flight:
+
+| The request in flight… | The new speech |
+|---|---|
+| has not acted (no `tool_call` yet) | **joins it** — the request is cancelled (a cancelled turn leaves nothing in the transcript) and re-sent whole, "Make the door solid" + "Black". The cancel's `[user interrupted]` notice is not spoken |
+| has acted, or its reply was barged over | **waits** — sent as its own request at `turn_done` (after a barge-in it is a new thought, not a continuation) |
+| was refused `busy` (another client holds the floor) | **waits** — offered again at the next `context`, which every turn ends with |
 
 ## 4. Speech-to-text
 
@@ -235,8 +257,9 @@ compose: the mic gate opens the channel, the shell's escape decides whether what
   the server) the client sends its speech profile's registration (§5.1), before any turn.
 - **Reconnect** on any failure with a 1-second backoff, indefinitely. While disconnected, a submitted
   turn is answered by speech: *"The agent server isn't connected yet."*
-- **Spoken events:** `assistant_delta`, `assistant_final`, `notice`. `busy` speaks a canned "one moment"
-  line. `context`, `user_turn`, `tool_call` and `turn_done` are not spoken.
+- **Spoken events:** `assistant_delta`, `assistant_final`, `notice`. `context`, `user_turn`,
+  `tool_call`, `turn_done` and `busy` are not spoken — `busy` used to say "One moment — I'm still working
+  on the last request" and drop the words; now the speech waits for the floor (§3, `TurnFloor`).
 - **Idle timeout** is one hour, and does not cancel the pipeline — silence is not a failure.
 
 ## 9. The STT corpus (`--stt-corpus`)
@@ -377,7 +400,7 @@ and `CONJURE_VOICE_ACTIVATION` picks how the mic reaches the server:
 | `voice_activation` | Behaviour |
 |---|---|
 | `ptt` (default — decision #5's shared mode) | the worklet captures continuously (AEC stays converged) but frames are **sent** only while `talk` is held, then 350 ms more of the mic, then **digital silence until 1 s after release**. The silence is load-bearing: both recognizers end a sentence on silence they *hear* (xAI after ~400 ms, our VAD after 0.6 s), and audio that just stops isn't silence — with only the 350 ms tail, a sentence released on its last word was held until the next press, then arrived glued to it or drew a `busy` (measured 2026-10-20/22). Zeros rather than the mic, so nothing said after letting go is sent. Nothing is streamed while nobody is pressing — which also makes the streaming-STT billing note in §4 moot |
-| `open` | no stick needed: the mic streams for the whole AR session (nothing out of AR — streaming STT bills by the second). The **echo gate** sends digital silence while this page's reply is playing and for 300 ms (`ECHO_MS`) after: the server's mute-while-speaking ends when it has *sent* the reply, but the headset is still playing it (priming buffer, network, output latency), and that tail came back as a turn. The page's playback worklet reports `on`/`off`, so the gate follows what is actually audible and does not depend on AEC quality. Talking over the reply interrupts it (below); `talk` also still does — held, it lifts the gate so you are heard over the reply. Solo mode: everything said is a turn unless the voice server runs with a wake word (§7) |
+| `open` | no stick needed: the mic streams for the whole AR session (nothing out of AR — streaming STT bills by the second). The **echo gate** sends digital silence while this page's reply is playing and for 300 ms (`ECHO_MS`) after: the server's mute-while-speaking ends when it has *sent* the reply, but the headset is still playing it (priming buffer, network, output latency), and that tail came back as a turn. The page's playback worklet reports `on`/`off`, so the gate follows what is actually audible and does not depend on AEC quality. Talking over the reply interrupts it (below); `talk` also still does — held, it lifts the gate so you are heard over the reply. The end of a sentence is judged by the turn model, not a silence timer (§3) — the page names its activation in the socket URL (`/audio?activation=open`), and a page that doesn't is taken as `ptt`. Solo mode: everything said is a turn unless the voice server runs with a wake word (§7) |
 | `off` | no microphone; the component is inert |
 
 **The capture reports its own health, and repairs a dead one.** Each press logs its length and the peak
