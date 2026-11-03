@@ -56,6 +56,19 @@ class AssetResolver:
         self._index: dict[str, str] = (
             json.loads(self._index_path.read_text()) if self._index_path.exists() else {}
         )
+        # The sidecars are the record and the index only a shortcut to it: rebuild what the index lost.
+        # On 2026-11-03 it held 4 of 27 downloads, so a Beagle already on disk was fetched again — and
+        # Poly Pizza, now refusing automated downloads (403), made a cached model unplaceable.
+        for meta in self._dir.glob("*.json"):
+            if meta == self._index_path:
+                continue
+            try:
+                rec = json.loads(meta.read_text())
+            except (OSError, ValueError):
+                continue
+            if isinstance(rec, dict) and rec.get("source_url") and rec.get("hash") == meta.stem \
+                    and self.path_for(meta.stem).exists():
+                self._index.setdefault(rec["source_url"], meta.stem)
 
     def path_for(self, asset_hash: str) -> Path:
         return self._dir / f"{asset_hash}.glb"
