@@ -1405,13 +1405,20 @@
     placed.forEach(function (w) {
       if (w.semantic !== "wall" || roomOf[w.id] != null) return;
       var n = new THREE.Vector3(0, 1, 0).applyQuaternion(w._lq);
-      var best = -1, bestFacing = 0;
+      var best = -1, bestFacing = 0, bestInside = 0;
       floors.forEach(function (f) {
         if (!covers(THREE, f, w._lp.x, w._lp.z)) return;
         var facing = (f._lp.x - w._lp.x) * n.x + (f._lp.z - w._lp.z) * n.z;
         if (Math.abs(facing) < FACE) return;      // edge-on: cannot place it, so do not
         if (facing > 0) return;                   // the neighbour's face of a partition
-        if (best < 0 || facing > bestFacing) { best = roomOfFloor[f.id]; bestFacing = facing; }
+        // A floor whose footprint really CONTAINS the wall beats one that only reaches it through the
+        // shared-boundary margin; nearest-along-the-normal only decides between floors of one kind. A
+        // 28 cm jog at a doorway sat inside room 4's floor and 9 cm past room 6's edge, and went to room 6
+        // on a 5 cm difference in distance (wall 87, 2026-11-06).
+        var inside = covers(THREE, f, w._lp.x, w._lp.z, 0) ? 1 : 0;
+        if (best < 0 || inside > bestInside || (inside === bestInside && facing > bestFacing)) {
+          best = roomOfFloor[f.id]; bestFacing = facing; bestInside = inside;
+        }
       });
       if (best < 0) return;
       rooms[best].ids.push(w.id); roomOf[w.id] = best; wallRoom[w.id] = best;

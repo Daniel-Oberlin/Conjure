@@ -1253,6 +1253,19 @@ test("segmentRooms: facing separates the two faces of a partition", () => {
   assert.ok(A.ids.includes("real_wall_out"), "an outer wall joins the room it faces away from");
 });
 
+test("segmentRooms: a floor that contains the wall beats one that only reaches it by the margin", () => {
+  // Wall 87 (2026-11-06): a 28 cm jog at a doorway, inside room 4's floor and 9 cm past room 6's edge,
+  // with BOTH floors on its interior side. Nearest-along-the-normal chose room 6 by 5 cm; containment is
+  // the stronger evidence, and it now decides before distance does.
+  const P = horiz("floor", 2.0, 0, 1.4, [4, 2], "real_floor_P");     // x 0..4, z 0.4..2.4 — contains it
+  const Q = horiz("floor", 1.9, 0, -1.6, [3, 4], "real_floor_Q");    // z ..0.4 — 0.1 short, inside the margin
+  const jog = vert("real_wall_jog", "wall", [0.5, 1.2, 0.5], 270, [0.28, 2.7]);   // normal −X
+  const r = RS.segmentRooms(THREE, [P, Q, jog]);
+  const room = (f) => r.rooms.find((x) => x.floor === f);
+  assert.ok(room("real_floor_P").ids.includes("real_wall_jog"), "the floor it is actually over");
+  assert.ok(!room("real_floor_Q").ids.includes("real_wall_jog"), "not the nearer one it only grazes");
+});
+
 test("segmentRooms: an inset rides its recorded host wall, even facing inward", () => {
   // A wall-art normal can arrive INWARD (§2.2), so a facing test would reject exactly the insets that
   // must be carried. Membership follows the recorded hostWall instead.

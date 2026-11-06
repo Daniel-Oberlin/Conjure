@@ -70,7 +70,11 @@ without one leaves the stored value alone rather than blanking it (`conjure/room
 **Membership** is decided client-side (`SpaceSnap.segmentRooms`): a room is a floor plus its *covering*
 ceiling; a wall joins when that floor covers it in plan **and** the floor's centre lies on the wall's
 −normal side. That second half is what separates adjacent rooms — a partition is captured as two
-near-coincident, anti-parallel planes, one per room, and the interior is the −normal side. Insets ride
+near-coincident, anti-parallel planes, one per room, and the interior is the −normal side. When more than
+one floor qualifies, a floor that really **contains** the wall's centre beats one that only reaches it
+through the 0.3 m shared-boundary margin, and the floor nearest along the normal decides only between
+floors of the same kind — a 28 cm jog at a doorway, inside one room's floor and 9 cm past the other's
+edge, went to the wrong room on a 5 cm difference in distance (wall 87, 2026-11-06). Insets ride
 their recorded `host_wall` rather than their own normal, because wall-art can arrive facing inward. A wall
 too edge-on to place is left **unassigned** rather than guessed.
 
