@@ -127,11 +127,18 @@ def strip_tags(text: str, tags, *, keep=()) -> str:
     return re.sub(r"[^\S\n]+([,.!?;:])", r"\1", out)   # "word [laugh]." → "word."
 
 
+def number_signs(text: str) -> str:
+    """`#5` → `number 5`. Room and surface labels are written `room #5`, and a TTS engine reads the sign:
+    "room hash 5" (2026-11-06). Only a `#` directly before a digit — a heading or `C#` is not a number."""
+    return re.sub(r"#(?=\d)", "number ", text)
+
+
 # Ordered. Asterisks first: stripping them can't create an emoji, but an emoji name could contain
 # characters a later stage cares about.
 _STAGES: tuple[tuple[str, Callable[[str], str]], ...] = (
     ("asterisks", drop_asterisks),
     ("emoji", name_emoji),
+    ("number signs", number_signs),
 )
 
 

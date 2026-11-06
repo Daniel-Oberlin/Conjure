@@ -91,7 +91,10 @@ another. It rides the boundary's path exactly — composed in on load, stripped 
 
 **Which room the user is in** comes from the presence tick: the AR client reports the *floor* it is
 standing over (it cannot know the room id) and the server maps it. A CLI, voice or desktop connection is
-standing nowhere, and is reported as such rather than guessed at.
+standing nowhere, and is reported as such rather than guessed at. The client sends `floor: null` when it
+has floors but none covers the head — absent used to mean "keep the last answer", so three rooms all
+answered "room 5" (2026-11-06) — and the entry is dropped on `release` (out of AR) and on the user's last
+socket closing. Every change of room is logged (`[room] daniel standing: room_4 → room_5`).
 
 ### 1.2 Glossary
 

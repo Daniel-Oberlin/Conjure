@@ -1306,6 +1306,7 @@ noise or silence through a TTS engine. `conjure/speech.py` is the one place that
 |---|---|
 | `asterisks` | removes every `*`, then collapses the runs of spaces and leading indents that leaves — newlines stay, they pace the speech |
 | `emoji` | replaces each emoji with its Unicode name plus the word "emoji" (🍦 → *soft ice cream emoji*), so the character isn't silently dropped along with whatever it meant |
+| `number signs` | `#` directly before a digit becomes "number " — labels are written `room #5`, which an engine reads "room hash 5". A heading `#` or `C#` is left alone |
 
 A **run** of adjacent emoji codepoints becomes one phrase named for the first — a joined family or a
 skin-toned thumb is one picture to a reader, and naming every component would bury the sentence. The

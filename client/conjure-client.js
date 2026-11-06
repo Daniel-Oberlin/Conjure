@@ -1547,7 +1547,9 @@
       var hp2 = new THREE.Vector3();
       cam.matrixWorld.decompose(hp2, new THREE.Quaternion(), new THREE.Vector3());
       var fl = window.SpaceSnap.floorUnder(THREE, rc._censusFloors, hp2.x, hp2.z);
-      if (fl && fl.id) msg.floor = fl.id;
+      // null, not absent: absent means "I can't tell" and leaves the server's last answer standing, which
+      // is how three rooms all answered "room 5" (2026-11-06). With floors in hand, no cover IS an answer.
+      msg.floor = fl && fl.id ? fl.id : null;
     }
     socket.send(JSON.stringify(msg));
   }

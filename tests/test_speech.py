@@ -1,6 +1,6 @@
 """The voice text stage — what an LLM writes vs. what a TTS engine should say."""
 
-from conjure.speech import drop_asterisks, for_speech, name_emoji
+from conjure.speech import drop_asterisks, for_speech, name_emoji, number_signs
 
 
 # ---- asterisks ---------------------------------------------------------------------------------
@@ -72,7 +72,7 @@ def test_the_stage_composes_both_in_order():
 def test_the_stage_is_data_so_a_case_can_be_added():
     """`_STAGES` is the extension point — the module's whole reason for existing separately."""
     from conjure import speech
-    assert [name for name, _ in speech._STAGES] == ["asterisks", "emoji"]
+    assert [name for name, _ in speech._STAGES] == ["asterisks", "emoji", "number signs"]
     assert all(callable(fn) for _, fn in speech._STAGES)
 
 
@@ -125,3 +125,10 @@ def test_empty_vocabulary_and_empty_text_are_untouched():
 
 def test_the_stage_and_the_stripper_compose_for_a_tagless_voice_client():
     assert strip_tags(for_speech("**Done!** [laugh] 🎉"), TAGS) == "Done! party popper emoji"
+
+
+def test_a_number_sign_is_read_as_number():
+    """"You're in room #5" was spoken "room hash 5" (2026-11-06)."""
+    assert number_signs("You're in room #5.") == "You're in room number 5."
+    assert for_speech("**Wall #12** is blue") == "Wall number 12 is blue"
+    assert number_signs("# Heading, C# and #hashtag") == "# Heading, C# and #hashtag"

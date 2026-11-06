@@ -2740,6 +2740,26 @@ _RESERVED_ROOM_NAMES = {"all", "surface", "surfaces", "wall", "walls", "floor", 
                         "shelf", "shelves", "couch", "room", "rooms", "space"}
 
 
+def _stand(user: str, floor: Optional[str]) -> None:
+    """Record the floor `user` stands over (None = none we know), and log the ROOM when it changes.
+
+    The entry used to be written only when the headset named a floor and dropped only when it said null,
+    which it never did: a spot where no floor answered, leaving AR, or disconnecting all kept the last
+    room. Walking through three rooms then answered "room 5" in each (2026-11-06). The change line is the
+    evidence for the rest — whether the headset names a different floor as you cross a doorway."""
+    rooms = (store.doc.get("environment") or {}).get("rooms") or {}
+    room_of = lambda f: next((rid for rid, rec in rooms.items() if f and rec.get("floor") == f), None)
+    before = room_of(standing.get(user))
+    if floor:
+        standing[user] = floor
+    else:
+        standing.pop(user, None)
+    after = room_of(floor)
+    if after != before:
+        _slog("room", f"{user} standing: {before or 'nowhere'} → {after or 'nowhere'}"
+                      + (f" (floor {floor} is in no room)" if floor and not after else ""))
+
+
 @app.get("/room/whereami")
 async def room_whereami(user: str = "") -> dict:
     """Which room is each present user standing in? Reported by the AR client as the FLOOR it is over
@@ -6334,6 +6354,7 @@ async def ws(websocket: WebSocket) -> None:
                                                                  # reconnect while it's still in AR.
             elif mtype == "release":                             # left AR (exit-vr) → no longer holding
                 _space_holders.discard(websocket)
+                _stand(user, None)                               # out of AR, standing in no room we know
                 _unclaim()                                       # frees the space if it was the last holder
             elif mtype == "resync":                              # client cleared a blanked window (space
                 await websocket.send_json(_snapshot_msg())       # selection) → re-send the current world so
@@ -6349,9 +6370,9 @@ async def ws(websocket: WebSocket) -> None:
                         g["anchor"] = msg["anchor"]              # view_relative can solve it against the seed
                     gaze[user] = g                               # remember where this user is looking
                 if msg.get("floor"):                         # which ROOM this user is standing in, by
-                    standing[user] = msg["floor"]                # the floor they are over (they cannot know
+                    _stand(user, msg["floor"])                   # the floor they are over (they cannot know
                 elif "floor" in msg:                             # the room id; the room record does)
-                    standing.pop(user, None)
+                    _stand(user, None)                           # null = over no floor it knows
                 await _broadcast_others(websocket, {"type": "presence", "user": user, "pose": pose})
     except WebSocketDisconnect:
         pass
@@ -6362,6 +6383,7 @@ async def ws(websocket: WebSocket) -> None:
         _unclaim()                                               # → unclaim the space if that was the last one
         if user not in clients.values():                         # last socket for this user gone
             gaze.pop(user, None)
+            _stand(user, None)                                   # …and so is where they were standing
         if joined:
             await _broadcast({"type": "presence_leave", "user": user})   # drop their avatar everywhere
 

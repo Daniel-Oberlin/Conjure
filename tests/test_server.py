@@ -5057,6 +5057,41 @@ def test_a_user_who_is_not_standing_anywhere_is_reported_as_such(srv, client):
     assert out["you"] is None and out["standing"] == {}
 
 
+def test_the_room_you_stand_in_is_forgotten_when_no_floor_answers_or_you_leave(srv, client):
+    """Three rooms all answered "room 5" (2026-11-06): the entry was written when the headset named a
+    floor and never cleared — not by a spot with no floor under it, not by leaving AR, not by leaving."""
+    import time
+
+    from conjure import server as S
+    client.post("/space/capture", json=_two_room_capture())
+    pose = {"p": [0, 1.6, 0], "q": [0, 0, 0, 1]}
+    you = lambda: client.get("/room/whereami", params={"user": "daniel"}).json()["you"]
+
+    def send(ws, msg, expect):
+        ws.send_json(msg)
+        for _ in range(100):                                  # the socket is read off this thread
+            if you() == expect:
+                return
+            time.sleep(0.01)
+
+    with client.websocket_connect("/ws?user=daniel") as ws:
+        ws.receive_json()
+        send(ws, {"type": "presence", "pose": pose, "floor": "real_floor_3"}, "room_2")
+        assert you() == "room_2"
+        send(ws, {"type": "presence", "pose": pose, "floor": None}, None)
+        assert you() is None, "over no floor it knows is an answer, not 'keep the last one'"
+        send(ws, {"type": "presence", "pose": pose, "floor": "real_floor_3"}, "room_2")
+        send(ws, {"type": "release"}, None)
+        assert you() is None, "out of AR is in no room"
+        send(ws, {"type": "presence", "pose": pose, "floor": "real_floor_3"}, "room_2")
+        assert you() == "room_2"
+    for _ in range(100):
+        if "daniel" not in S.standing:
+            break
+        time.sleep(0.01)
+    assert "daniel" not in S.standing, "gone is in no room"
+
+
 def test_show_surface_resolves_the_full_target_vocabulary(srv, client):
     """Visibility used to match targets in the MCP layer, with a weaker vocabulary than every other
     surface tool. Through the endpoint it gets the same one: friendly ids, semantics, rooms."""
