@@ -338,6 +338,23 @@ async def test_path_verbs_carry_the_TARGET_session_not_just_its_scope():
     assert calls[-1][2]["session"] == "session-1" and calls[-1][2]["name"] == "wld_123"
 
 
+async def test_rename_a_room_names_it_on_its_space():
+    """`cd` into a space, `rename "room 5" kitchen` — the room's record, in THAT space (2026-11-06)."""
+    sh, out, on_text, calls = _session_shell(lambda mth, p, kw: {"ok": True})
+
+    async def fake_admin(action, path):
+        return {"ok": True, "kind": "room",
+                "fields": [["room", "room #5"], ["id", "room_5"], ["space", "Home"], ["space id", "space-1"],
+                           ["owner", "daniel"]]}
+    sh._admin = fake_admin
+    sh._cwd = "/daniel/spaces/space-1"
+
+    await sh._dispatch('rename "room 5" kitchen', on_text)
+    assert calls[-1][:2] == ("POST", "/room/name")
+    kw = calls[-1][2]
+    assert (kw["owner"], kw["space"], kw["room"], kw["name"]) == ("daniel", "space-1", "room_5", "kitchen")
+
+
 async def test_sessions_lists_via_the_world_server():
     sh, out, on_text, calls = _session_shell(lambda mth, p, kw: {"ok": True, "active": "session-1", "sessions": [
         {"id": "session-1", "title": "Home Base", "active_world": "home", "llm": "Claude", "active": True},

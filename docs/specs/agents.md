@@ -572,7 +572,7 @@ back and fire it. The first `yes` consumes it, so an echo is inert.
 | `disk [path]` (`file`) | where it lives on disk — real files, sizes, an asset's catalog row | — |
 | `cd [path]` | change the working directory (bare: back to your agent) | — |
 | `public` / `private [path]` | visibility of the live session, or of a path | ✓ |
-| `rename <path> <new>` | retitle a world, space or session; relabel an asset | — |
+| `rename <path> <new>` | retitle a world, space, room or session; relabel an asset | — |
 | `delete <path> [!]` (`rm`) | remove a world, session, space, asset or user — **immediate** for an explicit path; a pattern lists what it matched and needs `!` | — |
 | `gc [!]` | asset files nothing references; lists them, `!` deletes them | — |
 | `set [key [value]] [--save]` | list settings, read one, or change it for this run | — |
@@ -592,11 +592,20 @@ Paths mirror storage, one level per real containment:
 
 ```
 /<user>/spaces/<name>
+/<user>/spaces/<name>/<room>                           the rooms the scan found — `room 5`, `5` or its name
 /<user>/agents/<agent>/assets/<id>                     library rows (virtual — SQLite, not files)
 /<user>/agents/<agent>/sessions/<sid>/worlds/<name>
 /<user>/agents/<agent>/sessions/<sid>/state/<doc>      the agent's own memory (§7.4)
 /<user>/agents/<agent>/worlds                          shortcut → the ACTIVE session's worlds
 ```
+
+**A space lists its rooms.** `dir` under a space shows each room with its surface count and size; `show`
+on one groups its surfaces by kind (`wall 6: #66, #69, …`), says where each door and window leads, and —
+for the active space — who is standing in it. A room is addressed by its id (`room_5`), the number on its
+label (`room 5`, `room #5`, or just `5`) or the name you gave it, and `rename` names it on whichever space
+it is in, live or not (`POST /room/name` with `owner` + `space`). A room record with no surfaces and no
+name is a leftover of an earlier scan, so the listing folds those into one note instead of offering them
+as places; they still resolve by path. Rooms come from the scan, so they cannot be deleted.
 
 **Worlds live per session** — `WorldRepository` routes every per-name op to the scope's live session's
 `worlds/` dir, so two sessions under one agent own separate sets of worlds. The path says so; hiding the

@@ -5027,6 +5027,78 @@ def test_naming_a_room_clears_back_to_the_derived_default(srv, client):
     assert not rooms["room_1"].get("name")
 
 
+def _tree(client, path):
+    return client.post("/admin/tree", json={"path": path}).json()
+
+
+def _show(client, path):
+    out = client.post("/admin/show", json={"path": path}).json()
+    return out, dict(out.get("fields") or [])
+
+
+def test_a_space_lists_its_rooms_and_a_room_shows_what_is_in_it(srv, client):
+    """`dir <space>` lists the rooms; `show <room>` says what it is made of and where its doors go. The
+    rooms used to be reachable only through `ctl` and the director (2026-11-06)."""
+    from conjure import server as S
+    client.post("/space/capture", json=_two_room_capture())
+    base = f"/{S.active_space_owner}/spaces/{S.active_space}"
+    t = _tree(client, base)
+    assert t["ok"] and t["kind"] == "space"
+    rows = {r["label"]: r for r in t["children"]}
+    assert set(rows) == {"room #1", "room #2"}
+    assert rows["room #1"]["cells"][0] == "3 surfaces" and rows["room #1"]["ref"] == "room_1"
+
+    for ref in ("room_2", "room 2", "room #2", "2"):              # every way a person writes it
+        assert _show(client, f"{base}/{ref}")[1]["id"] == "room_2", ref
+    out, f = _show(client, f"{base}/room 1")
+    assert out["kind"] == "room" and out["display"].endswith("/room #1")
+    assert f["surfaces"] == "3" and f["  door"] == "1: #5" and f["  wall"] == "1: #2"
+    assert f["doors & windows"] == "door #5 → room #2"
+    assert "no room" in client.post("/admin/show", json={"path": f"{base}/attic"}).json()["error"]
+
+
+def test_a_room_is_renamed_from_the_shell_path_and_answers_to_its_name(srv, client):
+    from conjure import server as S
+    client.post("/space/capture", json=_two_room_capture())
+    owner, sid = S.active_space_owner, S.active_space
+    out = client.post("/room/name", json={"owner": owner, "space": sid, "room": "room_2", "name": "kitchen"}).json()
+    assert out["ok"] and out["was"] == "room #2" and out["name"] == "kitchen"
+    assert {r["label"] for r in _tree(client, f"/{owner}/spaces/{sid}")["children"]} == {"room #1", "kitchen"}
+    out, f = _show(client, f"/{owner}/spaces/{sid}/kitchen")
+    assert f["id"] == "room_2" and f["number"] == "#2" and out["display"].endswith("/kitchen")
+    assert client.post("/admin/delete", json={"path": f"/{owner}/spaces/{sid}/kitchen"}).json()["ok"] is False
+
+
+def test_a_room_in_a_space_that_is_not_live_is_listed_and_renamed_on_disk(srv, client):
+    """`rename` reaches every space you own; only the active one has a world to patch."""
+    from conjure import server as S
+    owner = S.active_space_owner or "daniel"
+    S.spaces.save(owner, "cabin", {"owner": owner, "name": "cabin", "public": True,
+                                   "rooms": {"room_1": {"n": 1, "floor": "f1"}, "room_2": {"n": 2, "floor": "f9"}},
+                                   "surfaces": [{"id": "f1", "meta": {"real": True, "semantic": "floor",
+                                                                      "friendly_id": 1, "room": "room_1"}}]})
+    t = _tree(client, f"/{owner}/spaces/cabin")
+    labels = [r["label"] for r in t["children"]]
+    assert labels[0] == "room #1" and "1 empty room record" in labels[1], "a leftover record is a note, not a room"
+    out = client.post("/room/name", json={"owner": owner, "space": "cabin", "room": "1", "name": "loft"}).json()
+    assert out["ok"] and out["name"] == "loft"
+    assert S.spaces.load(owner, "cabin")["rooms"]["room_1"]["name"] == "loft"
+    assert _show(client, f"/{owner}/spaces/cabin/loft")[1]["standing here"].startswith("—")
+    other = client.post("/room/name", json={"scope": "mallory/agents/builder", "owner": owner, "space": "cabin",
+                                            "room": "loft", "name": "x"}).json()
+    assert other["ok"] is False and "owns this space" in other["error"]
+
+
+def test_a_bare_number_is_a_room_only_in_a_path():
+    """In a path under a space nothing else is numbered, so `5` is room #5. As a director target `4`
+    already means surface #4, and also matching every surface in room 4 would restyle a whole room."""
+    from conjure.rooms import room_id_for
+    rooms = {"room_4": {"n": 4}, "room_5": {"n": 5, "name": "Kitchen"}}
+    assert room_id_for(rooms, "4", bare_number=True) == "room_4"
+    assert room_id_for(rooms, "4") is None
+    assert room_id_for(rooms, "room #4") == "room_4" and room_id_for(rooms, "kitchen") == "room_5"
+
+
 def test_two_rooms_cannot_share_a_name(srv, client):
     client.post("/space/capture", json=_two_room_capture())
     client.post("/room/name", json={"room": "room 1", "name": "kitchen"})

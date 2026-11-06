@@ -1146,7 +1146,7 @@ class Shell:
                         if out.get("ok") else out.get("error", "error"))
 
     async def _rename(self, on_text, m):
-        """Retitle anything with a display name: a world, a space, a session, or an asset's label.
+        """Retitle anything with a display name: a world, a space, a room, a session, or an asset's label.
 
         Worlds and spaces are safe to rename because their identity is a permanent id, not their name —
         so a rename moves no file and strands nothing, not the active pointers, not a space's
@@ -1184,9 +1184,12 @@ class Shell:
         elif kind == "space":
             out = await self._session_api("POST", "/space/rename", owner=fields.get("owner"),
                                           name=fields.get("space"), new_name=new)
+        elif kind == "room":                                  # the name lives on the room's record
+            out = await self._session_api("POST", "/room/name", scope=self._scope(), owner=fields.get("owner"),
+                                          space=fields.get("space id"), room=fields.get("id"), name=new)
         else:
-            await self._say(on_text, f"Can't rename a {kind} — worlds, spaces, sessions and assets have "
-                                     f"names; the rest are containers.")
+            await self._say(on_text, f"Can't rename a {kind} — worlds, spaces, rooms, sessions and assets "
+                                     f"have names; the rest are containers.")
             return
         await self._say(on_text, f"Renamed to {new}." if out.get("ok") else out.get("error", "error"))
 

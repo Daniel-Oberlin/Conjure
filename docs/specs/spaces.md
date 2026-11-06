@@ -548,7 +548,7 @@ still needs a second headset.
 | `POST /space/select` | commit the surface vote; establish or admit/refuse |
 | `POST /space/visibility` | toggle a space's `public` flag |
 | `POST /space/rename` | retitle in place (a shell action, **space-owner gated**) — the file key is the id, so nothing is re-pointed |
-| `POST /room/name` | space-owner-gated; name a room in the active space (§1.1) |
+| `POST /room/name` | space-owner-gated; name a room in the active space (§1.1), or — with `owner` + `space` — in any space you own (the shell's `rename`, agents.md §6.4) |
 | `GET /room/whereami` | which room each present user is standing in, from the presence tick |
 | `POST /space/capture` | owner-only geometry ingest → updates the seed |
 | `POST /space/realign` | owner-only; ask headsets to re-capture at the current tracking origin |

@@ -138,3 +138,31 @@ def display_name(rooms: dict[str, dict], room_id: str) -> str:
         m = _ROOM_ID.match(room_id or "")
         n = int(m.group(1)) if m else None
     return f"room #{n}" if n else room_id
+
+
+_ROOM_NUM = re.compile(r"^room\s*#?\s*(\d+)$")
+_BARE_NUM = re.compile(r"^#?\s*(\d+)$")
+
+
+def room_id_for(rooms: dict[str, dict], target: str, *, bare_number: bool = False) -> str | None:
+    """A room reference → its persistent id, or None. Accepts the id (`room_2`), the number the user reads
+    off a label (`room 2`, `room #2`), or the name they gave it (`kitchen`). One rule for the director's
+    targets and the shell's paths, so a room answers to the same words in both.
+
+    `bare_number` also takes `2` alone — right in a path under a space, where nothing else is numbered,
+    and wrong for a director target, where `4` already means surface #4."""
+    t = str(target or "").strip().lower()
+    if not t:
+        return None
+    if t in (rooms or {}):
+        return t
+    m = _ROOM_NUM.match(t) or (_BARE_NUM.match(t) if bare_number else None)
+    if m:
+        n = int(m.group(1))
+        for rid, rec in rooms.items():
+            if rec.get("n") == n:
+                return rid
+    for rid, rec in (rooms or {}).items():
+        if (rec.get("name") or "").strip().lower() == t:
+            return rid
+    return None

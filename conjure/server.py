@@ -49,7 +49,7 @@ from . import poses
 from .figures import FRAME_REV, POSE_AXES, RIG_SIG_REV, clean_pose, resolve_pose
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
-from .rooms import display_name as rooms_display_name, resolve_rooms
+from .rooms import display_name as rooms_display_name, resolve_rooms, room_id_for
 from .plane_anchor import author_anchor, solve_anchor
 from .schema import Patch
 from . import config, namespace
@@ -2730,6 +2730,8 @@ class RoomNameRequest(BaseModel):
     scope: str = ""
     room: str                                  # id ('room_2'), ordinal ('room 2'), or the current name
     name: str = ""                             # "" clears it, back to the derived 'room #N'
+    owner: str = ""                            # with `space`: a room in THAT space, active or not (shell)
+    space: str = ""
 
 
 # Words a room may not be called, because the surface-target vocabulary already means something by them
@@ -2789,6 +2791,15 @@ async def name_room(req: RoomNameRequest) -> dict:
     The name is stored **once**, on the room record. Surfaces carry only the room id, and the default
     display name is derived rather than stored, so this cannot leave a stale copy anywhere."""
     caller = (req.scope or "").split("/", 1)[0]
+    if req.space and spaces is not None:
+        owner = req.owner or caller
+        live = owner == active_space_owner and not _no_space() and active_space in (
+            req.space, spaces.resolve(owner, req.space))       # the live space may not be on disk yet
+        if not live:
+            sid = spaces.resolve(owner, req.space)
+            if sid is None:
+                return {"ok": False, "error": f"no space {req.space!r} for {owner!r}"}
+            return _name_room_on_disk(caller, owner, sid, req.room, req.name)
     if _no_space():
         return {"ok": False, "error": "no space is active"}
     if caller and active_space_owner and caller != active_space_owner:
@@ -2798,16 +2809,49 @@ async def name_room(req: RoomNameRequest) -> dict:
         return {"ok": False, "error": f"no room {req.room!r} — try query_space to see them"}
     rooms = (store.doc.get("environment") or {}).get("rooms") or {}
     want = (req.name or "").strip()
-    if want.lower() in _RESERVED_ROOM_NAMES:
-        return {"ok": False, "error": f"{want!r} already means something when targeting surfaces — pick another name"}
-    for other, rec in rooms.items():
-        if other != rid and (rec.get("name") or "").strip().lower() == want.lower() and want:
-            return {"ok": False, "error": f"another room is already called {want!r}"}
+    refused = _room_name_refused(rooms, rid, want)
+    if refused:
+        return {"ok": False, "error": refused}
     was = rooms_display_name(rooms, rid)
     patch = store.apply_patch([{"op": "env", "set": {f"rooms.{rid}.name": want or None}}], origin="space")
     await _broadcast({"type": "patch", "patch": patch})
     now = rooms_display_name((store.doc.get("environment") or {}).get("rooms") or {}, rid)
     _slog("space", f"room {rid}: {was!r} → {now!r}")
+    return {"ok": True, "room": rid, "was": was, "name": now}
+
+
+def _room_name_refused(rooms: dict, rid: str, want: str) -> Optional[str]:
+    if want.lower() in _RESERVED_ROOM_NAMES:
+        return f"{want!r} already means something when targeting surfaces — pick another name"
+    for other, rec in rooms.items():
+        if other != rid and (rec.get("name") or "").strip().lower() == want.lower() and want:
+            return f"another room is already called {want!r}"
+    return None
+
+
+def _name_room_on_disk(caller: str, owner: str, sid: str, room: str, name: str) -> dict:
+    """Name a room in a space that is NOT live — the shell's `rename` reaches every space you own, and only
+    the active one has a world to patch. Same rules as the live path; the space document is the record."""
+    if caller and caller != owner:
+        return {"ok": False, "error": f"{owner} owns this space — only they can name its rooms"}
+    try:
+        sp = spaces.load(owner, sid)
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "error": f"can't read space {sid!r}: {exc}"}
+    rooms = sp.get("rooms") or {}
+    rid = room_id_for(rooms, room, bare_number=True)
+    if not rid:
+        return {"ok": False, "error": f"no room {room!r} in that space"}
+    want = (name or "").strip()
+    refused = _room_name_refused(rooms, rid, want)
+    if refused:
+        return {"ok": False, "error": refused}
+    was = rooms_display_name(rooms, rid)
+    rooms[rid]["name"] = want or None
+    sp["rooms"] = rooms
+    spaces.save(owner, sid, sp)
+    now = rooms_display_name(rooms, rid)
+    _slog("space", f"room {owner}/{sid}/{rid}: {was!r} → {now!r} (not live)")
     return {"ok": True, "room": rid, "was": was, "name": now}
 
 
@@ -3037,7 +3081,7 @@ async def admin_tree(req: AdminPath) -> dict:
     loc = namespace.resolve(req.path)
     if isinstance(loc, str):
         return {"ok": False, "error": loc}
-    if loc.kind in ("world", "space", "asset"):                # a leaf lists as itself
+    if loc.kind in ("world", "room", "asset"):                 # a leaf lists as itself (a space lists its rooms)
         row = namespace.leaf_row(loc)
         if row is None:
             return {"ok": False, "error": f"no {loc.kind} {loc.name!r}"}
@@ -3934,28 +3978,9 @@ async def texture_surface(req: TextureSurfaceRequest) -> dict:
 _SEM_NUM = re.compile(r"^([a-z][a-z ]*?)\s*#?\s*(\d+)$")
 
 
-_ROOM_NUM = re.compile(r"^room\s*#?\s*(\d+)$")
-
-
 def _room_id_for(target: str) -> Optional[str]:
-    """A room reference → its persistent id. Accepts the id (`room_2`), the ordinal the user reads off a
-    label (`room 2`, `room #2`), or the name they gave it (`kitchen`). Returns None if it names no room."""
-    rooms = (store.doc.get("environment") or {}).get("rooms") or {}
-    t = str(target or "").strip().lower()
-    if not t:
-        return None
-    if t in rooms:
-        return t
-    mm = _ROOM_NUM.match(t)
-    if mm:
-        n = int(mm.group(1))
-        for rid, rec in rooms.items():
-            if rec.get("n") == n:
-                return rid
-    for rid, rec in rooms.items():
-        if (rec.get("name") or "").strip().lower() == t:
-            return rid
-    return None
+    """A room reference in the ACTIVE space → its persistent id (`rooms.room_id_for`), or None."""
+    return room_id_for((store.doc.get("environment") or {}).get("rooms") or {}, target)
 
 
 def _real_surface_match(e: dict, target: str) -> bool:

@@ -12,6 +12,7 @@ a listing that hides the session level merges them invisibly.
     /                                                   users
     /<user>                                             agents/ · spaces/
     /<user>/spaces[/<name>]                             spaces are user-level, shared across agents
+    /<user>/spaces/<name>[/<room>]                      the rooms the scan found; renameable, by number too
     /<user>/agents[/<agent>]                            sessions/ · assets/ · worlds→
     /<user>/agents/<a>/assets[/<id>]                    library rows scoped `<user>/agents/<a>` (virtual —
                                                         assets are SQLite rows, not files)
@@ -34,6 +35,7 @@ from pathlib import Path
 from typing import NamedTuple, Optional
 
 from .config import VOID
+from .rooms import display_name as room_display_name, room_id_for
 from .world import NAME_SEGMENT, fold_accents, loose
 
 # Exactly what a display NAME may contain (`world.NAME_SEGMENT`) — one definition, so a name can never be
@@ -75,11 +77,12 @@ def _h():
 class Loc(NamedTuple):
     """A resolved path. `kind` names what it points at; the rest is filled in as far as the path goes."""
     kind: str                      # root|user|agents|agent|sessions|session|worlds|world|assets|asset|
-                                   # spaces|space
+                                   # spaces|space|room
     user: str = ""
     agent: str = ""
     sid: str = ""
-    name: str = ""
+    name: str = ""                 # for a room: its SPACE id
+    room: str = ""                 # a room's id within that space
 
     @property
     def scope(self) -> str:
@@ -122,8 +125,16 @@ def resolve(path: str):
     if cat == "spaces":
         if len(segs) == 2:
             return Loc("spaces", user)
-        ref = "/".join(segs[2:])
-        return Loc("space", user, name=_h().spaces.resolve(user, ref) or ref)
+        space = _h().spaces.resolve(user, segs[2]) or segs[2]
+        if len(segs) == 3:
+            return Loc("space", user, name=space)
+        if len(segs) > 4:
+            return f"a room has nothing under it ({'/'.join(segs[4:])!r})"
+        rooms, _ = space_rooms(user, space)
+        rid = room_id_for(rooms, segs[3], bare_number=True)
+        if rid is None:
+            return f"no room {segs[3]!r} in {space_display(user, space)!r}"
+        return Loc("room", user, name=space, room=rid)
     if cat == "assets":                                        # legacy: rows scoped to a bare user
         if len(segs) == 2:
             return Loc("assets", user)
@@ -263,6 +274,7 @@ def loc_path(loc: Loc) -> str:
     """The canonical path for a `Loc` — what a shortcut resolves to, and what `cd` should remember."""
     p = {"root": "/", "user": f"/{loc.user}", "agents": f"/{loc.user}/agents",
          "spaces": f"/{loc.user}/spaces", "space": f"/{loc.user}/spaces/{loc.name}",
+         "room": f"/{loc.user}/spaces/{loc.name}/{loc.room}",
          "agent": f"/{loc.user}/agents/{loc.agent}"}.get(loc.kind)
     if p:
         return p
@@ -286,10 +298,9 @@ def label_of(loc: Loc) -> str:
         except (OSError, ValueError, AttributeError):
             return loc.name
     if loc.kind == "space":
-        try:
-            return _h().spaces.name_of(loc.user, loc.name)
-        except (OSError, ValueError, AttributeError):
-            return loc.name
+        return space_display(loc.user, loc.name)
+    if loc.kind == "room":
+        return room_display_name(space_rooms(loc.user, loc.name)[0], loc.room)
     if loc.kind == "session":
         return session_meta(loc.scope, loc.sid).get("title") or loc.sid
     if loc.kind == "asset":
@@ -315,8 +326,10 @@ def display_path(loc: Loc) -> str:
     # Assets keep their id at the leaf. Everything else has a name that resolves, so showing the name is
     # showing an address; an asset label is neither unique nor guaranteed, so a label-valued path would
     # print something you cannot type back. `disk`/`dir` show the label in their own name column instead.
-    if loc.kind in ("world", "space", "session"):
+    if loc.kind in ("world", "space", "session", "room"):
         parts[-1] = label_of(loc)
+    if loc.kind == "room":                                     # …and the space it is in
+        parts[-2] = space_display(loc.user, loc.name)
     return "/".join(parts)
 
 
@@ -355,6 +368,8 @@ COLUMNS = {
     "sessions": ["name", "worlds", "vis"],
     "worlds": ["name", "entities", "space"],
     "spaces": ["name", "surfaces", "geo", "vis"],
+    "space": ["name", "surfaces", "size"],                    # a space lists its rooms
+    "rooms": ["name", "surfaces", "size"],
     "assets": ["name", "type", "vis"],
     "state": ["name", "holds", "entries", "size"],
 }
@@ -464,6 +479,74 @@ def space_row(user: str, ref: str) -> dict:
     return node(name, "space", _plural(len(sp.get("surfaces") or []), "surface"), geo, vis,
                 ref=sid, active=live)
 
+def space_display(user: str, sid: str) -> str:
+    try:
+        return _h().spaces.name_of(user, sid)
+    except (OSError, ValueError, AttributeError):
+        return sid
+
+
+def _space_is_live(user: str, sid: str) -> bool:
+    h = _h()
+    return user == getattr(h, "active_space_owner", None) and sid == getattr(h, "active_space", None) \
+        and not h._no_space()
+
+
+def space_rooms(user: str, sid: str) -> tuple[dict, list[dict]]:
+    """A space's rooms and real surfaces → `(rooms, surfaces)`.
+
+    From the LIVE world when the space is the active one: a rename or a fresh scan lands there first and
+    reaches the space file on the next save, so reading the file would show a room by its old name for a
+    moment after you renamed it. Any other space is only on disk."""
+    h = _h()
+    if _space_is_live(user, sid):
+        doc = h.store.doc
+        return ((doc.get("environment") or {}).get("rooms") or {},
+                [e for e in doc.get("entities") or [] if (e.get("meta") or {}).get("real")])
+    try:
+        sp = h.spaces.load(user, sid)
+    except (OSError, ValueError):
+        return {}, []
+    return sp.get("rooms") or {}, sp.get("surfaces") or []
+
+
+def _room_members(surfaces: list[dict], rid: str) -> list[dict]:
+    return [e for e in surfaces if (e.get("meta") or {}).get("room") == rid]
+
+
+def _room_size(rec: dict) -> str:
+    bd = rec.get("boundary") or {}
+    size = bd.get("size")
+    if not (isinstance(size, list) and len(size) == 2):
+        return ""
+    return f"{size[0]:.1f} × {size[1]:.1f} m"
+
+
+def room_rows(user: str, sid: str) -> list[dict]:
+    """A space's rooms, in the order the scan numbered them.
+
+    A room record with no surfaces and no name is LEFT OVER — the scan that made it saw floors the device
+    later replaced — so it is folded into one note rather than listed as a place you could stand in. It
+    still resolves by path, and a named one is always listed, so nothing a user chose is hidden."""
+    rooms, surfaces = space_rooms(user, sid)
+    h = _h()
+    here = set()
+    if _space_is_live(user, sid):
+        by_floor = {rec.get("floor"): rid for rid, rec in rooms.items() if rec.get("floor")}
+        here = {by_floor.get(f) for f in (getattr(h, "standing", {}) or {}).values()}
+    rows, empty = [], []
+    for rid in sorted(rooms, key=lambda r: (rooms[r].get("n") or 0, r)):
+        rec, n = rooms[rid], len(_room_members(surfaces, rid))
+        if not n and not (rec.get("name") or "").strip():
+            empty.append(room_display_name(rooms, rid))
+            continue
+        rows.append(node(room_display_name(rooms, rid), "room", _plural(n, "surface"), _room_size(rec),
+                         ref=rid, active=rid in here))
+    if empty:
+        rows.append(node(f"({_plural(len(empty), 'empty room record')}: {', '.join(empty)})", "note"))
+    return rows
+
+
 def _describe(v) -> str:
     """One line for a value of unknown shape — its size when it has one, itself when it is small."""
     if isinstance(v, dict):
@@ -547,9 +630,11 @@ def children(loc: Loc, *, limit: int = 200) -> list[dict]:
         return [world_row(loc.scope, loc.sid, n) for n in _h()._session_worlds(loc.scope, loc.sid).list()]
     if loc.kind == "spaces":
         return [space_row(loc.user, n) for n in _h().spaces.list(loc.user)]
+    if loc.kind == "space":
+        return room_rows(loc.user, loc.name)
     if loc.kind == "assets":
         return asset_rows(loc.user, loc.agent, limit=limit)
-    return []                                                  # a leaf: world/space/asset/user item
+    return []                                                  # a leaf: world/room/asset/user item
 
 def _attribute_rows(rec: dict) -> list[list]:
     """The `attributes` bag, one row per SCALAR. `show` reported nine columns and none of them, so
@@ -625,6 +710,9 @@ def leaf_row(loc: Loc) -> Optional[dict]:
         return session_row(loc.scope, loc.sid)
     if loc.kind == "space":
         return space_row(loc.user, loc.name)
+    if loc.kind == "room":
+        return next((r for r in room_rows(loc.user, loc.name) if ref_of(r) == loc.room), None) or \
+            node(label_of(loc), "room", "0 surfaces", ref=loc.room)
     if loc.kind == "asset":
         return next((r for r in asset_rows(loc.user, loc.agent) if ref_of(r) == loc.name), None)
     if loc.kind == "statedoc":
@@ -667,9 +755,9 @@ def files(loc: Loc) -> list[dict]:
                 _stat("meta", h.sessions.meta_path(loc.scope, loc.sid)),
                 _stat("transcript", h.sessions.transcript_path(loc.scope, loc.sid), required=False),
                 _stat("state", h.sessions.state_dir(loc.scope, loc.sid), required=False)]
-    if loc.kind == "space":
+    if loc.kind in ("space", "room"):                          # a room is a record in its space's doc
         p = h.spaces.path_of(loc.user, loc.name)
-        return [_stat("doc", p)] if p else []
+        return [_stat("doc", p, f"rooms.{loc.room}" if loc.kind == "room" else "")] if p else []
     if loc.kind == "asset":
         rec = h.library.get(loc.name) if h.library else None
         out = []
@@ -835,8 +923,11 @@ def fields(loc: Loc) -> list[list]:
                 ["geolocation", "yes" if sp.get("geolocation") else "no"],
                 ["boundary", "yes" if sp.get("boundary") else "no"],
                 ["visibility", "public" if sp.get("public", True) else "private"],
+                ["rooms", ", ".join(r["label"] for r in room_rows(loc.user, sid) if r["kind"] == "room") or "—"],
                 ["last world", _last_world_label(sp)],
                 ["active", "yes" if (loc.user == _h().active_space_owner and sid == _h().active_space) else "no"]]
+    if loc.kind == "room":
+        return room_fields(loc)
     if loc.kind == "asset":
         r = _h().library.get(loc.name)
         if not r:
@@ -881,6 +972,54 @@ def fields(loc: Loc) -> list[list]:
                 ["assets", str(len(asset_rows(loc.user, loc.agent, limit=10_000)))],
                 ["active", "yes" if loc.scope == _h().active_scope else "no"]]
     return [["path", loc_path(loc)], ["kind", loc.kind]]
+
+def _surface_label(e: dict) -> str:
+    m = e.get("meta") or {}
+    return f"{m.get('semantic', 'surface')} #{m.get('friendly_id', '?')}"
+
+
+def room_fields(loc: Loc) -> list[list]:
+    """`show <room>`: what the room is, how big, what it is made of, and where its doors go.
+
+    Surfaces are grouped by kind, because 24 surface lines is a wall to read and the question is nearly
+    always "what's in here" — the labels are kept so `style wall #100` is one glance away. Who is standing
+    in it is live, so it is only known for the active space."""
+    rooms, surfaces = space_rooms(loc.user, loc.name)
+    rec = rooms.get(loc.room) or {}
+    members = _room_members(surfaces, loc.room)
+    name = room_display_name(rooms, loc.room)
+    rows = [["room", name], ["id", loc.room]]
+    if (rec.get("name") or "").strip():
+        rows.append(["number", f"#{rec.get('n', '?')}"])
+    rows += [["space", space_display(loc.user, loc.name)], ["space id", loc.name], ["owner", loc.user]]
+    bd = rec.get("boundary") or {}
+    size = _room_size(rec)
+    rows.append(["size", size or "not measured"])
+    h_ = bd.get("height")
+    rows.append(["ceiling", f"{h_:.2f} m" if isinstance(h_, (int, float)) else "not measured"])
+    rows.append(["floor", rec.get("floor") or "—"])
+    rows.append(["surfaces", str(len(members))])
+    by: dict = {}
+    for e in members:
+        by.setdefault((e.get("meta") or {}).get("semantic") or "surface", []).append(e)
+    for sem in sorted(by):
+        fids = sorted(str((e.get("meta") or {}).get("friendly_id", "?")) for e in by[sem])
+        fids.sort(key=lambda f: int(f) if f.isdigit() else 0)
+        rows.append([f"  {sem}", f"{len(fids)}: " + ", ".join(f"#{f}" for f in fids)])
+    ways = []
+    for e in members:
+        m = e.get("meta") or {}
+        if m.get("semantic") in ("door", "window"):
+            to = m.get("leads_to")
+            ways.append(f"{_surface_label(e)} → {room_display_name(rooms, to) if to else 'outside'}")
+    rows.append(["doors & windows", "; ".join(sorted(ways)) or "—"])
+    if _space_is_live(loc.user, loc.name):
+        who = sorted(u for u, f in (getattr(_h(), "standing", {}) or {}).items() if f and f == rec.get("floor"))
+        rows.append(["standing here", ", ".join(who) or "nobody"])
+    else:
+        rows.append(["standing here", "— (not the active space)"])
+    return rows
+
 
 def delete(loc: Loc) -> dict:
     au = active_user()
@@ -960,4 +1099,7 @@ def delete(loc: Loc) -> dict:
         where = f"{loc.user}/agents/{loc.agent}" if loc.agent else loc.user
         return {"ok": True, "deleted": f"{len(rows)} assets in {where}"}
 
+    if loc.kind == "room":
+        return {"ok": False, "error": "rooms come from the scan, not from you — rename one, or rescan the "
+                                      "space to change what the rooms are"}
     return {"ok": False, "error": f"can't delete a {loc.kind} — name a world, session, space or asset"}
