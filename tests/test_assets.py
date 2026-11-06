@@ -66,3 +66,19 @@ async def test_poisoned_cache_self_heals(tmp_path):
     rec = await AssetResolver("key", tmp_path).resolve("tree")
     assert rec.title == "Good"  # re-fetched, not the poisoned "Stale"
     assert (tmp_path / f"{rec.hash}.glb").read_bytes()[:4] == b"glTF"
+
+
+@respx.mock
+async def test_a_model_on_disk_is_reused_even_when_the_index_lost_it(tmp_path):
+    # 2026-11-03: index.json held 4 of 27 downloads; a Beagle on disk was fetched again and the source
+    # answered 403, so a model already in the library could not be placed. The sidecar is the record.
+    (tmp_path / "beagle.glb").write_bytes(b"glTF" + bytes(40))
+    (tmp_path / "beagle.json").write_text(json.dumps({
+        "hash": "beagle", "title": "Beagle", "attribution": "", "licence": "", "creator": "", "tris": 712,
+        "source_url": DL, "bbox_min": None, "bbox_max": None}))
+    (tmp_path / "index.json").write_text(json.dumps({}))
+
+    respx.get(SEARCH).mock(return_value=_search_response([{"Title": "Beagle", "Download": DL}]))
+    blocked = respx.get(DL).mock(return_value=httpx.Response(403, html="blocked"))
+    rec = await AssetResolver("key", tmp_path).resolve("tree")
+    assert rec.hash == "beagle" and not blocked.called

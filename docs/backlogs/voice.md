@@ -360,6 +360,12 @@ client and one imagined client is usually wrong for the imagined one.
 - **Input device is unpinned.** `input_device_index=None` follows the system default, and virtual
   devices (NoMachine, Teams) are present on the dev machine. If one became the default input, quality
   would degrade silently with no message anywhere. At minimum, name the chosen device at startup.
+- **A provider error is read aloud verbatim.** The agent server sends a failed turn as the notice
+  `error: <exception>`, and voice speaks every notice — on 2026-11-03 an Anthropic 400 ("Your credit
+  balance is too low…", JSON and all) took ~20 s to say. Voice should say one short line naming the
+  cause ("The AI service refused the request: out of credit — the log has the detail") and leave the
+  raw text to `diag`. Recognise the common provider failures (credit, auth, rate limit, overloaded) and
+  fall back to "that request failed" for the rest. The CLI keeps the full text.
 - **Barge-in on the host** (`--serve` with the Mac's own mic) — still blocked on echo cancellation;
   see spec §6. The headset has it, by press and by voice (spec §11).
 
