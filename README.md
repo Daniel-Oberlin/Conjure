@@ -245,7 +245,8 @@ matched and waits for `!`.
 
 `set` reads and changes runtime settings — and refuses the ones that need a restart, by name and with
 the reason (`set foveation 0.3`, `set` for the table, `--save` to keep it in `settings.json`). `gc`
-lists asset files nothing references and deletes them on `gc !`.
+lists asset files nothing references, and library entries whose file is gone (deleted by hand from the
+asset folder), and deletes both on `gc !`.
 
 Every command declares whether it's **voice-safe**: voice gets the modal verbs ("where am I", "go to
 the meadow", "new session") and is refused the ones that need a screen. Full table:

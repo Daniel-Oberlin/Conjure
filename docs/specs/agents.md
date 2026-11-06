@@ -574,7 +574,7 @@ back and fire it. The first `yes` consumes it, so an echo is inert.
 | `public` / `private [path]` | visibility of the live session, or of a path | ✓ |
 | `rename <path> <new>` | retitle a world, space, room or session; relabel an asset | — |
 | `delete <path> [!]` (`rm`) | remove a world, session, space, asset or user — **immediate** for an explicit path; a pattern lists what it matched and needs `!` | — |
-| `gc [!]` | asset files nothing references; lists them, `!` deletes them | — |
+| `gc [!]` | asset files nothing references, and library entries whose file is gone (a row with a `filename` the asset folder no longer holds — a capture's set has none, so never counts); lists both, `!` deletes both. Refuses when the asset folder is missing or more than half the entries look gone, since that is the wrong folder rather than deleted files | — |
 | `set [key [value]] [--save]` | list settings, read one, or change it for this run | — |
 | `unset <key>` | drop a run-time change | — |
 

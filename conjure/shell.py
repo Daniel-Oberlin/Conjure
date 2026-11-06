@@ -361,7 +361,7 @@ class Shell:
             (re.compile(r"^(?:show|info)(?:\s+(?P<path>\S.*))?$", re.I), self._show,
              "show [path] — one entry in detail", False),
             (re.compile(r"^gc(?P<force>\s+!)?$", re.I), self._gc,
-             "gc [!] — asset files nothing points at. Lists them; '!' deletes them", False),
+             "gc [!] — asset files nothing points at, and library entries whose file is gone. Lists them; '!' deletes them", False),
             (re.compile(r"^set(?:\s+(?P<key>[\w.-]+)(?:\s+(?P<value>\S.*?))?)?(?P<save>\s+--save)?$", re.I),
              self._set,
              "set [key [value]] [--save] — list settings, read one, or change it for this run; "
@@ -965,7 +965,8 @@ class Shell:
             return {"ok": False, "error": f"settings request failed: {exc}"}
 
     async def _gc(self, on_text, m):
-        """`gc` lists what is reclaimable; `gc !` reclaims it.
+        """`gc` lists what is reclaimable — files nothing points at, and library entries whose file is gone;
+        `gc !` reclaims both.
 
         Same idiom as a pattern delete, and for the same reason — the input names a SET rather than one
         thing, so it is shown before it is acted on."""
@@ -985,20 +986,32 @@ class Shell:
             await self._say(on_text, data.get("error", "error"))
             return
         if force:
-            await self._say(on_text, f"Deleted {data.get('deleted', 0)} files, "
-                                     f"freeing {human_size(data.get('bytes', 0))}.")
+            n = data.get("rows_deleted", 0)
+            await self._say(on_text, f"Deleted {data.get('deleted', 0)} files, freeing "
+                                     f"{human_size(data.get('bytes', 0))}"
+                                     + (f", and {n} library entr{'y' if n == 1 else 'ies'} whose file was gone"
+                                        if n else "") + ".")
             return
-        found = data.get("files") or []
-        if not found:
+        found, rows = data.get("files") or [], data.get("rows") or []
+        if not found and not rows:
             await self._say(on_text, f"Nothing to collect — every one of {data.get('present', 0)} "
-                                     f"asset files is referenced.")
+                                     f"asset files is referenced, and every library entry has its file.")
             return
-        head = (f"{len(found)} unreferenced files · {human_size(data['bytes'])} reclaimable · "
-                f"nothing deleted")
-        rows = [f"  {e['name']:<24}{human_size(e['size']):>9}   {when(e['mtime'])}" for e in found[:10]]
-        if len(found) > 10:
-            rows.append(f"  … {len(found) - 10} more")
-        await self._say(on_text, "\n".join([head] + rows + ["Re-run as  gc !  to delete them."]))
+        lines = []
+        if found:
+            lines.append(f"{len(found)} unreferenced files · {human_size(data['bytes'])} reclaimable")
+            lines += [f"  {e['name']:<24}{human_size(e['size']):>9}   {when(e['mtime'])}" for e in found[:10]]
+            if len(found) > 10:
+                lines.append(f"  … {len(found) - 10} more")
+        if rows:
+            # The other direction: a library entry whose file was deleted. It still shows in search and
+            # `dir`, and placing it gives a blank picture or a broken model.
+            lines.append(f"{len(rows)} library entr{'y' if len(rows) == 1 else 'ies'} whose file is gone")
+            lines += [f"  {r['id']:<24}{r['kind']:<10}{(r['label'] or '—')[:40]}"
+                      + ("   (still placed in a world)" if r.get("placed") else "") for r in rows[:10]]
+            if len(rows) > 10:
+                lines.append(f"  … {len(rows) - 10} more")
+        await self._say(on_text, "\n".join(lines + ["Nothing deleted. Re-run as  gc !  to delete them."]))
 
     async def _set(self, on_text, m):
         """`set` · `set <key>` · `set <key> <value> [--save]`.

@@ -2895,6 +2895,33 @@ def test_gc_deletes_only_on_confirm(srv, client, assets_dir):
     assert not (srv.ASSET_CACHE / "loose.png").exists()
 
 
+def test_gc_drops_a_library_entry_whose_file_was_deleted_by_hand(srv, client, assets_dir):
+    """Deleting pictures in the asset folder left their rows behind — still in search and `dir`, and a blank
+    picture when placed. `gc` reports them with the files; `gc !` removes both, sidecar included."""
+    _seed_asset(srv, "kept.png", "alice/agents/builder", filename="kept.png", label="Kept")
+    _blob(srv, "kept.png")
+    _seed_asset(srv, "gone.glb", "alice/agents/builder", filename="gone.glb", label="Gone")
+    _blob(srv, "gone.json")                                   # its sidecar outlived the model
+    _seed_asset(srv, "set:jane", "alice/agents/builder")       # no filename: never had a local file
+    r = client.post("/admin/gc", json={}).json()
+    assert [x["id"] for x in r["rows"]] == ["gone.glb"] and r["rows"][0]["label"] == "Gone"
+    assert {f["name"] for f in r["files"]} == {"gone.json"}, "the sidecar goes with its row, in one sweep"
+    assert srv.library.get("gone.glb"), "a bare gc changes nothing"
+    done = client.post("/admin/gc", json={"confirm": True}).json()
+    assert done["rows_deleted"] == 1 and done["deleted"] == 1
+    assert srv.library.get("gone.glb") is None and srv.library.get("kept.png") and srv.library.get("set:jane")
+
+
+def test_gc_refuses_when_most_files_are_missing_rather_than_empty_the_catalog(srv, client, assets_dir):
+    """An unmounted volume or a mis-set data dir makes EVERY row look dangling. That is a wrong folder, not
+    deleted files, and a sweep would erase the catalog."""
+    for i in range(30):
+        _seed_asset(srv, f"a{i}.png", "alice/agents/builder", filename=f"a{i}.png")
+    r = client.post("/admin/gc", json={"confirm": True}).json()
+    assert r["ok"] is False and "wrong asset folder" in r["error"]
+    assert srv.library.get("a0.png")
+
+
 def test_disk_reports_an_asset_as_a_row_plus_a_blob(srv, client, tmp_path):
     # "The file" is a lie for an asset: it is a library.db row AND a blob, and for a downloaded model a
     # .json sidecar carrying the licence too. Showing one of the three silently drops provenance.

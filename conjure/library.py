@@ -510,6 +510,14 @@ class AssetLibrary:
             rows = self._db.execute("SELECT id, filename FROM assets").fetchall()
         return {v for r in rows for v in (r[0], r[1]) if v}
 
+    def local_rows(self) -> list[dict]:
+        """Every row that names a FILE in the asset store — the ones whose bytes `gc` can find missing. A
+        row with no `filename` (a capture's set, an external source) never had a local file to lose."""
+        with self._lock:
+            rows = self._db.execute("SELECT id, kind, label, scope, filename, source FROM assets "
+                                    "WHERE filename IS NOT NULL AND filename != ''").fetchall()
+        return [dict(r) for r in rows]
+
     def by_user(self, user: str, *, limit: int = 200) -> list[dict]:
         """Assets owned by `user` (scope == user or `user/…`), most-recently-used first."""
         with self._lock:

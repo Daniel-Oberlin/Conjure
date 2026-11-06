@@ -793,8 +793,64 @@ def files(loc: Loc) -> list[dict]:
     return [_stat("dir", h.USERS_DIR)]
 
 
+def _world_refs() -> tuple[set, int, Optional[str]]:
+    """Every asset id any world on disk references → `(ids, docs scanned, error)`. An unreadable document
+    is an ERROR, not a document that references nothing — see `garbage`."""
+    h = _h()
+    # The root the REPOSITORIES are using, not the module-level `USERS_DIR` — they can disagree (a test
+    # points the repositories at a tmp tree and leaves the constant alone), and a sweep that scans a
+    # different tree from the one it is deleting against would call live assets garbage.
+    users = Path(getattr(h.sessions, "root", None) or h.USERS_DIR)
+    refs: set = set()
+    scanned = 0
+    for doc in sorted(users.rglob("*.json")) if users.is_dir() else []:
+        try:
+            refs |= h._referenced_asset_ids(json.loads(doc.read_text()))
+        except (OSError, ValueError) as exc:
+            return refs, scanned, (f"unreadable {doc.name} ({exc}) — sweep aborted rather than treat it as "
+                                   f"referencing nothing")
+        scanned += 1
+    return refs, scanned, None
+
+
+# Above this share of local rows, "their files are gone" is far likelier to mean the asset folder is the
+# wrong one (an unmounted volume, a mis-set data dir) than that someone deleted them, and the sweep would
+# empty the catalog. Small catalogs are exempt — losing 3 of 4 files by hand is plausible.
+_DANGLING_LIMIT = 0.5
+_DANGLING_FLOOR = 20
+
+
+def dangling(refs: Optional[set] = None) -> dict:
+    """Library rows whose file is no longer in the asset store (shell `gc`).
+
+    The reverse of `garbage`: there a file has no row, here a row has no file — what deleting images by
+    hand in the asset folder leaves behind. Such a row still appears in search and in `dir`, and placing
+    it yields a broken model or a blank picture. A row that a world still references is reported as such,
+    because removing the row does not mend that world; its picture is already gone.
+
+    Refuses outright when the asset folder is missing, or when most rows look dangling — both say the
+    folder is wrong, not that the files went."""
+    h = _h()
+    if not h.library:
+        return {"ok": True, "rows": []}
+    assets = Path(h.ASSET_CACHE)
+    if not assets.is_dir():
+        return {"ok": False, "error": f"the asset folder {assets} does not exist — refusing to call every "
+                                      f"library entry missing"}
+    local = h.library.local_rows()
+    gone = [r for r in local if not (assets / r["filename"]).exists()]
+    if len(gone) > _DANGLING_FLOOR and len(gone) > _DANGLING_LIMIT * len(local):
+        return {"ok": False, "error": f"{len(gone)} of {len(local)} library entries have no file in {assets} "
+                                      f"— that looks like the wrong asset folder, not deleted files; nothing "
+                                      f"was changed"}
+    out = [{"id": r["id"], "kind": r.get("kind") or "?", "label": (r.get("label") or "").strip(),
+            "file": r["filename"], "placed": bool(refs and (r["id"] in refs or r["filename"] in refs))}
+           for r in gone]
+    return {"ok": True, "rows": out}
+
+
 def garbage() -> dict:
-    """Files under `assets/` that nothing points at (shell `gc`).
+    """Files under `assets/` that nothing points at, and catalog rows whose file is gone (shell `gc`).
 
     `library.delete` keeps an asset's bytes on purpose — "regenerable, and may still be referenced by a
     placed entity" — so residue accumulates by design and nothing has ever reclaimed it. The live install
@@ -817,19 +873,16 @@ def garbage() -> dict:
 
     Reports only — `sweep` is what removes anything."""
     h = _h()
-    keep = set(h.library.all_files()) if h.library else set()
-    # The root the REPOSITORIES are using, not the module-level `USERS_DIR` — they can disagree (a test
-    # points the repositories at a tmp tree and leaves the constant alone), and a sweep that scans a
-    # different tree from the one it is deleting against would call live assets garbage.
-    users = Path(getattr(h.sessions, "root", None) or h.USERS_DIR)
-    scanned = 0
-    for doc in sorted(users.rglob("*.json")) if users.is_dir() else []:
-        try:
-            keep |= h._referenced_asset_ids(json.loads(doc.read_text()))
-        except (OSError, ValueError) as exc:
-            return {"ok": False, "error": f"unreadable {doc.name} ({exc}) — sweep aborted rather than "
-                                          f"treat it as referencing nothing"}
-        scanned += 1
+    refs, scanned, err = _world_refs()
+    if err:
+        return {"ok": False, "error": err}
+    rows = dangling(refs)
+    if not rows.get("ok"):
+        return rows
+    # A row about to be dropped for having no file keeps nothing alive — so its sidecar is collected in
+    # the same sweep rather than on the next one.
+    gone = {r["id"] for r in rows["rows"]} | {r["file"] for r in rows["rows"]}
+    keep = (set(h.library.all_files()) - gone if h.library else set()) | refs
     assets = Path(h.ASSET_CACHE)
     # Never consider the catalog itself. `assets/` is normally a dedicated directory, but nothing
     # enforces that — a configuration that points it at the data root would otherwise offer library.db
@@ -853,16 +906,23 @@ def garbage() -> dict:
             continue
     out.sort(key=lambda e: -e["size"])
     return {"ok": True, "files": out, "bytes": sum(e["size"] for e in out),
-            "present": len(present), "kept": len(present) - len(out), "docs": scanned}
+            "present": len(present), "kept": len(present) - len(out), "docs": scanned,
+            "rows": rows["rows"]}
 
 
 def sweep() -> dict:
-    """Delete what `garbage` found. Re-computed here rather than taking a list from the caller, so a
-    world created between the listing and the confirmation cannot lose its asset."""
+    """Delete what `garbage` found — the rows with no file, then the files with no row. Re-computed here
+    rather than taking a list from the caller, so a world created between the listing and the confirmation
+    cannot lose its asset."""
     found = garbage()
     if not found.get("ok"):
         return found
-    assets = Path(_h().ASSET_CACHE)
+    h = _h()
+    rows_gone = 0
+    for r in found.get("rows") or []:
+        ok, _ = h.library.delete(r["id"])
+        rows_gone += bool(ok)
+    assets = Path(h.ASSET_CACHE)
     freed, gone = 0, []
     for entry in found["files"]:
         try:
@@ -871,7 +931,7 @@ def sweep() -> dict:
             continue
         freed += entry["size"]
         gone.append(entry["name"])
-    return {"ok": True, "deleted": len(gone), "bytes": freed}
+    return {"ok": True, "deleted": len(gone), "bytes": freed, "rows_deleted": rows_gone}
 
 
 def fields(loc: Loc) -> list[list]:
