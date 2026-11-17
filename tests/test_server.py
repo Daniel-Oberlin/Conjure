@@ -4972,6 +4972,25 @@ def test_a_capture_with_rooms_labels_every_surface_and_records_the_rooms(srv, cl
     assert "name" not in rooms["room_1"], "the default display name is derived, never stored"
 
 
+def test_rooms_are_minted_only_for_floors_the_seed_has_and_phantoms_are_dropped(srv, client):
+    """Entering AR, the first capture is held (no surfaces reach the seed) but still carries a segmentation
+    of PROVISIONAL floors. That minted room_1–3 in every space and numbered the real rooms from 4."""
+    held = {"client_id": "h1", "surfaces": [], "rooms": [
+        {"floor": "real_floor_90", "ceiling": None, "ids": ["real_floor_90", "real_wall_91"]}]}
+    client.post("/space/capture", json=held)
+    assert not client.get("/world").json()["environment"].get("rooms"), "no room for a floor the seed lacks"
+    client.post("/space/capture", json=_two_room_capture())
+    rooms = client.get("/world").json()["environment"]["rooms"]
+    assert sorted(rooms) == ["room_1", "room_2"], "the real rooms are numbered from one"
+
+    # A space already carrying a phantom (written before this fix) loses it on the next capture.
+    client.post("/patch", json={"origin": "test", "ops": [
+        {"op": "env", "set": {"rooms.room_7": {"n": 7, "floor": "real_floor_14"}}}]})
+    client.post("/space/capture", json=_two_room_capture())
+    rooms = client.get("/world").json()["environment"]["rooms"]
+    assert "room_7" not in rooms and sorted(rooms) == ["room_1", "room_2"]
+
+
 def test_a_door_records_the_room_it_leads_to(srv, client):
     client.post("/space/capture", json=_two_room_capture())
     ents = {e["id"]: e for e in _entities(client)}

@@ -126,6 +126,33 @@ def resolve_rooms(
     return out, rooms
 
 
+def prune_phantoms(rooms: dict[str, dict], seed_ids: set[str],
+                   labels: dict[str, str]) -> tuple[dict[str, dict], list[str]]:
+    """Drop rooms that never were: **unnamed**, **no surface labelled** with them, and their defining
+    floor **not in the seed**. Returns `(rooms, dropped_ids)`.
+
+    Every space had three (`room_1`–`room_3`, 2026-11-03 and again 2026-11-17). Entering AR, the first
+    capture posts a segmentation of PROVISIONAL floors (`real_floor_1`, `_12`, `_14`) while identity is still
+    held, so no surface reaches the seed; those groups minted rooms, and the real rooms then minted as
+    4, 5, 6. The mint is now refused at the source (the server drops groups whose floor is not in the seed);
+    this clears the ones already on disk, and any that slip through some other way.
+
+    It cannot take a real room. A room that ever resolved has its surfaces labelled with it, and tier 1
+    re-attaches it from those; a name is user data and is never dropped. What remains has nothing that
+    could ever resolve to it again — neither tier can reach it — so keeping it only makes the numbering
+    start at 4. Numbers are not compacted: the surviving rooms keep theirs (`_next_n`).
+    """
+    used = set((labels or {}).values())
+    keep: dict[str, dict] = {}
+    dropped: list[str] = []
+    for rid, rec in (rooms or {}).items():
+        if not rec.get("name") and rid not in used and rec.get("floor") not in seed_ids:
+            dropped.append(rid)
+        else:
+            keep[rid] = rec
+    return keep, dropped
+
+
 def display_name(rooms: dict[str, dict], room_id: str) -> str:
     """What the user reads and says back. The default is **derived, never stored**, so a rename cannot
     leave a stale "room #2" behind anywhere — there was never a copy of it to go stale."""
