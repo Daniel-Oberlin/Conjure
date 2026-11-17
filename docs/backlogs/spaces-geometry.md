@@ -68,7 +68,7 @@ already been taken by another surface this pass.
 > [`investigations/surface-churn.md`](../investigations/surface-churn.md) § *The census, 2026-09-24* for the
 > counts, the root cause, and the re-ranking: global assignment first, succession via the already-computed
 > `near` second, styling storage third. A narrow storage fix was built and reverted on this evidence
-> (`fix/styling-survives-prune`).
+> (tag `parked/styling-survives-prune`, `69a2a8f`).
 
 **One thing worked.** `real_wall_art_130` was pruned client-side with `anchored: true` and the server kept
 it, so the photo pinned to it did not orphan. The anchored protection held.
@@ -76,7 +76,7 @@ it, so the photo pinned to it did not orphan. The anchored protection held.
 #### What is actually at stake — the inventory, 2026-09-24
 
 Written down after a narrow "carry the colour across a prune" fix was tried and **reverted** (it lives on
-`fix/styling-survives-prune` with its own notes). The fix was not wrong so much as aimed at the wrong
+tag `parked/styling-survives-prune` — `69a2a8f`, notes in `28d0bf4`). The fix was not wrong so much as aimed at the wrong
 thing, and the re-aim is worth keeping even though the code is not.
 
 **First, the symptom is mis-stated above.** A returning surface does not render grey. It renders
@@ -157,8 +157,8 @@ Worth noting the sessions were short and stationary-ish — the symptom is occas
 
 ### A branch predating the rooms work could strip the room record — untested, and shrinking
 
-Seven unmerged branches predate rooms and share the live data dir, `feat/fix-floating-rooms` among them —
-which is the one anything touching the floor fault would reach for. Running one writes to the same space
+Unmerged work that predates rooms shares the live data dir, tag `parked/fix-floating-rooms` (`f86d163`)
+among it — which is the one anything touching the floor fault would reach for. Running one writes to the same space
 file.
 
 Reading `main`'s write paths says the record survives: `SpaceStore` round-trips the whole dict,
@@ -307,8 +307,8 @@ planes, so an anchor resolving against the wrong floor lands ~190 mm out. Worth 
 bug on main independent of any correction, and fixing it would un-bury the content even while the floor
 stays wrong.** Probably the highest-value next step here.
 
-**A correction exists on `feat/fix-floating-rooms`, unmerged.** It would refuse today's fault anyway (its
-offset ceiling is 0.15 m). See the investigation for what is on the branch and how to resume it.
+**A correction exists on tag `parked/fix-floating-rooms` (`f86d163`), unmerged.** It would refuse today's fault anyway (its
+offset ceiling is 0.15 m). See the investigation for what is on the tag and how to resume it.
 
 ### Ground truth for this space — physical constraints worth keeping
 
@@ -933,7 +933,7 @@ Status lines are as originally written; not re-verified against today's code.*
 ## Shelved: wall-less-seed registration deadlock
 
 **Status:** anticipated; observed **once** (during the inset-churn era), **not reproduced** since the churn
-was fixed. Fix parked on branch **`deadlock-breaker`** (commit `f94dbd6`, branched off `main` @ `4027e9f`).
+was fixed. Fix parked on tag **`parked/deadlock-breaker`** (commit `f94dbd6`, branched off `main` @ `4027e9f`).
 Abandoned on the mainline pending an actual recurrence.
 
 **The problem.** `SpaceSnap.register()` needs a wall basis (vertical plane pairs) to lock at all. If a space's
@@ -954,15 +954,15 @@ healthy seed. That's why this is shelved rather than merged: it guards a route t
    `_ref` empty and establishes fresh, whose `replace`-POST then overwrites the bad seed.
 3. **POST guard (prevention)** — never persist a wall-less surface set.
 4. **Server backstop** — a wall-less `replace` post can't wipe a walled seed (`server._MIN_SEED_WALLS`);
-   protects the persisted seed from any client. Unit-tested on the branch
+   protects the persisted seed from any client. Unit-tested on the tag
    (`pytest -k wall_less` → `test_wall_less_replace_post_cannot_wipe_a_walled_seed`).
 
 **Reproduce / verify (if it recurs).** With the server stopped, strip the walls from a persisted space:
 `python3 -c "import json; f='.cache/spaces/<user>/<space>.json'; d=json.load(open(f)); d['surfaces']=[s for s in d['surfaces'] if (s.get('meta') or {}).get('semantic')!='wall']; json.dump(d, open(f,'w'))"`
 then re-enter. **Without** the fix: hangs in `relocalizing` (`ref=<n> … dlt=0 … hold`). **With** it (the
-branch): refuses the seed, establishes fresh, and the space file gets its walls back.
+tag): refuses the seed, establishes fresh, and the space file gets its walls back.
 
-**To revive:** `git merge deadlock-breaker` (it's exactly `main` + the one commit).
+**To revive:** `git merge parked/deadlock-breaker` (it's exactly `4027e9f` + the one commit).
 
 ---
 
