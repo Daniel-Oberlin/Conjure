@@ -5,7 +5,7 @@ room rides with it. Three competing hypotheses killed by measurement. **A Room S
 it**, and objects on that floor end up buried, so a render-side correction was attempted.
 
 **Four correction attempts, all reverted. There is no correction on `main`.** The work lives unmerged on
-`feat/fix-floating-rooms` (§ *The correction* below, with what is on the branch and how to resume). What
+tag `parked/fix-floating-rooms` (`f86d163`; § *The correction* below, with what is on it and how to resume). What
 shipped to `main` is the instrumentation that diagnosed it, and it stays because it earned its place.
 
 The instrumentation built to answer this is [`specs/spaces-geometry.md` §10](../specs/spaces-geometry.md);
@@ -182,9 +182,9 @@ That is the pattern, and it is the main thing to internalise before touching thi
 its floor moves opens a gap the width of the correction — v1's doors, `wall_82`, `wall_33`. It is
 structural, not a tolerance to tune: **move the whole space or none of it.**
 
-### What is on `feat/fix-floating-rooms`
+### What is on `parked/fix-floating-rooms`
 
-Branch tip `f86d163`; its history begins at `391d8e9`, the first implementation, so the whole arc is
+Tag (formerly a branch) at `f86d163`; its history begins at `391d8e9`, the first implementation, so the whole arc is
 readable in order. `main` was rewound to `b0f3d8d` (the revert), keeping everything else.
 
 - `SpaceSnap.floatingRoom` — detection and spatial membership
@@ -201,7 +201,7 @@ the right room every time. **Every failure was in what it did next, never in wha
 
 ### To resume
 
-1. **`git merge feat/fix-floating-rooms`**, then re-read the three guards.
+1. **`git merge parked/fix-floating-rooms`**, then re-read the three guards.
 2. **Guard 3's ceiling (0.15 m) must be revisited first.** It was justified as "2.5× anything observed" —
    and then 276 mm was observed. As written, **it would refuse the very fault that is live today.** Make it
    a knob, or re-derive it from something that is not a sample of one.
@@ -236,7 +236,7 @@ trade than moving space geometry, and it is the cheaper thing to be right about.
 | Symptom | Cause | Fix | Knob | Commit |
 |---|---|---|---|---|
 | No way to detect or attribute a height fault | The system has no ground truth and no persistent record | The geometry event log: change-gated height census, median-deviation alarm, `explainNoMatch`, and the controller marker probe | `--no-geometry-log`, `--geometry-log-days` (21), `mark` binding (default **B**) | `371ff83` |
-| The floor itself | the Quest anchors one room's stored entity high | **Nothing on `main`.** Not fixable at source (a re-scan does not clear it); four render-side attempts were reverted, and the work sits unmerged on `feat/fix-floating-rooms` | — | reverted in `b0f3d8d` |
+| The floor itself | the Quest anchors one room's stored entity high | **Nothing on `main`.** Not fixable at source (a re-scan does not clear it); four render-side attempts were reverted, and the work sits unmerged on tag `parked/fix-floating-rooms` (`f86d163`) | — | reverted in `b0f3d8d` |
 | `[post]` logged only the first changed id; server `add`/`remove` were silent | first-hit `reason` string; only `update` had a `[seed]` line | full reason list; `seed.add` / `seed.prune` named by id | — | `371ff83` |
 
 **Follow-on fault, found and fixed the same day.** The first cut of the correction decided *which* surfaces

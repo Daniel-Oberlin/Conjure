@@ -100,7 +100,7 @@ server deletes the entity *and its material*. The asymmetry that made a tight to
 ~~**Should styling survive a prune?**~~ **Demoted 2026-09-24 — see the census below.** It is still true
 that a miss costs more than the matcher assumes, but storage is third in line: 83% of churn is the
 `claimed` gate, which no storage fix touches, and the re-association key (`near`) is already computed on
-every mint. A narrow version of this was built and reverted; it sits on `fix/styling-survives-prune`.
+every mint. A narrow version of this was built and reverted; it sits on tag `parked/styling-survives-prune` (`69a2a8f`).
 
 **The 2026-09-09 root cause is still open.** None of the four candidate fixes below has shipped: as of
 2026-09-24 `ingest_capture` still gates on `captureAuthority`/`client_id` only, with no check that the
@@ -420,7 +420,7 @@ are two separate faults still stands.
    strength of the 09-24 incident; the census does not support that.
 
 A narrow "carry the colour across a prune" change was built and **reverted** on this evidence; it survives on
-`fix/styling-survives-prune`. See the backlog entry for what is keyed to a surface id besides colour —
+tag `parked/styling-survives-prune` (`69a2a8f`). See the backlog entry for what is keyed to a surface id besides colour —
 `meta.image_id` and the derived `meta.friendly_id` are both exposed, and the latter silently renumbers.
 
 ### Reading the next run

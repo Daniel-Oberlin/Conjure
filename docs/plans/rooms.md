@@ -116,7 +116,7 @@ residual after correction*, emitting the fit's y beside the detector's deviation
 of one displacement are a cross-check, but only when labelled as such.
 
 This also makes it the better input to the floating-room correction: the unmerged corrector on
-`feat/fix-floating-rooms` is threshold-gated, and its open question — *does it still fire when the
+tag `parked/fix-floating-rooms` (`f86d163`) is threshold-gated, and its open question — *does it still fire when the
 displacement changes size?* — dissolves against a continuous estimate.
 
 ### Segmentation basis — the device already did it
