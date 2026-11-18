@@ -278,6 +278,24 @@ correct — bedroom content should track the bedroom floor — but it means such
 raised-floor fault when it is active, where previously it did not. The symptom moves from "content is
 buried while its floor rises" to "content rises with its floor"; only correcting the floor fixes both.
 
+### The whole space's floor height moves between sessions — **detected, not corrected**
+
+**Status:** detected and named since 2026-11-17 (`SpaceSnap.heightShift`, specs/spaces-geometry.md §4.1.1);
+registration still refuses the lock. Workaround that worked: re-align in the Quest's Settings > Physical space.
+
+Distinct from the floating *room* below: here **every** surface moves together, by a lot. The floors of one
+space across sessions: +0.24 (10-20), −0.24 (10-30), −0.34 (11-03, when `space-1` was recorded), −0.05
+(11-06), +0.20 m (11-17). Registration solves yaw + x/z only and scores within 0.4 m in 3-D, so it passed
+while the drift stayed under ~0.4 m and failed on 11-17 at 0.53 m: `cov=2/64`, a duplicate `space-2`
+minted, and the lost-lock hint shown. Fit between the two stored copies of the room: yaw 175.7°,
+x/z rms 1.6 cm, dy 0.532 ± 0.02 m — a clean rigid shift.
+
+**The fix, when wanted:** solve dy in registration (the vote already exists in `heightShift`) and fold it
+into `Tmat`. Two things to settle first: §10.2's floating-room detector assumes registration never touches
+height, so it must measure *after* a global dy, not instead of one; and tag `parked/fix-floating-rooms` (`f86d163`) corrects
+per-room height and must not fight a global term. Also: `space-2` on Daniel's data is a duplicate of
+`space-1` and can be deleted.
+
 ### A room's floor floats — **diagnosed, device-side; no fix on main**
 
 **Status:** cause established. Detected and measured; **not corrected.** The full campaign, including four

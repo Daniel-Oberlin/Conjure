@@ -770,6 +770,16 @@ test("relocHint: the advice matches the CAUSE, and only a lost lock gets the ste
   assert.strictEqual(WM.relocHint(undefined).advise, true, "unknown cause keeps the old behaviour");
 });
 
+test("relocHint: a floor-height shift says so, with the size, and does not ask for a re-localize", () => {
+  const h = WM.relocHint("height -0.53m cov=2/64 inl=2/64 dlt=436");
+  assert.strictEqual(h.advise, false);
+  assert.strictEqual(h.heightCm, 53);
+  assert.match(h.text, /53 cm/);
+  assert.match(h.text, /Settings/);
+  assert.doesNotMatch(h.text, /step out/);
+  assert.strictEqual(WM.relocHint("height +0.6m cov=0/10").heightCm, 60, "either direction");
+});
+
 // ------------------------------------------------- settleGate (the 2026-09-29 wall loss)
 
 test("settleGate: needs a RUN of quiet captures, not one", () => {
