@@ -434,8 +434,12 @@ standing: "dict[str, str]" = {}          # user → the FLOOR surface id they ar
 gaze: "dict[str, dict]" = {}             # user → {"origin","forward","right","up"} in the reference frame,
                                          # from presence — where each headset is looking. May also carry
                                          # "anchor" (plane-relative head anchor) for the §7b seed-solve.
+_POLY_DIR = Path(settings.poly_pizza_dir).expanduser() if settings.poly_pizza_dir else None
+if _POLY_DIR and not _POLY_DIR.is_dir():
+    _POLY_DIR = None                                   # absent is normal (no collection) — not an error
 resolver: AssetResolver | None = (
-    AssetResolver(settings.poly_pizza_api_key, ASSET_CACHE) if settings.poly_pizza_api_key else None
+    AssetResolver(settings.poly_pizza_api_key, ASSET_CACHE, local_dir=_POLY_DIR)
+    if (settings.poly_pizza_api_key or _POLY_DIR) else None
 )
 # Filesystem-mutating, stateful singletons — opened by _init_state() on SERVER STARTUP, never at import,
 # so `import conjure.server` (tests, dev, tooling) can't run schema migrations / move world dirs / write
@@ -4123,7 +4127,7 @@ async def asset(filename: str) -> FileResponse:
 async def place_asset(req: PlaceAssetRequest) -> dict:
     """Resolve a search query to a real model: drop a placeholder, then swap in the GLB."""
     if resolver is None:
-        return {"ok": False, "error": "POLY_PIZZA_API_KEY not set"}
+        return {"ok": False, "error": "no model source: no Poly Pizza collection folder and no POLY_PIZZA_API_KEY"}
 
     eid = req.name or f"ent_asset_{uuid4().hex[:6]}"
     pos = req.position or [0.0, 0.0, -3.0]  # base on the floor, a few meters in front
@@ -4207,7 +4211,50 @@ async def library_search(req: LibrarySearchRequest) -> dict:
             if fn and (ASSET_CACHE / fn).exists():
                 data = (ASSET_CACHE / fn).read_bytes()
                 qvec = await asyncio.to_thread(embedder.embed_image, data)
-    return {"ok": True, **library.find(text=req.query, query_vec=qvec, kind=req.kind, scope=req.scope)}
+    out = {"ok": True, **library.find(text=req.query, query_vec=qvec, kind=req.kind, scope=req.scope)}
+    # The Poly Pizza collection (docs/specs/library.md §3a) is searched in the same call, so there is ONE
+    # search and nothing to choose between: library hits first, then collection models not yet imported.
+    # A collection model already placed IS a library asset, and appears only as that.
+    local = resolver.local if resolver is not None else None
+    if local and req.query and req.kind in (None, "model"):
+        have = {c["id"] for c in out["candidates"]}
+        coll = []
+        for m in local.search(req.query):
+            h = resolver.held(m)
+            if h and f"{h}.glb" in have:
+                continue
+            coll.append({"id": m.cid, "kind": "model", "match": "collection", "label": m.title,
+                         "pack": m.pack, "creator": m.creator, "exact": local.exact(req.query, m)})
+            if len(coll) >= 12:
+                break
+        out["collection"] = coll
+        out["collection_packs"] = local.packs(req.query)
+        if out["confidence_tier"] == "none" and coll:
+            out["confidence_tier"] = "strong" if any(c["exact"] for c in coll) else "weak"
+    return out
+
+
+async def _place_from_collection(req: "PlaceCachedAssetRequest") -> dict:
+    """A collection model picked from search_library: extract it into the cache and catalog it (it
+    becomes an ordinary library asset from here on), then place it as place_asset would."""
+    try:
+        record = await asyncio.to_thread(resolver.local_record, req.id) if resolver is not None else None
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"couldn't read {req.id!r} from the collection: {exc}"}
+    if record is None:
+        return {"ok": False, "error": f"no model {req.id!r} in the Poly Pizza collection (removed since?)"}
+    model_id = f"{record.hash}.glb"
+    _catalog_asset(model_id, kind="model", label=record.title, query=record.title, licence=record.licence,
+                   attribution=record.attribution, creator=record.creator,
+                   attributes={"tris": record.tris, "bbox_min": record.bbox_min, "bbox_max": record.bbox_max})
+    library.touch(model_id)
+    eid = req.name or f"ent_asset_{uuid4().hex[:6]}"
+    op = _model_entity_op(eid, model_id, title=record.title, licence=record.licence,
+                          attribution=record.attribution, creator=record.creator, tris=record.tris,
+                          source="poly.pizza", bbox_min=record.bbox_min, bbox_max=record.bbox_max,
+                          pos=req.position or [0.0, 0.0, -3.0], size_m=req.size_m, placement=req.placement)
+    await _broadcast({"type": "patch", "patch": store.apply_patch([op], origin="asset")})
+    return {"ok": True, "id": eid, "image_id": model_id, "title": record.title}
 
 
 class PlaceCachedAssetRequest(BaseModel):
@@ -4222,6 +4269,8 @@ class PlaceCachedAssetRequest(BaseModel):
 async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
     """Place a MODEL already in the library by id — the reuse counterpart to place_asset (no web
     fetch). Images reuse place_image; skyboxes reuse set_skybox/set_grounded_skybox."""
+    if req.id.startswith("polypizza:"):
+        return await _place_from_collection(req)
     rec = library.get(req.id)
     if rec is None or not _asset_in_agent_scope(rec):        # hard agent wall (cross-agent id → "not found")
         return {"ok": False, "error": f"no asset {req.id!r} in the library"}

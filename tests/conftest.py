@@ -80,6 +80,8 @@ class FakeOpenAIImageGenerator:
 class FakeAssetResolver:
     """Stand-in for AssetResolver: returns a fixed record, or raises, with no network/disk."""
 
+    local = None                       # no Poly Pizza collection (tests that want one use the real resolver)
+
     def __init__(self, record: AssetRecord | None = None, error: Exception | None = None):
         self._record = record
         self._error = error

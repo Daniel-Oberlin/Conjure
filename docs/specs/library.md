@@ -189,7 +189,7 @@ Every **server** path that procures bytes catalogs them through the same registr
 | Path | Enters via |
 |---|---|
 | image / skybox generation | `_store_image` |
-| 3D model fetch | `AssetResolver.resolve` (Poly Pizza) |
+| 3D model fetch | `AssetResolver.resolve` — the local Poly Pizza collection, then Poly Pizza (§3a) |
 | files from disk | `POST /library/import` ← `conjure-import` CLI, handlers in `importer.py` |
 | a retargeted clip | `register_asset` ← `POST /figure/clip` |
 
@@ -203,6 +203,47 @@ lazily), so it is unit-testable alone and reusable by any future scanner.
 
 **Visibility is inherited, not chosen.** A new asset takes the live session's `public` flag
 (`_inherit_visibility`, `server.py:1350`) and never overwrites a visibility the owner set later.
+
+### 3a. The Poly Pizza collection — models used in place
+
+Since November 2026 Poly Pizza's file host sits behind Cloudflare's Bot Fight Mode, which on their free
+tier cannot exempt API users (the owner, 2026-11-17), so every automated download is refused; its search
+endpoint also fails on many queries. Models are therefore downloaded **by hand** into one folder —
+`poly_pizza_dir`, env `CONJURE_POLY_PIZZA_DIR`, default `assets/polypizza` beside the checkout — and used
+**in place**. The folder is not imported: a model enters the cache and this catalog only when it is first
+placed, and then only that one model (`LocalCollection` in `assets.py`).
+
+**What it reads.** Loose `.glb` files named as Poly Pizza names its downloads (`<title> by <creator> -
+<id>.glb`), and pack zips whose `.glb` members are named by title (`Beagle.glb`; a repeated title carries a
+10-character id suffix, `Bird-h5IzAUdltz.glb`). Anything else — an OBJ-only zip, a stray file — is ignored.
+The folder is **rescanned whenever its listing changes** (names, sizes, mtimes), so adding a pack, adding a
+model or replacing a file needs no restart; a replaced file is re-extracted, because its cache key carries
+the file's mtime. Removing a file stops it being found; a model already placed stays in the cache.
+
+**Resolution order** (`AssetResolver.resolve`):
+
+1. **A name match in the collection**, no network. Exact title, then the query inside a title ("couch" →
+   "Couch Medium"), then a title inside the query ("a red sports car" → "Sports Car"); more shared words,
+   then a shorter title, wins. **Equal matches are chosen at random each time** — four packs each hold a
+   "Cow".
+2. **Poly Pizza's search as a synonym bridge** — the first result the collection holds, by id or exact
+   title ("dog" → a Beagle you have).
+3. The top result's earlier download, if cached; else **a download, expected to be refused** — the error
+   then says what is missing and to download it by hand.
+
+**One search, not two catalogues.** `POST /library/search` (the director's `search_library`) answers from
+the catalog as before and, for a text query of kind `model` or no kind, appends `collection`: name matches
+from the folder not yet imported, ids `polypizza:<file>[#<member>]`, equal matches in random order. A
+collection model already extracted is skipped there — it is a library asset, and is listed once, as that.
+`collection_packs` summarises packs whose *name* matches ("animals" → Animal Kit, 25 models: Beagle, Bear,
+…), which answers "what animals do I have?" where no model's name would. With no library hit, the tier
+comes from the collection: `strong` for an exact title, else `weak`. `place_cached_asset` takes a
+`polypizza:` id, extracts and catalogs that model, and places it — from then on it is an ordinary asset.
+
+**Credit.** A loose file names its creator and Poly Pizza id, so it is credited `"Tree" by Marc Solà,
+https://poly.pizza/m/<id>`. A pack file names neither creator nor licence, so it is credited to its pack
+(`"Beagle" from the Animal Kit pack on Poly Pizza`) and the licence is left **blank rather than guessed**.
+A model reached through step 2 takes the search result's real creator and licence.
 
 ### Supersession — what happens when the same thing arrives with new bytes
 
