@@ -203,7 +203,7 @@
    * session, which is what made a six-second wait into three attempts.
    *
    * @param {string} stat  `_regStat` — "loading 1/66", "void-loading 3/12", "selecting", "cov=9/57 …"
-   * @returns {{text: string, advise: boolean}}
+   * @returns {{text: string, advise: boolean, heightCm?: number}}
    */
   function relocHint(stat) {
     var s = String(stat || "");
@@ -212,6 +212,15 @@
     }
     if (/^selecting/.test(s)) {
       return { text: "Finding which space you are in…", advise: false };
+    }
+    // The room fits, but only at another floor height (SpaceSnap.heightShift). Stepping out re-localizes
+    // tracking, which is fine; what moved is the headset's floor. Re-aligning the space in the Quest's own
+    // settings is what fixed it on 2026-11-17.
+    var h = /^height ([+-]?\d+(?:\.\d+)?)m/.exec(s);
+    if (h) {
+      var cm = Math.round(Math.abs(parseFloat(h[1])) * 100);
+      return { text: "Floor height is off by " + cm + " cm\nfrom when this space was saved.\n"
+        + "Re-align it in Settings > Physical space,\nthen re-enter.", advise: false, heightCm: cm };
     }
     return { text: "Re-localizing…\nstep out of your play area and back in", advise: true };
   }

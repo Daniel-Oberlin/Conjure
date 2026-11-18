@@ -350,6 +350,13 @@ constellations (`SpaceSnap.selectSpace` → the coverage vote of §7 in
 match runs client-side deliberately: it reuses the same tested matcher registration uses, rather than a
 second Python implementation.
 
+**A candidate that fits only at another floor height is not "no match".** Before committing no-match the
+client asks `SpaceSnap.heightMismatch` whether any candidate would lock with the capture shifted vertically
+([`spaces-geometry.md`](./spaces-geometry.md) §4.1.1). If one would, it is a known room whose floor height
+moved — committing no-match would mint a duplicate of it (`space-2`, 2026-11-17). The client holds instead,
+logs `[sel] capture matches <owner>/<space> only at a floor … m off` (and `space.height` in the geometry
+log), and shows the floor-height hint. Selection's patience still applies (§4.0b of the geometry spec).
+
 ### 6.1 What `/space/select` does
 
 `select_space` (`server.py:2355`) branches on whether the active space is already **claimed**:

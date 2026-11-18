@@ -2411,7 +2411,8 @@
       },
       _relocalize: function (on) {
         // A low-frequency, useful signal: tracking lost its lock (passthrough fallback shown) / recovered.
-        debugLog("track", on ? "lost lock — showing passthrough + hint" : "re-locked — restoring world");
+        debugLog("track", on ? "lost lock — showing passthrough + hint"
+          + (/^height /.test(this._regStat || "") ? " (" + this._regStat + ")" : "") : "re-locked — restoring world");
         // Into the geometry log too: losing and regaining the lock brackets the window in which ids can
         // churn and planes can re-fit, so it is the context every churn line is read against.
         geoLog("track.lock", { lost: !!on, stat: this._regStat || undefined, ref: this._ref.length });
@@ -3092,8 +3093,18 @@
           var pick = window.SpaceSnap.selectSpace(THREE, cur, pendingSelect.candidates, window.CONJURE_REG);
           if (pick) { commitSelect({ matched: true, owner: pick.owner, name: pick.name }); return; }
           pendingSelect.tries++;
+          // No candidate fits — but one may fit at another floor height (SpaceSnap.heightShift). That is a
+          // known room with a moved floor, not somewhere new: committing "no match" would mint a duplicate
+          // of it (space-2, 2026-11-17). Hold instead, and say why in the hint.
+          var hmis = window.SpaceSnap.heightMismatch(THREE, cur, pendingSelect.candidates, window.CONJURE_REG);
+          if (hmis && !pendingSelect.height) {
+            geoLog("space.height", { owner: hmis.owner, name: hmis.name, dy: +hmis.dy.toFixed(3), stat: hmis.stat });
+            debugLog("sel", "capture matches " + hmis.owner + "/" + hmis.name + " only at a floor " + hmis.dy.toFixed(2)
+              + " m off — NOT minting a new space; re-align in Settings > Physical space", true);
+          }
+          pendingSelect.height = hmis;
           var nWalls = cur.filter(function (c) { return c.orient === "vertical"; }).length;
-          if (nWalls >= ROOM_MIN.walls && pendingSelect.tries >= 3) { commitSelect({ matched: false }); return; }
+          if (!hmis && nWalls >= ROOM_MIN.walls && pendingSelect.tries >= 3) { commitSelect({ matched: false }); return; }
           // else undecided — fall through and keep rendering the booted world until the capture fills in
         }
 
@@ -3110,8 +3121,12 @@
         if (selGate === "hold") {
           if (!this._selecting) geoLog("space.selecting", { planes: cur.length });
           this._selecting = (this._selecting || 0) + 1;
-          this._regStat = "selecting";
-          this.lastPost = time - RETRY_MS; return;          // no _markLost: we are not lost, we are looking
+          var hsel = pendingSelect && pendingSelect.height;
+          this._regStat = hsel ? hsel.stat : "selecting";
+          // Not lost, looking — unless what we found is a known room at the wrong floor height: that will
+          // not resolve by waiting, so raise the hint that says so.
+          if (hsel) this._markLost(time);
+          this.lastPost = time - RETRY_MS; return;
         }
         if (selGate === "forced") {
           // A forced pass is selection giving up, not selection succeeding. Remembered so the irreversible

@@ -467,6 +467,18 @@ restarts the session, which is how a six-second wait became three attempts (§4.
 wording; the load gate says the room is being restored; the selection gate says it is working out which
 space you are in. Neither of those asks for anything.
 
+**A fourth cause: the floor moved, not the room** (2026-11-17). The headset's floor height is not constant
+between sessions — one room's floors read +0.24, −0.24, −0.34, −0.05 and +0.20 m across five sessions.
+Registration solves yaw and x/z only and scores inliers in 3-D within `INLIER_M` (0.4 m), so a session whose
+floor sits more than ~0.4 m from where the space was recorded scores ~0 against its *own* room (2/64 that
+day). When a lock fails, `register` therefore asks one more question — `SpaceSnap.heightShift`: vote a
+vertical offset from floor↔floor and ceiling↔ceiling pairs (5 cm bins), and re-run the level solve with the
+capture shifted by it. If that locks and the offset is ≥ 0.15 m, the result carries `heightShift` and its
+`stat` gains a `height ±N.NNm` prefix; the lock **still fails** — detection only. The hint then says the
+floor height is off by N cm and to re-align in Settings > Physical space (what fixed it on the day), not to
+step out. Solving height inside registration is backlogged: §10.2's detector rests on registration never
+touching height.
+
 Two rules make that trigger reliable (`WM.relocStep`):
 
 - **Recovery needs consecutive good captures**, not one. A single lucky capture between failures used to

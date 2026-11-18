@@ -115,13 +115,96 @@
    * @param {RefSurface[]} cur   the newly detected planes (current refSpace)
    * @param {RefSurface[]} ref   the persistent reference constellation
    * @param {RegOpts} [opts]     robustness overrides (default: the built-in constants)
-   * @returns {{Tmat: Mat4|null, stat: string, cov: number, inl?: number,
+   * @returns {{Tmat: Mat4|null, stat: string, cov: number, inl?: number, heightShift?: number,
    *            residuals?: {id: string|undefined, res: number, dist: number}[]}}
    *   `residuals` (winning transform only): per covered plane, its distance from the matched reference
    *   after the fit (`res`, m) + that reference's horizontal distance from the frame origin (`dist`, m).
    *   Diagnostic only — tells whether misalignment is uniform or grows with distance (a non-rigid map).
    */
   function register(THREE, cur, ref, opts) {
+    var r = registerLevel(THREE, cur, ref, opts);
+    if (r.Tmat) return r;
+    // A failed lock gets ONE question asked of it: would the room fit if the floor were somewhere else?
+    // Detection only — the lock still fails. See heightShift for why this is not folded into the solve.
+    var hs = heightShift(THREE, cur, ref, opts);
+    if (hs) {
+      r.heightShift = hs.dy;
+      r.stat = "height " + (hs.dy >= 0 ? "+" : "") + hs.dy.toFixed(2) + "m " + r.stat;
+    }
+    return r;
+  }
+
+  // The headset's floor height is not a constant. Measured: the floors of ONE room read +0.24, −0.24,
+  // −0.34, −0.05 and +0.20 m across sessions (2026-10-20 … 11-17). `registerLevel` solves yaw and x/z only
+  // and scores within INLIER_M (0.4 m) in 3-D, so a session whose floor sits more than ~0.4 m from where
+  // the space was recorded scores ~0 coverage against its OWN room. On 2026-11-17 that read 2/64: the
+  // client concluded "somewhere new", minted a duplicate space, and switching back showed the lost-lock
+  // hint — whose advice (step out and back in) cannot help, because tracking was never the problem.
+  // Re-aligning in Settings → Physical space is what fixed it.
+  //
+  // So this answers ONE question — "would this capture lock if shifted vertically by dy?" — and returns dy
+  // when it would. It does not apply the shift: solving height in registration is backlogged
+  // (docs/backlogs/spaces-geometry.md) because the floating-rooms detector (§10.2) rests on registration
+  // never touching height. dy is voted from floor↔floor and ceiling↔ceiling pairs: a vertical shift moves
+  // every pair by the same amount, so true pairs pile into one 5 cm bin. Below HEIGHT_MIN the ordinary
+  // inlier radius already absorbs the shift, so a failure there has some other cause and is not blamed on it.
+  /**
+   * @param {THREE_NS} THREE
+   * @param {RefSurface[]} cur
+   * @param {RefSurface[]} ref
+   * @param {RegOpts} [opts]
+   * @returns {{dy: number, stat: string}|null}  dy = how far to raise the capture to fit (m)
+   */
+  function heightShift(THREE, cur, ref, opts) {
+    var HEIGHT_MIN = 0.15, BIN = 0.05;
+    /** @type {Record<string, number[]>} */
+    var hist = {};
+    cur.forEach(function (c) {
+      if (c.orient !== "horizontal" || (c.sem !== "floor" && c.sem !== "ceiling")) return;
+      ref.forEach(function (r) {
+        if (r.orient !== "horizontal" || r.sem !== c.sem) return;
+        var d = r.pos.y - c.pos.y, k = Math.round(d / BIN);
+        (hist[k] = hist[k] || []).push(d);
+      });
+    });
+    var keys = Object.keys(hist);
+    if (!keys.length) return null;
+    keys.sort(function (a, b) { return hist[b].length - hist[a].length; });
+    var peak = hist[keys[0]], dy = peak.reduce(function (s, v) { return s + v; }, 0) / peak.length;
+    if (Math.abs(dy) < HEIGHT_MIN) return null;
+    var shifted = cur.map(function (c) {
+      var o = Object.assign({}, c); o.pos = c.pos.clone(); o.pos.y += dy; return o;
+    });
+    var r = registerLevel(THREE, shifted, ref, opts);
+    return r.Tmat ? { dy: dy, stat: r.stat } : null;
+  }
+
+  // Space selection's height check: the first candidate this capture WOULD match but for a vertical shift.
+  // Asked only when selectSpace found nothing — the case that otherwise mints a duplicate of a known room.
+  /**
+   * @param {THREE_NS} THREE
+   * @param {RefSurface[]} cur
+   * @param {{owner: string, name: string, surfaces: SurfaceEntity[]}[]} candidates
+   * @param {RegOpts} [opts]
+   * @returns {{owner: string, name: string, dy: number, stat: string}|null}
+   */
+  function heightMismatch(THREE, cur, candidates, opts) {
+    for (var i = 0; i < (candidates || []).length; i++) {
+      var cand = candidates[i];
+      var ref = (cand.surfaces || []).map(function (e) { return surfaceToRef(THREE, e); });
+      var r = register(THREE, cur, ref, opts);
+      if (r.heightShift != null) return { owner: cand.owner, name: cand.name, dy: r.heightShift, stat: r.stat };
+    }
+    return null;
+  }
+
+  /**
+   * The level solve: yaw + x/z only (see register, which wraps it with the height check).
+   * @param {THREE_NS} THREE  @param {RefSurface[]} cur  @param {RefSurface[]} ref  @param {RegOpts} [opts]
+   * @returns {{Tmat: Mat4|null, stat: string, cov: number, inl?: number, heightShift?: number,
+   *            residuals?: {id: string|undefined, res: number, dist: number}[]}}
+   */
+  function registerLevel(THREE, cur, ref, opts) {
     var UP = new THREE.Vector3(0, 1, 0);
     if (ref.length < 3) return { Tmat: null, stat: "ref<3", cov: 0 };
     /** @param {number} a  @returns {number} */
@@ -1779,6 +1862,7 @@
            heightCensus: heightCensus, explainNoMatch: explainNoMatch, explainInsetNoMatch: explainInsetNoMatch, explainInsetMint: explainInsetMint, sameDoorway: sameDoorway, matchCost: matchCost, assignRefs: assignRefs, floorUnder: floorUnder, segmentRooms: segmentRooms, roomLinks: roomLinks, roomResiduals: roomResiduals, refineRefs: refineRefs,
            polyFit: polyFit, planeCorners: planeCorners,
            canonicalFrame: canonicalFrame, surfaceToRef: surfaceToRef, selectSpace: selectSpace,
+           heightShift: heightShift, heightMismatch: heightMismatch,
            matchWall: matchWall, matchInset: matchInset, dupInsetIds: dupInsetIds,
            wallCorners: wallCorners, authorInsetAnchor: authorInsetAnchor, reconstructInset: reconstructInset,
            insetAlong: insetAlong, hostWallFor: hostWallFor,

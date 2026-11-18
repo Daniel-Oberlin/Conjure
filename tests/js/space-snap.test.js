@@ -1980,3 +1980,42 @@ test("roomResiduals: a room with too few walls reports no yaw rather than a conf
   assert.equal(r.dyaw, null, "one wall cannot tell a rotated room from a mismeasured one");
   assert.equal(r.yawOk, false);
 });
+
+// --- heightShift: the floor moved, not the room (2026-11-17). The headset's floor height drifts between
+// sessions (+0.24 … −0.34 m for one room); past the 0.4 m inlier radius the room scored 2/64 against its
+// own space, a duplicate space was minted, and the lost-lock hint advised stepping out — which cannot help.
+// register still FAILS (detection only; solving height is backlogged) but names the cause. ---
+const raised = (cur, dy) => cur.map((c) => Object.assign({}, c, { pos: c.pos.clone().add(new THREE.Vector3(0, dy, 0)) }));
+
+test("register names a floor-height shift it cannot absorb, and still refuses the lock", () => {
+  const ref = rectRoom();
+  const cur = raised(asCapture(ref, 176, new THREE.Vector3(1.2, 0, -0.8)), 0.53);   // flipped AND raised
+  const reg = RS.register(THREE, cur, ref);
+  assert.strictEqual(reg.Tmat, null, "detection only — the lock is not taken at a wrong height");
+  assert.ok(Math.abs(reg.heightShift + 0.53) < 0.03, "dy = how far to raise the capture: " + reg.heightShift);
+  assert.match(reg.stat, /^height -0\.5\dm /);
+});
+
+test("register: a small height drift still locks, and an unrelated room is not blamed on height", () => {
+  const ref = rectRoom();
+  const small = RS.register(THREE, raised(asCapture(ref, 40, new THREE.Vector3(0.3, 0, 0.2)), 0.1), ref);
+  assert.ok(small.Tmat, "0.1 m is inside the inlier radius — an ordinary lock");
+  assert.strictEqual(small.heightShift, undefined);
+  const other = RS.register(THREE, raised(asCapture(roomBsmall(), 0, new THREE.Vector3(0, 0, 0)), 0.6), ref);
+  assert.strictEqual(other.Tmat, null);
+  assert.strictEqual(other.heightShift, undefined, "a room that fits at NO height is just a different room");
+});
+
+test("heightMismatch finds the known space a raised capture belongs to", () => {
+  const floor = { sem: "floor", pos: new THREE.Vector3(0, 0, 0), ext: [4, 3], nyaw: 0, orient: "horizontal" };
+  const cur = raised(asCapture(roomA().concat([floor]), 160, new THREE.Vector3(2.5, 0, -1.0)), -0.6);
+  const home = asEntities(roomA()).concat([{ id: "floor_9", meta: { real: true, semantic: "floor" },
+    transform: { position: [0, 0, 0], rotation: [-90, 0, 0] }, components: { surface: { extent: [4, 3] } } }]);
+  const cands = [{ owner: "bob", name: "b", surfaces: asEntities(roomBsmall()) },
+                 { owner: "daniel", name: "home", surfaces: home }];
+  assert.strictEqual(RS.selectSpace(THREE, cur, cands), null, "no candidate locks — this used to mint a space");
+  const hm = RS.heightMismatch(THREE, cur, cands);
+  assert.ok(hm, "but one fits at another floor height");
+  assert.strictEqual(hm.owner + "/" + hm.name, "daniel/home");
+  assert.ok(Math.abs(hm.dy - 0.6) < 0.03, "dy " + hm.dy);
+});
