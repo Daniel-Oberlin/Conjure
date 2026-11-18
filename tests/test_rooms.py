@@ -5,7 +5,7 @@ covers it) but "does a room keep being the same room". A wrong answer here does 
 migrates a name the user typed onto a different physical room, and there is no recovering it.
 """
 
-from conjure.rooms import display_name, resolve_rooms
+from conjure.rooms import display_name, prune_phantoms, resolve_rooms
 
 
 def _g(floor, ids, ceiling=None, boundary=None):
@@ -158,3 +158,16 @@ def test_a_boundary_follows_the_room_identity_not_the_floor_id():
     assert rooms[ids[0]]["name"] == "kitchen"
     assert rooms[ids[0]]["boundary"]["size"] == [4.2, 3.1]
     assert rooms[ids[0]]["floor"] == "f_new"
+
+
+def test_a_room_that_never_was_is_pruned_and_a_real_one_never_is():
+    """2026-11-17: every space carried `room_1`–`room_3`, minted from provisional floors on the first
+    capture and never labelled onto anything. Only rooms that NOTHING can resolve to again go."""
+    rooms = {"room_1": {"n": 1, "floor": "real_floor_1"},               # phantom: unnamed, unlabelled, floor gone
+             "room_2": {"n": 2, "floor": "gone", "name": "attic"},      # named → kept, whatever else
+             "room_3": {"n": 3, "floor": "gone"},                       # labelled → kept (tier 1 reaches it)
+             "room_4": {"n": 4, "floor": "f_a"}}                        # floor in the seed → kept
+    keep, dropped = prune_phantoms(rooms, {"f_a", "w1", "w9"}, {"w9": "room_3", "f_a": "room_4"})
+    assert dropped == ["room_1"]
+    assert set(keep) == {"room_2", "room_3", "room_4"}
+    assert keep["room_4"]["n"] == 4, "survivors keep their numbers — no compaction"

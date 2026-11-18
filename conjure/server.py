@@ -49,7 +49,7 @@ from . import poses
 from .figures import FRAME_REV, POSE_AXES, RIG_SIG_REV, clean_pose, resolve_pose
 from .library import AssetLibrary
 from .llm import build_image_generators, select_generator, vendor_for
-from .rooms import display_name as rooms_display_name, resolve_rooms, room_id_for
+from .rooms import display_name as rooms_display_name, prune_phantoms, resolve_rooms, room_id_for
 from .plane_anchor import author_anchor, solve_anchor
 from .schema import Patch
 from . import config, namespace
@@ -3878,8 +3878,11 @@ async def ingest_capture(req: CaptureUpdate) -> dict:
         reals = {e["id"]: e for e in store.doc["entities"] if (e.get("meta") or {}).get("real")}
         prev = {eid: (e.get("meta") or {}).get("room") for eid, e in reals.items()}
         prev = {k: v for k, v in prev.items() if v}
+        # A room is defined by a floor the SEED has. The first capture after entering AR segments
+        # provisional floors while identity is still held (nothing reaches the seed); resolving those
+        # minted `room_1`–`room_3` in every space, so the real rooms began at 4. See `prune_phantoms`.
         groups = [{"floor": g.get("floor"), "ceiling": g.get("ceiling"), "ids": list(g.get("ids") or [])}
-                  for g in req.rooms]
+                  for g in req.rooms if g.get("floor") in reals]
         assigned, rooms_rec = resolve_rooms(groups, rooms_rec, prev)
         label: dict[str, str] = {}
         for rid, g in zip(assigned, groups):
@@ -3904,6 +3907,10 @@ async def ingest_capture(req: CaptureUpdate) -> dict:
             store.apply_patch(room_ops, origin="space")
             _slog("space", f"rooms: {len(groups)} group(s) → {', '.join(sorted(set(assigned)))} "
                           f"({len(room_ops)} label op(s))")
+        # Labels as they now stand — the previous ones, overwritten by this capture's.
+        rooms_rec, dropped = prune_phantoms(rooms_rec, set(reals), {**prev, **label})
+        if dropped:
+            _slog("space", f"rooms: dropped {', '.join(sorted(dropped))} — unnamed, no surfaces, floor gone")
 
     # Only these reach clients: room-activation/boundary env + on-surface image re-anchors (content, which
     # clients DO render). Geometry is theirs to render locally.

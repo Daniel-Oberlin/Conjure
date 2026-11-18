@@ -83,6 +83,13 @@ previous membership, then the recorded defining floor, then mint. Overlap outran
 room is ~20 surfaces and survives its own floor being re-minted, where keying on the floor alone would
 lose the name with it. Ordinals are monotonic and never reused.
 
+**A room needs a floor the seed has.** Groups whose floor is not in the seed are ignored: the first capture
+after entering AR is held (no surfaces reach the seed) yet still carries a segmentation of *provisional*
+floors, and resolving those minted `room_1`–`room_3` in every space, so the real rooms were numbered from 4.
+Records already written that way are dropped on the next capture by `prune_phantoms` — only a room that is
+**unnamed, labelled onto no surface, and whose floor is gone**, i.e. one neither tier could ever resolve to
+again. Survivors keep their numbers.
+
 **The name is stored once**, on the room record; surfaces carry only the id. The default display name is
 **derived, never stored** — `room #2` until someone sets one — so a rename leaves no stale copy. Naming
 is a space write, so it is **space-owner-gated**: a guest building in your space cannot rename your
