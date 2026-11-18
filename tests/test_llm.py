@@ -25,7 +25,7 @@ from conjure.llm import (
 def _settings(**overrides) -> Settings:
     base = dict(
         stt="whisper", tts="kokoro", llm="claude", llm_model="claude-x", gemini_model="gemini-x",
-        image_provider="gemini", image_model="im", skybox_model="sm", skybox_size="4K",
+        image_provider="gemini", image_model="im", skybox_model="sm", skybox_size="4K", poly_pizza_dir="",
         anthropic_api_key=None, poly_pizza_api_key=None, openai_api_key=None, google_api_key=None,
         host="0.0.0.0", port=8080, world_url="http://localhost:8080",
     )

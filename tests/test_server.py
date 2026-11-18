@@ -517,6 +517,44 @@ def test_place_cached_asset_reuses_a_model(srv, client, tmp_path):
     assert ent["transform"]["scale"] == [0.5, 0.5, 0.5]          # bbox 4 tall, size_m 2 → scale 0.5
 
 
+def _poly_collection(root):
+    import zipfile
+    root.mkdir()
+    with zipfile.ZipFile(root / "Animal Kit.undefined-glb.zip", "w") as zf:
+        zf.writestr("Beagle.glb", b"glTF" + bytes(40) + b"beagle")
+        zf.writestr("Cow.glb", b"glTF" + bytes(40) + b"cow")
+    (root / "Tree by Quaternius - 2paAm1ja4w.glb").write_bytes(b"glTF" + bytes(40) + b"tree")
+    return root
+
+
+def test_one_library_search_also_covers_the_poly_pizza_collection(srv, client, tmp_path):
+    """docs/specs/library.md §3a — one search, so the assistant never chooses between two catalogues."""
+    from conjure.assets import AssetResolver
+    srv.resolver = AssetResolver(None, srv.ASSET_CACHE, local_dir=_poly_collection(tmp_path / "pp"))
+    r = client.post("/library/search", json={"query": "beagle"}).json()
+    assert [c["label"] for c in r["collection"]] == ["Beagle"]
+    assert r["collection"][0]["id"] == "polypizza:Animal Kit.undefined-glb.zip#Beagle.glb"
+    assert r["confidence_tier"] == "strong", "an exact name in the collection is safe to place"
+    animals = client.post("/library/search", json={"query": "animals"}).json()["collection_packs"]
+    assert animals == [{"pack": "Animal Kit", "count": 2, "titles": ["Beagle", "Cow"]}]
+    assert "collection" not in client.post("/library/search", json={"query": "beagle", "kind": "image"}).json()
+
+
+def test_a_collection_model_is_placed_by_id_and_is_a_library_asset_from_then_on(srv, client, tmp_path):
+    from conjure.assets import AssetResolver
+    srv.resolver = AssetResolver(None, srv.ASSET_CACHE, local_dir=_poly_collection(tmp_path / "pp"))
+    cid = client.post("/library/search", json={"query": "beagle"}).json()["collection"][0]["id"]
+    r = client.post("/place_cached_asset", json={"id": cid, "size_m": 0.5}).json()
+    assert r["ok"] is True and r["title"] == "Beagle"
+    ent = next(e for e in _entities(client) if e["id"] == r["id"])
+    assert ent["components"]["gltf-model"] == f"/assets/{r['image_id']}"
+    again = client.post("/library/search", json={"query": "beagle"}).json()
+    assert r["image_id"] in [c["id"] for c in again["candidates"]], "now in the library"
+    assert again["collection"] == [], "and listed once, as the library asset — not twice"
+    gone = client.post("/place_cached_asset", json={"id": "polypizza:nope.glb"}).json()
+    assert gone["ok"] is False and "collection" in gone["error"]
+
+
 # ---- figures: a rigged model is placed at LIFE SIZE, not normalized -----------------------------
 # Field finding 2026-09-01 (docs/backlogs/figures.md). Normalizing every human to TARGET_SIZE_M erases
 # the one dimension that carries meaning — a child, an adult and a giant all arrive the same height.

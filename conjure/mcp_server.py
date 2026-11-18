@@ -1053,7 +1053,9 @@ async def place_asset(
         trees, anything resting on the ground. 'free' keeps it exactly at `position`, so use it for
         anything floating or up high (a hanging lamp, a bird, a cloud, an object on a shelf/table).
 
-    A placeholder appears immediately; the real model (scaled to size_m) swaps in once downloaded.
+    Models come from the user's Poly Pizza collection (by name, a random one among equals); Poly Pizza
+    itself refuses automated downloads, so a model the collection lacks usually can't be fetched — say
+    so rather than retrying. A placeholder appears immediately; the real model swaps in once found.
     """
     body: dict[str, Any] = {"query": query, "size_m": size_m, "placement": placement}
     if position is not None:
@@ -1110,17 +1112,33 @@ async def search_library(
     reuse), 'weak' (only fuzzy/semantic hits — reuse only if clearly right, else offer or generate),
     'none' (nothing — generate/fetch fresh). Then reuse: a model via place_cached_asset(id), an image
     via place_image(image_id), a skybox via set_skybox(image_id)/set_grounded_skybox(image_id).
+
+    Models also come from the user's Poly Pizza COLLECTION — models downloaded but not yet used, listed
+    after the library hits with ids 'polypizza:…'. Place one with place_cached_asset(id) exactly like a
+    library model. Packs whose name matches (e.g. 'animals') are summarised, which answers "what animals
+    do I have?". Several equally good matches (four 'Cow's) are listed in a random order — pick the first.
     """
     out = await _post("/library/search", _body(query=query, image_id=image_id, kind=kind, scope=_scope()))
     if not out.get("ok"):
         return f"Library search failed: {_reason(out)}."
     cands, tier = out.get("candidates", []), out.get("confidence_tier", "none")
-    if not cands:
+    coll, packs = out.get("collection") or [], out.get("collection_packs") or []
+    if not cands and not coll and not packs:
         return "No matching asset in the library (confidence: none) — generate or fetch a new one."
-    lines = [f"- {c['id']} ({c['kind']}, match={c['match']}): "
-             f"{c.get('label') or c.get('prompt') or c.get('query') or '—'}{_asset_note(c)}"
-             for c in cands[:8]]
-    return f"Library matches (confidence: {tier}):\n" + "\n".join(lines)
+    parts = [f"Matches (confidence: {tier}):"]
+    if cands:
+        parts.append("In the library:")
+        parts += [f"- {c['id']} ({c['kind']}, match={c['match']}): "
+                  f"{c.get('label') or c.get('prompt') or c.get('query') or '—'}{_asset_note(c)}"
+                  for c in cands[:8]]
+    if coll:
+        parts.append("In the Poly Pizza collection (not used yet):")
+        parts += [f"- {c['id']}: {c['label']}" + (f" [{c['pack']} pack]" if c.get("pack") else "")
+                  + (f" [by {c['creator']}]" if c.get("creator") else "") for c in coll[:8]]
+    for p in packs[:4]:
+        names = ", ".join(p["titles"][:30]) + (", …" if len(p["titles"]) > 30 else "")
+        parts.append(f"Pack '{p['pack']}' ({p['count']} models): {names}")
+    return "\n".join(parts)
 
 
 @mcp.tool()
@@ -1131,7 +1149,8 @@ async def place_cached_asset(
     name: Optional[str] = None,
     placement: Literal["grounded", "free"] = "grounded",
 ) -> str:
-    """Place a MODEL already in the library by id (from search_library) — reuse, no web fetch.
+    """Place a MODEL already in the library by id (from search_library) — reuse, no web fetch. Also takes
+    a 'polypizza:…' id from the collection, which is imported into the library as it is placed.
 
     For reusing images use place_image(image_id); for skyboxes set_skybox/set_grounded_skybox. size_m:
     real-world largest dimension in metres (as in place_asset); position: [x,y,z]. placement: 'grounded'

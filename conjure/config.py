@@ -333,6 +333,7 @@ class Settings:
     image_model: str
     skybox_model: str
     skybox_size: str
+    poly_pizza_dir: str             # hand-downloaded Poly Pizza models, used in place (docs/specs/library.md §3a)
     # secrets
     anthropic_api_key: str | None
     poly_pizza_api_key: str | None
@@ -634,6 +635,8 @@ def get_settings() -> Settings:
         # Skyboxes wrap the whole view, so they use a higher-res model (Nano Banana Pro @ 4K).
         skybox_model=os.environ.get("CONJURE_SKYBOX_MODEL", "gemini-3-pro-image"),
         skybox_size=os.environ.get("CONJURE_SKYBOX_SIZE", "4K"),
+        # Default: an `assets/polypizza` folder beside the checkout, where Daniel keeps his collection.
+        poly_pizza_dir=os.environ.get("CONJURE_POLY_PIZZA_DIR", str(ROOT.parent / "assets" / "polypizza")),
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
         poly_pizza_api_key=os.environ.get("POLY_PIZZA_API_KEY") or None,
         openai_api_key=os.environ.get("OPENAI_API_KEY") or None,

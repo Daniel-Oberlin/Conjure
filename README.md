@@ -113,7 +113,12 @@ wall", "wrap me in a misty forest", "make the painting nighttime".*
 | `GOOGLE_API_KEY` | director "Gemini" + the default image generator | Gemini; billing |
 | `OPENAI_API_KEY` | director "Chat" + the OpenAI image generator (text/typography, transparency) | billing |
 | `XAI_API_KEY` | director "Grok" + the Grok image generator (generate-only) | billing |
-| `POLY_PIZZA_API_KEY` | `place_asset` (3D models) | free, no billing |
+| `POLY_PIZZA_API_KEY` | `place_asset` (3D models) — search only now; see below | free, no billing |
+
+**3D models come from a folder you fill by hand.** Poly Pizza refuses automated downloads, so download
+models and packs from poly.pizza in a browser into `assets/polypizza` beside the checkout (or set
+`CONJURE_POLY_PIZZA_DIR`): loose `.glb` files and pack zips, used in place — only a model you place is
+extracted. New files are picked up without a restart. See [`docs/specs/library.md`](docs/specs/library.md) §3a.
 
 At least one of `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY` is required
 for the director (set more to grow the roster; `GOOGLE`/`OPENAI`/`XAI` also enable image generators).
