@@ -209,6 +209,20 @@ If `--list` reports **"NO config.json"**, the capture is geometry only — the l
 registry is what is missing, and it prints the URL to fetch plus a reminder that `config.json` names the
 scene file and the textures you also need.
 
+### A Unity app's models
+
+A Unity build (an extracted APK's `assets/bin/Data`) converts the same way, one GLB per thing — see
+[`specs/captures.md`](./specs/captures.md) §6:
+
+```bash
+pip install -e ".[unity]"
+python scripts/unity_rebuild.py <Data dir> --list --under Ships
+python scripts/unity_rebuild.py <Data dir> --out temp/unity --under Ships
+node scripts/glb_check.mjs temp/unity/*.glb                            # loads in three.js? how big?
+```
+
+Check the bounding box before importing: a build may place things at real-world size.
+
 ### Converting whole THINGS instead of whole files
 
 A container is a FILE, one artist's export; a *thing* is what the scene places. They disagree in both

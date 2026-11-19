@@ -46,6 +46,11 @@ vision = [
     "conjure[embed]",
     "torchvision>=0.17",
 ]
+# Unity player builds -> GLB (conjure/unity.py, scripts/unity_rebuild.py; docs/specs/captures.md §6).
+# Only the converter imports it, so the server never needs it.
+unity = [
+    "UnityPy>=1.25,<2",
+]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
