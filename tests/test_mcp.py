@@ -510,7 +510,8 @@ async def test_set_caller_threads_the_speaker_into_requests(monkeypatch):
     monkeypatch.setattr(m, "BASE", "http://world")
     monkeypatch.setattr(m, "_CALLER", {"user": "daniel", "scope": "daniel/agents/builder"})
     await _tool("set_caller")(user="guest", scope="guest/agents/builder")
-    assert m._headers() == {"X-Conjure-User": "guest", "X-Conjure-Scope": "guest/agents/builder"}
+    assert m._headers() == {"X-Conjure-User": "guest", "X-Conjure-Speaker": "guest",
+                            "X-Conjure-Scope": "guest/agents/builder"}
 
     r_post = respx.post("http://world/query_world").mock(return_value=httpx.Response(200, json={"ok": True}))
     await m._post("/query_world", {})

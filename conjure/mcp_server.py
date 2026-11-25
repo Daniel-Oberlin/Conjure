@@ -105,28 +105,40 @@ _USER = SCOPE.split("/", 1)[0]   # launch identity (fallback until the director 
 # scope). Defaults to the launch (user, scope); the director overrides it PER TURN via set_caller() so a
 # shared session attributes each turn to its actual SPEAKER — docs/specs/agents.md §8.5. Turns are
 # serialized (single floor), so a process-global caller is safe against interleaving.
-_CALLER = {"user": _USER, "scope": SCOPE}
+_CALLER = {"user": _USER, "scope": SCOPE, "actor": SCOPE}
 
 
 def _headers() -> dict[str, str]:
-    return {"X-Conjure-User": _CALLER["user"], "X-Conjure-Scope": _CALLER["scope"]}
+    """Speaker and actor, separately (docs/specs/agents.md §8.5). `X-Conjure-Scope` is the ACTOR: the write
+    gate and asset ownership read it. `X-Conjure-Speaker` is who asked; `X-Conjure-User` repeats it for
+    the routes that predate the split."""
+    return {"X-Conjure-User": _CALLER["user"], "X-Conjure-Speaker": _CALLER["user"],
+            "X-Conjure-Scope": _actor()}
 
 
 def _scope() -> str:
-    """The current caller's catalog scope (`<user>/agents/<agent>`) — the per-turn speaker set by
-    set_caller, else the launch scope. Tools pass this in request BODIES for scoped reads/writes (which
-    worlds are 'yours', asset ownership), the counterpart to the identity HEADERS from `_headers()`."""
+    """The SPEAKER's own scope (`<user>/agents/<agent>`) — set per turn by set_caller, else the launch
+    scope. Navigation and administration tools pass it in request BODIES, so "your worlds" and "your
+    sessions" always mean the speaker's own, whoever the turn's writes act for."""
     return _CALLER["scope"]
 
 
+def _actor() -> str:
+    """The ACTOR's scope — whose library a turn searches. Equal to `_scope()` unless the agent is acting
+    for everyone present in someone else's world (docs/specs/agents.md §8.5)."""
+    return _CALLER.get("actor") or _CALLER["scope"]
+
+
 @mcp.tool()
-async def set_caller(user: str, scope: str) -> str:
-    """[control — the director calls this, not the LLM] Set the identity subsequent tool calls act as: the
-    current turn's SPEAKER. Not in any agent's tool allow-list (never offered to the model) and exempt from
-    the capability gate. Lets one shared MCP server attribute each turn to whoever spoke, so the world
-    server enforces ownership/permissions per-speaker (docs/specs/agents.md §8.5)."""
+async def set_caller(user: str, scope: str, actor: str = "") -> str:
+    """[control — the director calls this, not the LLM] Set the identities subsequent tool calls carry: the
+    turn's SPEAKER (`user`, and their own `scope`) and its ACTOR — the agent scope whose rights its writes
+    use (`actor`, default = the speaker's scope). Not in any agent's tool allow-list (never offered to the
+    model) and exempt from the capability gate. Lets one shared MCP server attribute each turn to whoever
+    spoke while the world server decides what it may change (docs/specs/agents.md §8.5)."""
     _CALLER["user"] = user or _USER
     _CALLER["scope"] = scope or SCOPE
+    _CALLER["actor"] = actor or _CALLER["scope"]
     return "ok"
 
 
@@ -1118,7 +1130,7 @@ async def search_library(
     library model. Packs whose name matches (e.g. 'animals') are summarised, which answers "what animals
     do I have?". Several equally good matches (four 'Cow's) are listed in a random order — pick the first.
     """
-    out = await _post("/library/search", _body(query=query, image_id=image_id, kind=kind, scope=_scope()))
+    out = await _post("/library/search", _body(query=query, image_id=image_id, kind=kind, scope=_actor()))
     if not out.get("ok"):
         return f"Library search failed: {_reason(out)}."
     cands, tier = out.get("candidates", []), out.get("confidence_tier", "none")
@@ -1210,7 +1222,7 @@ async def query_assets(sql: str) -> str:
     created_at, last_used, use_count). Use `PRAGMA table_info(assets)` to list columns. Examples:
     "SELECT kind, COUNT(*) FROM assets GROUP BY kind"; "SELECT id, label FROM assets WHERE label IS NULL".
     """
-    out = await _post("/query_assets", _body(sql=sql, scope=_scope()))
+    out = await _post("/query_assets", _body(sql=sql, scope=_actor()))
     if not out.get("ok"):
         return f"Query failed: {_reason(out)}."
     rows = out.get("rows", [])
@@ -1294,8 +1306,12 @@ async def list_worlds() -> str:
     else:
         lines.append("You have no saved worlds yet.")
     if current and current.get("owner") != caller:    # a person visited another user's session → you're a guest
-        lines.append(f"\nYou're currently in {current['owner']}'s world '{current['name']}' "
-                     f"(shared — you can be here but can't change it; it's theirs).")
+        if _actor().split("/", 1)[0] == current.get("owner"):     # …but this turn acts for everyone present
+            lines.append(f"\nYou're currently in {current['owner']}'s world '{current['name']}'. It's "
+                         f"theirs, but you make changes here for everyone present.")
+        else:
+            lines.append(f"\nYou're currently in {current['owner']}'s world '{current['name']}' "
+                         f"(shared — you can be here but can't change it; it's theirs).")
     return "\n".join(lines)
 
 

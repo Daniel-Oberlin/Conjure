@@ -36,6 +36,7 @@ Consequential forks. Each is `OPEN` until we choose; then we record the choice a
 | 32 | Where does a TTS engine's speech-tag vocabulary live, and who sees the tags? | ✅ RESOLVED | With the listener: the voice client registers it per connection; the server prompts for it and renders per connection |
 | 33 | Audio to and from the Quest: which transport, which door, which process? | ✅ RESOLVED | Raw PCM over the page's own WebSocket, relayed by the world server to a per-connection pipeline in the voice server; AEC in the page; push-to-talk by default |
 | 34 | Who protects the seed from an early capture — a timed server window, or client evidence? | ✅ RESOLVED | Client gates on evidence (settled, fit, selection resolved), one predicate answering mint and prune separately; the 2026-07 server freeze was removed on half a rationale |
+| 35 | Who may change a shared world: per-person rights, or the agent acting for everyone? | ✅ RESOLVED | The world's agent serves everyone present by default (`serves`); a user's other agents may work in it when the host lists them (`agent <name> visit`); no delegation, no per-guest operation lists |
 
 > Numbering note: §15 appears twice (an older "Users, spaces, and a user-first namespace" section
 > predates the table row for world/space identity), and §16 has a section but no table row. External
@@ -825,3 +826,37 @@ centroid matcher whose flip fallback the spec still described as load-bearing wa
 device does not settle on a schedule); a server-side absence debounce (`bc42e50`, 2026-07-21: the server
 cannot see what the client saw, and the client owns removal confidence); and holding the *render* while
 unsettled (drawing a surface slightly out is cheap and self-correcting; forgetting one is not).
+
+### 35. Who may change a shared world: per-person rights, or the agent acting for everyone? — ✅ RESOLVED
+**Choice:** A turn has a **speaker** (who asked) and an **actor** (whose rights the write uses), set
+separately. The world's own agent **serves everyone present** by default: when a guest in a public session
+asks for something, the agent does it with the world's authority. `serves: "owner"` restores today's
+behaviour. Separately, a host agent may list **visiting agents** of the same user
+(`visiting_agents: ["builder"]`); `agent builder visit` hands the conversation to builder without moving
+the world, builder's writes are allowed there, and assets it places are imported into the host's scope.
+World and space administration (reset, capture, realign, frame, the `serve` switch) stays with the owner as
+speaker. Built 2026-11-24: [`specs/agents.md` §8.4a, §8.5, §9.4](./specs/agents.md),
+[`specs/spaces.md` §7](./specs/spaces.md), [`specs/library.md` §5a](./specs/library.md).
+
+**Why:** Two wants drove it, on 2026-11-23/24. First, a shared session should be truly shared: in a
+multi-person experience the people present talk to the agent as participants, and the agent shapes the
+world for all of them. Second, a specialist agent (the erotic one) should not have to carry the whole
+building tool surface; builder can come in and do it. Both come down to whose authority a write uses, not
+who holds the world, so one change to the write gate serves both. Making `everyone` the default reflects
+that solo use is unaffected and a private session already keeps guests out, so the switch only matters in
+a public session, where sharing is the point.
+
+**Rejected:**
+- **Delegation** (`delegate(agent, request)` from the specialist to builder): a round trip and a lossy
+  hand-off for every request, painful for extended building, and one more tool the specialist must
+  understand. Switching agents in place gives the user builder directly.
+- **Guest turns as the owner behind a per-guest allowlist** of operation groups and target tags
+  (`playable`, `own`): the agent is not a tool the guests operate; it acts on their behalf and needs no
+  finer boundary than its own tool list plus the owner-only administration paths.
+- **A per-world editors list for people**: neither want needs it. Real human co-editing remains a backlog
+  item.
+- **Letting a headset's own writes ride on `serves`**: serving everyone is the agent acting for them, so
+  it applies to agent turns (which carry an actor). A guest's grab or frame drag keeps the owner rule.
+- **Leaving the user-only check in the gate**: it already lets any of a user's agents edit any of that
+  user's worlds. Unreachable today, but the visit rule needs a full-scope check anyway.
+

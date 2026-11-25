@@ -196,6 +196,9 @@ class Director:
         self._busy = False               # the single floor (D4); guarded in `handle`, see `Busy`.
         self._identity_aware = False     # set by `connect`: tell the MCP server WHO speaks each turn (§8.5).
                                          # Off for hand-built/test Directors (no set_caller call → clean tests).
+        # speaker → the ACTOR scope this turn's writes use (§8.5). Set by the agent server, which knows the
+        # live world and whom its session serves; None = a turn acts as its speaker.
+        self.actor_for: Optional[Callable[[str], Optional[str]]] = None
         self.transcript: list[Turn] = []
         # Director-HOSTED tools (docs/specs/agents.md §7.4, decision A): tools the agent server offers the
         # LLM in-process, dispatched here instead of over the world MCP server. The first is the generic
@@ -509,8 +512,12 @@ class Director:
         serialized (single floor), so a per-turn identity on the one MCP server is safe. Best-effort: an MCP
         server without the control tool just keeps its launch identity."""
         agent = self.agent.name if self.agent else "builder"
+        own = scope_for(speaker, agent)
+        # The ACTOR — whose rights this turn's writes use. The host (agent server) knows the live world and
+        # whom its session serves, so it decides; standalone, a turn acts as its speaker (§8.5).
+        actor = (self.actor_for(speaker) if self.actor_for else None) or own
         try:
-            await self._session.call_tool("set_caller", {"user": speaker, "scope": scope_for(speaker, agent)})
+            await self._session.call_tool("set_caller", {"user": speaker, "scope": own, "actor": actor})
         except Exception:  # noqa: BLE001 — older/other MCP server, or a stand-in session in tests
             pass
 

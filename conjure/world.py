@@ -14,7 +14,7 @@ import shutil
 import unicodedata
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from .schema import Entity, World
 
@@ -756,11 +756,21 @@ class SessionRepository:
     def meta_path(self, scope: str, sid: str) -> Path:
         return self.dir(scope, sid) / "session.json"
 
-    def transcript_path(self, scope: str, sid: str) -> Path:
-        return self.dir(scope, sid) / "transcript.jsonl"
+    def visit_dir(self, scope: str, sid: str, visitor: str) -> Path:
+        """Where a VISITING agent keeps its own conversation and state for this session
+        (``.../sessions/<id>/visits/<agent>/``, docs/specs/agents.md §8.4). Beside the host's, never in
+        it, and per host session, so a second visit to the same world resumes the first."""
+        if not _SCOPE_PART.fullmatch(visitor or "") or visitor in (".", ".."):
+            raise ValueError(f"bad visitor {visitor!r}")
+        return self.dir(scope, sid) / "visits" / visitor
 
-    def state_dir(self, scope: str, sid: str) -> Path:
-        return self.dir(scope, sid) / "state"
+    def transcript_path(self, scope: str, sid: str, visitor: Optional[str] = None) -> Path:
+        base = self.visit_dir(scope, sid, visitor) if visitor else self.dir(scope, sid)
+        return base / "transcript.jsonl"
+
+    def state_dir(self, scope: str, sid: str, visitor: Optional[str] = None) -> Path:
+        base = self.visit_dir(scope, sid, visitor) if visitor else self.dir(scope, sid)
+        return base / "state"
 
     def worlds_dir(self, scope: str, sid: str) -> Path:
         return self.dir(scope, sid) / "worlds"
@@ -772,31 +782,32 @@ class SessionRepository:
         through every call: resolve the active session once, then address worlds by name."""
         return WorldDir(self.worlds_dir(scope, sid))
 
-    def state(self, scope: str, sid: str) -> "StateStore":
+    def state(self, scope: str, sid: str, visitor: Optional[str] = None) -> "StateStore":
         """The session's agent-state as a `StateStore` rooted at ``.../sessions/<id>/state/``
-        (docs/specs/agents.md §7.4) — the storage behind the agent's generic ``state_*`` tools."""
-        return StateStore(self.state_dir(scope, sid))
+        (docs/specs/agents.md §7.4) — the storage behind the agent's generic ``state_*`` tools. A
+        `visitor` gets its own, under the session's ``visits/<agent>/``."""
+        return StateStore(self.state_dir(scope, sid, visitor))
 
     # -- transcript (append-only JSONL; docs/specs/agents.md §7.3) --------------------------------
-    def append_transcript(self, scope: str, sid: str, entry: dict) -> None:
+    def append_transcript(self, scope: str, sid: str, entry: dict, visitor: Optional[str] = None) -> None:
         """Append one turn as a JSON line — cheap O(1) growth, no whole-file rewrite. Entries are plain
         dicts (``{role, by, text, …}``); the agent server converts to/from its `Turn`, so this layer stays
         free of any conversation type."""
-        p = self.transcript_path(scope, sid)
+        p = self.transcript_path(scope, sid, visitor)
         p.parent.mkdir(parents=True, exist_ok=True)
         with p.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
 
-    def clear_transcript(self, scope: str, sid: str) -> None:
+    def clear_transcript(self, scope: str, sid: str, visitor: Optional[str] = None) -> None:
         """Wipe a session's saved dialog (chat-history reset). Keeps the world, assets, and state docs —
         only the conversation JSONL is removed, so a fresh `read_transcript` returns []. Used by the shell
         `clear` command to reset a bloated conversation that's degrading the model."""
-        self.transcript_path(scope, sid).unlink(missing_ok=True)
+        self.transcript_path(scope, sid, visitor).unlink(missing_ok=True)
 
-    def read_transcript(self, scope: str, sid: str) -> list[dict]:
+    def read_transcript(self, scope: str, sid: str, visitor: Optional[str] = None) -> list[dict]:
         """The saved dialog as a list of entry dicts (empty if none). A torn final line (crash mid-append)
         is skipped rather than fatal — the append-only format degrades to "lose the last turn"."""
-        p = self.transcript_path(scope, sid)
+        p = self.transcript_path(scope, sid, visitor)
         if not p.exists():
             return []
         out: list[dict] = []

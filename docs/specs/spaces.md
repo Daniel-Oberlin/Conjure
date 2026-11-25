@@ -323,7 +323,9 @@ applies to a *guess*. A void world is a decision.
   ([`specs/agents.md §3`](./agents.md)).
 - **Visibility inherits the active world.** An asset or state doc created while a *private* world is
   active defaults private; while a *public* world is active, public.
-- **Read** = `owner == caller OR public`. **Write** = `owner == caller`.
+- **Read** = `owner == caller OR public`. **Write** = `owner == caller` — except that the live world's
+  agent may change it for anyone present when its session serves everyone, and a visiting agent of the
+  same user may change it too (§7).
 - **Public-uses-public invariant.** A public world may reference only public assets, so a visitor sees
   the whole scene. Placing your own private asset into a public world — or making a world public —
   auto-publishes the assets it uses, and the tool says so.
@@ -479,11 +481,16 @@ failed to recognise. Until a client has voted, therefore, a capture may **add bu
 [`spaces-geometry.md` §7.4](./spaces-geometry.md) for that guard and the wholesale-prune backstop beside
 it.
 
-**Scene edit rights — the world owner.** Every scene-mutating endpoint requires the caller to be the
-active world's owner. Enforced by middleware (`server.py:771`): the MCP client attaches
-`X-Conjure-User` on every request, and a non-owner gets 403. A *missing* header is treated as the owner
-— a convenience for the direct dev CLI, not a security posture (see
-[`backlogs/spaces.md`](../backlogs/spaces.md)).
+**Scene edit rights — the world's agent, for whom it serves.** Every scene-mutating endpoint is gated
+by middleware (`_owner_only_writes`, `server.py`); the MCP client sends the turn's **speaker** and its
+**actor** — the agent scope whose rights the write uses ([`agents.md` §8.5](./agents.md)). A write is
+allowed when the speaker is the world's owner, or the request is an agent turn and the session **serves
+everyone** (the default); and the actor is the world's own scope or the agent visiting it
+([`agents.md` §8.4a](./agents.md)). Anything else gets 403. Wiping the world and re-authoring the space
+(`/reset`, `/space/capture`, `/space/realign`, `/world_frame`) need the owner as speaker regardless, and a
+headset's own writes, which carry no actor, keep the owner-only rule. A *missing* header is treated as the
+owner — a convenience for the direct dev CLI, not a security posture (see
+[`backlogs/spaces.md`](../backlogs/spaces.md)). The full rule is [`agents.md` §9.4](./agents.md).
 
 **World navigation is open to everyone.** `/worlds/new` and `/worlds/switch` are not gated: anyone may
 create or switch, and everyone present comes along. This is coherent because a created or
@@ -491,8 +498,9 @@ switched-into world lives in the *caller's own* scope, so the caller becomes its
 edit it. Net effect: a guest can build their own worlds with everyone watching, while another user's
 curated world stays protected.
 
-The director is **told its username** so it can answer "who am I?" and relay a refusal honestly rather
-than inventing a cause. There are no prompt-level permissions — this is a capability boundary.
+The director is **told who is speaking** so it can answer "who am I?", act for whoever asked, and relay
+a refusal honestly rather than inventing a cause. There are no prompt-level permissions — this is a
+capability boundary.
 
 ---
 

@@ -510,7 +510,8 @@ async def test_identity_aware_director_tells_mcp_the_per_turn_speaker():
     d._identity_aware = True
     d.agent = type("A", (), {"name": "builder", "context": []})()
     await d.handle("put a tree", speaker="guest")
-    assert ("set_caller", {"user": "guest", "scope": "guest/agents/builder"}) in d._session.calls
+    assert ("set_caller", {"user": "guest", "scope": "guest/agents/builder",
+                           "actor": "guest/agents/builder"}) in d._session.calls
 
 
 async def test_hand_built_director_does_not_set_caller():
