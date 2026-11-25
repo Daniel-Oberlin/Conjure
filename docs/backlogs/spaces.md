@@ -277,6 +277,11 @@ present coming along. Letting a guest **co-edit someone else's** world needs a c
 handshake. Deliberately deferred: capability-over-lockdown was the right first call, but co-editing is a
 real want.
 
+**2026-11-24: mostly answered by [decision §35](../decisions.md).** Guests don't get their own edit rights;
+the world's agent serves everyone present and makes their changes with the world's authority
+([`specs/agents.md` §9.4](../specs/agents.md)). What is left here is **direct human co-editing**
+(an editors list on a world, for people rather than agents), which no current want needs.
+
 ### Private-asset references into a public world
 
 Current behaviour is auto-publish-and-tell for the owner's own assets. The alternatives (forbid, or warn

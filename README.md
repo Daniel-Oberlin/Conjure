@@ -260,6 +260,11 @@ the meadow", "new session") and is refused the ones that need a screen. Full tab
 The agent server picks its agent at launch (`conjure-agent --agent outdoor`); switch live with
 `conjure agent <name>` — a server-side command, since it moves everyone in the shared session. It
 routes through the world server, so every client (and the headset) follows the same pointer move.
+`conjure agent builder visit` brings another of your agents into the **current** world instead, so a
+specialist agent can stay small and let `builder` do its building; the host agent has to list it in
+`visiting_agents`, and `conjure agent <host>` hands back. In a shared session the agent makes changes for
+**everyone present** by default; `conjure serve owner` limits that to the world's owner
+([docs/specs/agents.md §8.4a, §9.4](./docs/specs/agents.md)).
 Unfinished work and known problems: [docs/backlogs/agents.md](./docs/backlogs/agents.md).
 
 ## On the Quest 3

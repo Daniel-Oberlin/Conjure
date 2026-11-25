@@ -1302,3 +1302,46 @@ async def test_conjure_full_stop_agent_x_switches_by_voice_in_either_mode():
         sh, d, out, on_text = _shell()
         await sh._dispatch(sh.as_command("Conjure. Agent scratch.", in_shell), on_text, voice=True)
         assert not any("Unknown command" in t or "No agent" in t for _, t in out), (in_shell, out)
+
+
+# --------------------------------------------------------------------------- visits and serving (§8.4, §9.4)
+
+async def test_agent_visit_asks_the_host_to_bring_the_agent_in():
+    sh, d, out, on_text = _shell()                           # current agent = builder
+    hooked = []
+
+    async def hook(name, cb, *, visit=False):
+        hooked.append((name, visit))
+
+    sh._agent_switch_hook = hook
+    await sh.feed("conjure agent outdoor visit", on_text=on_text)
+    assert hooked == [("outdoor", True)]
+    await sh.feed("conjure agent outdoor", on_text=on_text)  # without `visit`: the ordinary switch
+    assert hooked[-1] == ("outdoor", False)
+
+
+async def test_serve_sets_and_reports_whom_the_agent_serves():
+    sh, out, on_text, calls = _session_shell(
+        lambda m, p, kw: {"ok": True, "serves": kw.get("serves", "everyone")})
+    await sh.feed("conjure serve owner", on_text=on_text)
+    assert calls[-1] == ("POST", "/session/serves", {"serves": "owner"})
+    assert any("only for the world's owner" in t for _, t in out)
+    await sh.feed("conjure serve", on_text=on_text)
+    assert calls[-1][:2] == ("GET", "/agent/serves")
+    assert any("everyone present" in t for _, t in out)
+
+
+async def test_agent_name_of_the_visitor_goes_to_its_own_world():
+    """While builder visits, `agent builder` isn't a no-op: it means builder's own world."""
+    sh, d, out, on_text = _shell()                           # current agent = builder
+    hooked = []
+
+    async def hook(name, cb, *, visit=False):
+        hooked.append((name, visit))
+
+    sh._agent_switch_hook = hook
+    await sh.feed("conjure agent builder", on_text=on_text)
+    assert hooked == [] and any("Already on builder" in t for _, t in out)
+    sh.visiting = True
+    await sh.feed("conjure agent builder", on_text=on_text)
+    assert hooked == [("builder", False)]

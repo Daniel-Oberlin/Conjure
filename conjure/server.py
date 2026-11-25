@@ -127,6 +127,23 @@ def _agent_world_config(scope: str) -> dict:
     return _agent_block(scope, "world")
 
 
+def _agent_visiting_agents(scope: str) -> list[str]:
+    """The agents this host agent lets into its worlds — `visiting_agents` in its agent.json
+    (docs/plans/shared-agency.md §1.3). Missing, unreadable or malformed → none."""
+    agent = (scope or "").rsplit("/", 1)[-1]
+    try:
+        raw = json.loads((resolve_agent_dir(agent) / "agent.json").read_text()).get("visiting_agents")
+    except Exception:  # noqa: BLE001
+        return []
+    return [a for a in raw if isinstance(a, str) and a] if isinstance(raw, list) else []
+
+
+def _agent_session_serves(scope: str) -> str:
+    """Whom a NEW session of this agent serves — `session.serves`, default "everyone"
+    (docs/plans/shared-agency.md §1.2). Anything but "owner" reads as "everyone"."""
+    return "owner" if _agent_block(scope, "session").get("serves") == "owner" else "everyone"
+
+
 def _agent_wants_outdoor(scope: str) -> bool:
     """Does this agent's `world.outdoor` say its worlds are space-less (specs/agents.md §3)?
 
@@ -457,6 +474,10 @@ active_space: str = "home"          # bare NAME of the space the active world co
 active_space_owner: str = DEFAULT_USER  # who OWNS that space — may differ from the active WORLD's owner
                                     # (D3: your world can live in someone else's shared space). Together
                                     # (active_space_owner, active_space) identify the live space's file.
+# A VISITING agent (docs/plans/shared-agency.md §1.3): another agent of the world's user, working in this
+# world while it stays live — `agent builder visit`. Its bare name, or None. Transient by design: every
+# world move (`_switch_to`) ends it, and it is never persisted, so a restart returns to the host agent.
+active_visitor: Optional[str] = None
 # The namespace view (`dir`/`show`/`delete`) reads every global above. Bound to this MODULE, not to their
 # values, because both kinds move: `_init_state` rebinds the repositories and the live pointers change on
 # every switch. Safe at import — `namespace` reads the attribute at call time, never now.
@@ -757,15 +778,19 @@ def _glog(ev: str, fields: dict, *, sid: str = "server", ct: float | None = None
     except (OSError, TypeError, ValueError):
         pass
 
-# Edit-rights follow ownership (specs/spaces.md §7): only the ACTIVE world's owner may change the
-# scene content of the shared world. Enforced server-side, never via the prompt — the MCP client and the
-# headset attach an `X-Conjure-User` header; a non-owner hitting these routes gets 403. A *missing*
-# header (the direct dev CLI) is treated as the owner (interim convenience). Reads, scoped catalog ops,
-# procurement, and **world navigation** (`/worlds/new`, `/worlds/switch`) are NOT gated: anyone may
-# create or switch worlds and everyone comes along — but a created/switched-into world is in the caller's
-# OWN scope, so the caller becomes its owner and only *then* can edit it. This lets a guest spin up and
-# build their own worlds with everyone present, while another user's curated world stays protected. (A
-# consent/permission model to relax further — co-edit someone else's world — is a later tightening.)
+# Edit rights (specs/spaces.md §7, docs/plans/shared-agency.md §1.4). Enforced server-side, never via the
+# prompt. A request carries two identities: the SPEAKER (`X-Conjure-Speaker`, or the older
+# `X-Conjure-User`) — the person who asked — and the ACTOR (`X-Conjure-Scope`), the agent scope whose
+# rights the write uses. A scene write is allowed when
+#   * the speaker is the world's owner, or — for an agent turn, which carries an actor — the live
+#     session serves everyone; and
+#   * the actor (when given) is the world's own scope, or the scope of the agent visiting it.
+# The actor rule is a FULL-scope check: the user-only comparison it replaces let any of a user's agents
+# edit any of that user's worlds. A few writes stay with the owner as speaker whatever `serves` says —
+# `_OWNER_SPEAKER_PATHS`. A *missing* header is treated as the owner (the direct dev CLI, an interim
+# convenience). Reads, scoped catalog ops, procurement and world NAVIGATION (`/worlds/new`,
+# `/worlds/switch`) are not gated here: navigation acts on the caller's OWN scope, so a guest can make and
+# build their own worlds with everyone present, but can't touch yours except through the agent.
 _OWNER_ONLY_PATHS = {
     "/reset", "/patch", "/space/capture", "/space/realign",
     "/texture_surface", "/style_surface", "/show_surface",
@@ -773,18 +798,51 @@ _OWNER_ONLY_PATHS = {
     "/edit_image", "/outpaint_image", "/skybox_from_image",
     "/module", "/module/dismiss", "/manipulate", "/world_frame", "/figure",
 }
+#: Gated writes that need the OWNER as speaker even when the session serves everyone: wiping the world,
+#: and re-authoring the space's geometry or frame.
+_OWNER_SPEAKER_PATHS = {"/reset", "/space/capture", "/space/realign", "/world_frame"}
+
+
+def _speaker_of(request) -> str:
+    return request.headers.get("X-Conjure-Speaker") or request.headers.get("X-Conjure-User") or ""
+
+
+def _actor_may_write(actor: str) -> bool:
+    """May this agent scope change the live world? Its own agent, or the agent visiting it."""
+    if actor == active_scope:
+        return True
+    owner = active_scope.split("/", 1)[0]
+    return bool(active_visitor) and actor == scope_for(owner, active_visitor)
+
+
+def _write_denied(path: str, speaker: str, actor: str) -> Optional[str]:
+    """Why a gated write is refused, or None. Pure over the live pointers, so it is testable alone."""
+    owner = active_scope.split("/", 1)[0]
+    if speaker and speaker != owner:
+        if path in _OWNER_SPEAKER_PATHS:
+            return f"This world belongs to {owner}; only {owner} can do that."
+        # Serving everyone is the AGENT acting for them, so it needs an agent turn: a request with no
+        # actor (a headset's own write — grab, the frame) keeps the owner-only rule it always had.
+        if not actor or _active_serves() != "everyone":
+            return f"This world belongs to {owner}; only the owner can change it."
+    if actor and not _actor_may_write(actor):
+        if actor.split("/", 1)[0] != owner:
+            return f"This world belongs to {owner}; only the owner can change it."
+        return (f"The {agent_of(actor)} agent can't change the {agent_of(active_scope)} agent's world — "
+                f"it isn't visiting it.")
+    return None
 
 
 @app.middleware("http")
 async def _owner_only_writes(request, call_next):
     if request.url.path in _OWNER_ONLY_PATHS:
-        who = request.headers.get("X-Conjure-User")
-        owner = active_scope.split("/", 1)[0]
-        if who and who != owner:
-            _slog("guard", f"403 {request.url.path} by {who!r} — active world {owner}/{active_world} "
-                           f"(space {active_space_owner}/{active_space})")
-            return JSONResponse(status_code=403, content={
-                "ok": False, "error": f"This world belongs to {owner}; only the owner can change it."})
+        speaker = _speaker_of(request)
+        actor = request.headers.get("X-Conjure-Scope") or ""
+        why = _write_denied(request.url.path, speaker, actor)
+        if why:
+            _slog("guard", f"403 {request.url.path} by {speaker!r} as {actor or '-'} — active world "
+                           f"{active_scope}/{active_world} (space {active_space_owner}/{active_space})")
+            return JSONResponse(status_code=403, content={"ok": False, "error": why})
     return await call_next(request)
 
 
@@ -1342,16 +1400,50 @@ def _model_entity_op(eid: str, model_id: str, *, title, licence, attribution, cr
     }}
 
 
+def _reachable_from(rec: dict, sc: str) -> bool:
+    """The catalog's visibility rule for one row and one scope, by id: the creating scope is `sc`, or it
+    is public within `sc`'s agent, or `sc` was granted ownership (decisions.md §26)."""
+    if rec.get("scope") == sc:
+        return True
+    if agent_of(rec.get("scope") or "") == agent_of(sc) and rec.get("public", 0):
+        return True
+    return sc in library.owners(rec["id"]) if rec.get("id") else False
+
+
+def _visit_host_scope(sc: str) -> Optional[str]:
+    """The live world's scope when `sc` is the agent VISITING it — whose library a visitor also sees
+    (docs/specs/agents.md §8.4). None otherwise."""
+    if not active_visitor:
+        return None
+    owner = active_scope.split("/", 1)[0]
+    return active_scope if sc == scope_for(owner, active_visitor) else None
+
+
 def _asset_in_agent_scope(rec: Optional[dict]) -> bool:
     """By-id counterpart to the catalog's hard agent wall (see library.search/query): an asset is
-    reachable only if its scope has the SAME agent segment as the caller AND (it's the caller's own
-    scope OR public). Guards the reuse-by-id paths so a known/guessed id can't sidestep the wall."""
+    reachable only if the caller's scope may see it (same agent and own or public, or granted). A
+    visiting agent also reaches its host's library. Guards the reuse-by-id paths so a known/guessed id
+    can't sidestep the wall."""
     if not rec:
         return False
     sc = _caller_scope.get()
-    if agent_of(rec.get("scope") or "") != agent_of(sc):
-        return False                                  # different agent — hard wall (even if public)
-    return rec.get("scope") == sc or bool(rec.get("public", 0))
+    if _reachable_from(rec, sc):
+        return True
+    host = _visit_host_scope(sc)
+    return bool(host) and _reachable_from(rec, host)
+
+
+def _import_for_visit(asset_id: str) -> None:
+    """An asset a visiting agent uses in its host's world becomes the HOST's too (docs/specs/agents.md
+    §8.4): one `asset_scopes` row, no copy, the visitor keeping its own. So the host agent can find and
+    reuse it, and no world references an asset its own agent can't see. No-op outside a visit."""
+    if not asset_id or library is None:
+        return
+    host = _visit_host_scope(_caller_scope.get())
+    if host and library.get(asset_id) is not None and host not in library.owners(asset_id):
+        rec = library.get(asset_id) or {}
+        if rec.get("scope") != host and library.grant(asset_id, host):
+            _slog("library", f"imported {asset_id} into {host} (used by visiting {active_visitor})")
 
 
 def _inherit_visibility(asset_id: str) -> dict:
@@ -1443,6 +1535,7 @@ def _catalog_asset(asset_id: str, *, kind: str, label: str | None = None, prompt
                    transparent=None if transparent is None else (1 if transparent else 0),
                    licence=licence, attribution=attribution, creator=creator,
                    **_inherit_visibility(asset_id))
+    _import_for_visit(asset_id)                   # made by a visiting agent → the host owns it too
     if embed_image is not None and kind in _VISUAL_KINDS:
         _embed_asset(asset_id, image=embed_image)   # embed the pixels into the shared space (best-effort)
 
@@ -1484,6 +1577,8 @@ def _get_image(image_id: str):
     cat = library.get(image_id)
     if cat is not None and not _asset_in_agent_scope(cat):   # hard agent wall on reuse-by-id
         return None, None, f"no image {image_id!r}"          # don't leak another agent's asset
+    if cat is not None:
+        _import_for_visit(image_id)                           # used in a visited world → the host's too
     data = path.read_bytes()
     rec = IMAGES.get(image_id)
     if rec is None:
@@ -1808,7 +1903,8 @@ async def _switch_to(scope: str, ref: str, store_override: WorldStore | None = N
     built world (new_world) instead of loading from disk. `sid` names the target SESSION (default: the
     scope's active session) — resolved AFTER `_save_active` so the outgoing world is written to the
     session it actually belongs to, not the incoming one."""
-    global store, active_scope, active_world, active_space, active_space_owner, active_sid
+    global store, active_scope, active_world, active_space, active_space_owner, active_sid, active_visitor
+    active_visitor = None                     # any world move ends a visit (docs/plans/shared-agency.md §1.3)
     _save_active()                            # split + persist the outgoing world (+ its space) FIRST,
                                               # while the OLD live session is still set on the facade
     sid = _ensure_session(scope, sid)        # flip to the target session (create if fresh) — and point the
@@ -1958,8 +2054,51 @@ class ActivateScopeRequest(BaseModel):
 @app.post("/scope/activate")
 async def scope_activate(req: ActivateScopeRequest) -> dict:
     """Activate a world in `scope` (resume last-active, else create default). Called on agent switch so
-    the live world matches the new agent. Un-gated like /worlds/switch — everyone present comes along."""
+    the live world matches the new agent. Un-gated like /worlds/switch — everyone present comes along.
+
+    Switching back to the HOST agent during a visit (`agent erotic` while builder visits erotic's world)
+    targets the scope that is already live, so it would answer `unchanged` and move nothing. It ends the
+    visit instead: the world stays, the conversation returns to its own agent."""
+    global active_visitor
+    if active_visitor and req.scope == active_scope:
+        _slog("world", f"visit by {active_visitor} ends — back to {agent_of(active_scope)}")
+        active_visitor = None
+        await _broadcast(_snapshot_msg())
+        return {"ok": True, "world": worlds.name_of(active_scope, active_world), "id": active_world,
+                "scope": active_scope, "visit_ended": True}
     return await _activate_scope(req.scope)
+
+
+class VisitRequest(BaseModel):
+    agent: str
+
+
+@app.post("/agent/visit")
+async def agent_visit(req: VisitRequest, request: Request) -> dict:
+    """Bring another agent of the world's user into the live world without moving it — `agent builder
+    visit` (docs/specs/agents.md §8.4). Allowed when the host agent lists it in `visiting_agents`, and
+    only for the world's owner as speaker (a missing header = the trusted local CLI)."""
+    global active_visitor
+    owner, host = active_scope.split("/", 1)[0], agent_of(active_scope)
+    who = _speaker_of(request)
+    if who and who != owner:
+        return {"ok": False, "error": f"Only {owner} can bring another agent into this world."}
+    name = (req.agent or "").strip()
+    if name == host:
+        return {"ok": False, "error": f"{name} is this world's own agent."}
+    if name not in _agent_visiting_agents(active_scope):
+        return {"ok": False, "error": f"The {host} agent doesn't let {name} work in its worlds — add "
+                                      f"\"{name}\" to visiting_agents in {host}'s agent.json."}
+    try:
+        resolve_agent_dir(name)
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "error": f"no agent {name!r}"}
+    if active_visitor != name:
+        active_visitor = name
+        _slog("world", f"visit: {name} → {active_scope}/{active_world}")
+        await _broadcast(_snapshot_msg())
+    return {"ok": True, "agent": name, "host": host,
+            "world": worlds.name_of(active_scope, active_world), "id": active_world}
 
 
 # ---- session management (docs/specs/agents.md §7.1) --------------------------------------------------
@@ -2232,6 +2371,52 @@ def _session_title(scope: str, sid: str) -> str:
 def _active_public() -> bool:
     """Whether the LIVE session is public — what the `/ws` join gate + new-asset visibility key on (§8.2)."""
     return _session_public(active_scope, active_sid)
+
+
+def _session_serves(scope: str, sid: str) -> str:
+    """Whom a session's agent acts for: "everyone" present, or only the "owner"
+    (docs/plans/shared-agency.md §1.2). The session's own `serves` wins; else the agent's default."""
+    try:
+        val = sessions.load_meta(scope, sid).get("serves") if sessions is not None else None
+    except (OSError, ValueError):
+        val = None
+    if val in ("everyone", "owner"):
+        return val
+    return _agent_session_serves(scope)
+
+
+def _active_serves() -> str:
+    return _session_serves(active_scope, active_sid)
+
+
+class SessionServesRequest(BaseModel):
+    serves: str                       # "everyone" | "owner"
+
+
+@app.get("/agent/serves")
+async def agent_serves() -> dict:
+    """Whom the live session's agent acts for — `serve` with no argument."""
+    return {"ok": True, "serves": _active_serves()}
+
+
+@app.post("/session/serves")
+async def session_serves(req: SessionServesRequest, request: Request) -> dict:
+    """Set whom the LIVE session's agent acts for (`serve everyone` / `serve owner`). Owner-only: the
+    speaker header must name the live world's owner (missing = the trusted local CLI, as elsewhere)."""
+    if req.serves not in ("everyone", "owner"):
+        return {"ok": False, "error": "serve everyone, or serve owner"}
+    owner = active_scope.split("/", 1)[0]
+    who = _speaker_of(request)
+    if who and who != owner:
+        return {"ok": False, "error": f"Only {owner} can change whom this session serves."}
+    if sessions is None or not sessions.exists(active_scope, active_sid):
+        return {"ok": False, "error": "no live session"}
+    meta = sessions.load_meta(active_scope, active_sid)
+    meta["serves"] = req.serves
+    sessions.save_meta(active_scope, active_sid, meta)
+    _slog("session", f"serves → {req.serves} ({active_scope}/{active_sid})")
+    await _broadcast(_snapshot_msg())                 # `state.serves` changed → the agent server re-reads it
+    return {"ok": True, "serves": req.serves}
 
 
 @app.get("/agent/last")
@@ -4219,6 +4404,13 @@ async def library_search(req: LibrarySearchRequest) -> dict:
                 data = (ASSET_CACHE / fn).read_bytes()
                 qvec = await asyncio.to_thread(embedder.embed_image, data)
     out = {"ok": True, **library.find(text=req.query, query_vec=qvec, kind=req.kind, scope=req.scope)}
+    host = _visit_host_scope(req.scope) if req.scope else None
+    if host:                                         # a visitor sees its own library AND its host's (§8.4)
+        more = library.find(text=req.query, query_vec=qvec, kind=req.kind, scope=host)
+        have = {c["id"] for c in out["candidates"]}
+        out["candidates"] += [c for c in more["candidates"] if c["id"] not in have]
+        tiers = ("none", "weak", "strong")
+        out["confidence_tier"] = max(out["confidence_tier"], more["confidence_tier"], key=tiers.index)
     # The Poly Pizza collection (docs/specs/library.md §3a) is searched in the same call, so there is ONE
     # search and nothing to choose between: library hits first, then collection models not yet imported.
     # A collection model already placed IS a library asset, and appears only as that.
@@ -4281,6 +4473,7 @@ async def place_cached_asset(req: PlaceCachedAssetRequest) -> dict:
     rec = library.get(req.id)
     if rec is None or not _asset_in_agent_scope(rec):        # hard agent wall (cross-agent id → "not found")
         return {"ok": False, "error": f"no asset {req.id!r} in the library"}
+    _import_for_visit(req.id)
     if rec["kind"] != "model":
         return {"ok": False, "error": f"{req.id!r} is a {rec['kind']}, not a model — "
                 "use place_image (images) or set_skybox (skyboxes)"}
@@ -5711,6 +5904,7 @@ async def figure_clip(req: FigureClipRequest) -> dict:
         return {"ok": False, "error": f"{req.clip!r} is a {rec.get('kind')}, not an animation"}
     if not _asset_in_agent_scope(rec):
         return {"ok": False, "error": f"no clip {req.clip!r} in the library"}
+    _import_for_visit(rec["id"])
 
     try:
         clip_attrs = json.loads(rec.get("attributes") or "{}")
@@ -6525,7 +6719,12 @@ def _live_state() -> dict:
     the full doc."""
     return {
         "scope": active_scope,
-        "agent": agent_of(active_scope),
+        # The agent the conversation is WITH: a visitor while a visit is on, else the world's own agent.
+        # `host_agent` is always the world's own (docs/plans/shared-agency.md §1.3).
+        "agent": active_visitor or agent_of(active_scope),
+        "host_agent": agent_of(active_scope),
+        "visitor": active_visitor,
+        "serves": _active_serves(),     # whom the agent acts for — the agent server resolves each turn's actor
         "session": active_sid,          # the live SESSION within the scope (docs/specs/agents.md §7.1); the
                                         # agent server keys its transcript on (scope, session)
         # `world` is the display NAME (what a person reads); `world_id` is the permanent identity a

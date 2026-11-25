@@ -295,6 +295,31 @@ def _current_session(app: FastAPI) -> Optional[tuple[str, str]]:
     return (scope, sid)
 
 
+def _visitor(app: FastAPI) -> Optional[str]:
+    """The agent visiting the live world, or None (docs/specs/agents.md §8.4). Its conversation and state
+    live beside the host session's, so every transcript read and write below passes it through."""
+    live = app.state.live
+    return (live or {}).get("visitor") or None
+
+
+def _actor_for(app: FastAPI, speaker: str) -> Optional[str]:
+    """The ACTOR scope a turn by `speaker` writes as (docs/specs/agents.md §8.5): the live world's
+    owner's scope for the agent in the conversation, when the speaker is that owner or the session serves
+    everyone; else the speaker's own scope, which the world server's gate refuses for someone else's
+    world. With no live state yet, None (= act as the speaker)."""
+    from .config import scope_for
+
+    live = app.state.live
+    shell = app.state.shell
+    if not live or not live.get("owner") or shell is None or shell.director is None:
+        return None
+    agent = shell.director.agent.name if shell.director.agent else live.get("agent") or "builder"
+    owner = live["owner"]
+    if speaker == owner or live.get("serves", "everyone") == "everyone":
+        return scope_for(owner, agent)
+    return scope_for(speaker, agent)
+
+
 def _entry(turn: "Turn") -> dict:
     """A transcript `Turn` → its persisted JSON entry (and back via `_turn`). `role` is user/assistant;
     `by` is the human speaker (user turns only)."""
@@ -312,20 +337,23 @@ def _sync_transcript(app: FastAPI) -> None:
     the agent's default priority. Idempotent: tracked by `app.state.loaded_session`."""
     cur = _current_session(app)
     d = app.state.shell.director if app.state.shell else None
-    if d is None or cur is None or cur == app.state.loaded_session:
+    visitor = _visitor(app)
+    key = (cur, visitor) if cur is not None else None
+    if d is None or cur is None or key == app.state.loaded_session:
         return
     scope, sid = cur
-    d.transcript = [_turn(e) for e in app.state.sessions.read_transcript(scope, sid)]
+    d.transcript = [_turn(e) for e in app.state.sessions.read_transcript(scope, sid, visitor)]
     bind = getattr(d, "bind_state", None)                    # point state_* tools + {…} injections at this
     if bind:                                                 # session's state store (step 5, decision A)
-        bind(app.state.sessions.state(scope, sid))
-    try:                                                     # restore the session's remembered LLM, if valid
-        llm = (app.state.sessions.load_meta(scope, sid).get("llm") or "")
-        if llm and llm in d.roster:
-            d.active = llm
-    except (OSError, ValueError):
-        pass
-    app.state.loaded_session = cur
+        bind(app.state.sessions.state(scope, sid, visitor))
+    if not visitor:                                          # the remembered LLM is the HOST's choice
+        try:                                                 # restore the session's remembered LLM, if valid
+            llm = (app.state.sessions.load_meta(scope, sid).get("llm") or "")
+            if llm and llm in d.roster:
+                d.active = llm
+        except (OSError, ValueError):
+            pass
+    app.state.loaded_session = key
 
 
 def _persist_llm(app: FastAPI) -> None:
@@ -333,7 +361,7 @@ def _persist_llm(app: FastAPI) -> None:
     (docs/specs/agents.md §5.2). No-op until a session is known."""
     cur = _current_session(app)
     d = app.state.shell.director if app.state.shell else None
-    if d is None or cur is None:
+    if d is None or cur is None or _visitor(app):            # a visitor's LLM is not the host session's
         return
     scope, sid = cur
     if not app.state.sessions.exists(scope, sid):
@@ -355,7 +383,7 @@ def _maybe_seed(app: FastAPI) -> None:
     generated greeting can reference seeded state."""
     cur = _current_session(app)
     d = app.state.shell.director if app.state.shell else None
-    if d is None or cur is None:
+    if d is None or cur is None or _visitor(app):           # the HOST session's opening, not a visit's
         return
     scope, sid = cur
     try:
@@ -382,7 +410,7 @@ async def _maybe_greet(app: FastAPI) -> None:
     and flip ``greeted: True`` so reconnects/re-syncs never repeat it."""
     cur = _current_session(app)
     d = app.state.shell.director if app.state.shell else None
-    if d is None or cur is None:
+    if d is None or cur is None or _visitor(app):           # the HOST session's opening, not a visit's
         return
     scope, sid = cur
     try:
@@ -419,8 +447,9 @@ def _persist_new_turns(app: FastAPI, before: int) -> None:
     if d is None or cur is None:
         return
     scope, sid = cur
+    visitor = _visitor(app)
     for turn in d.transcript[before:]:
-        app.state.sessions.append_transcript(scope, sid, _entry(turn))
+        app.state.sessions.append_transcript(scope, sid, _entry(turn), visitor)
 
 
 # --------------------------------------------------------------------------- handling one line
@@ -442,6 +471,8 @@ async def _handle_turn(app: FastAPI, conn: Conn, text: str) -> None:
                 await conn.send({"type": "busy"})
                 return
             app.state.turn_active = True
+            if shell.director is not None:               # who this turn's writes act as (§8.5) — re-set
+                shell.director.actor_for = lambda sp: _actor_for(app, sp)   # each turn: a re-bind is fresh
             try:
                 await _conv_broadcast(app, {"type": "user_turn", "speaker": conn.user, "text": text.strip()},
                                       origin=conn)   # `mine: True` back to the submitter only
@@ -543,6 +574,7 @@ async def _reconcile_state(app: FastAPI, state: dict) -> None:
                 if expected != new_agent:                # nobody here asked for this — say so
                     await hub.broadcast({"type": "notice", "text": _agent_change_notice(state)})
     app.state.live = state
+    shell.visiting = bool(state.get("visitor"))          # `agent <visitor>` then means its own world (§8.4a)
     _sync_client_prompts(app)                            # a re-bind made a fresh Director; the clients didn't move
     _sync_transcript(app)                                # (re)load the live session's saved dialog (step 2)
     _maybe_seed(app)                                     # seed a new session's agent-state once (step 5b)
@@ -604,7 +636,7 @@ def _make_agent_switch_hook(app: FastAPI, settings: Settings, shell: Shell):
     just another pointer move through the single source of truth."""
     from .config import scope_for
 
-    async def _switch(agent_name: str, on_text) -> None:
+    async def _switch(agent_name: str, on_text, *, visit: bool = False) -> None:
         scope = scope_for(app.state.user, agent_name)
         # Claim this one before asking, so the follower recognises the change it's about to see as OURS
         # and stays quiet — the narration below is the announcement. Set it FIRST: the /ws broadcast can
@@ -616,7 +648,11 @@ def _make_agent_switch_hook(app: FastAPI, settings: Settings, shell: Shell):
             # 180s: a first-ever switch runs the agent's declared opening, which may generate a skybox
             # (the world server broadcasts a notice before it starts).
             async with httpx.AsyncClient(timeout=180.0) as client:
-                resp = await client.post(f"{settings.world_url}/scope/activate", json={"scope": scope})
+                if visit:                                 # bring the agent into THIS world (§8.4)
+                    resp = await client.post(f"{settings.world_url}/agent/visit", json={"agent": agent_name},
+                                             headers={"X-Conjure-User": shell._acting})
+                else:
+                    resp = await client.post(f"{settings.world_url}/scope/activate", json={"scope": scope})
             body = resp.json()
             if not body.get("ok"):
                 # The constructor aborted, so NOTHING moved (specs/agents.md §7.5) — say why and stay put.
@@ -627,7 +663,9 @@ def _make_agent_switch_hook(app: FastAPI, settings: Settings, shell: Shell):
                 await on_text(f"Couldn't switch to {agent_name}: {exc}", final=True, speaker=shell.director.active)
             return
         if on_text:
-            await on_text(f"Switching to agent {agent_name}…", final=True, speaker=shell.director.active)
+            msg = (f"{agent_name} is visiting — this world stays put. Say 'agent {body.get('host') or 'back'}' "
+                   f"to hand back." if visit else f"Switching to agent {agent_name}…")
+            await on_text(msg, final=True, speaker=shell.director.active)
         # Wait for the follower (owning task) to re-bind before returning, so the client's next context
         # reflects the new agent instead of lagging. We hold no floor here, so the follower can take it.
         # `shell.director` is transiently None mid-rebind, so guard it. ~10s cap.
@@ -656,7 +694,7 @@ def _make_clear_transcript_hook(app: FastAPI, shell: Shell):
         if d is not None:
             d.transcript = []
         if cur is not None:
-            app.state.sessions.clear_transcript(*cur)
+            app.state.sessions.clear_transcript(*cur, _visitor(app))
         if on_text:
             await on_text("Chat history cleared — starting fresh (world and assets kept).", final=True,
                           speaker=(d.active if d is not None else None))

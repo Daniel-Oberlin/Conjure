@@ -360,6 +360,12 @@ query meaning what it meant. A grant is **exact**: it names one scope and widens
 stops it being a way around the agent wall. `grant` / `revoke` / `transfer` / `owners`; a transfer is a
 grant then a revoke, in that order so a failure leaves two owners rather than none.
 
+**Import on use.** The one automatic grant is a visit ([`agents.md` §8.4a](./agents.md)): when an agent
+visiting another agent's world uses an asset there — places it, edits it, plays it, or makes it — the
+host's scope is granted ownership (`server._import_for_visit`). The bytes are not copied and the visitor
+keeps its row, so both agents can find it afterwards. While visiting, a search covers the visitor's
+library and the host's together.
+
 **Curation is shared.** Notes, tags and rating live on the asset, so two owners cannot disagree about
 one. That is knowingly given up — a composite `(id, scope)` key would have allowed it — and is a later
 migration if it is ever wanted ([decisions.md §26](../decisions.md)). The join table carries no `public`

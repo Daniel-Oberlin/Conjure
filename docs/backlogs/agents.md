@@ -332,6 +332,11 @@ natural extension.
 no key are all named and unbuilt. The shell's modal overlay would generalize to a **stack** for
 sub-agents; v1 is overlay + a single active pointer.
 
+The **offload** case delegation was meant for (a specialist agent letting builder do its building) is
+now covered by **visiting agents** instead (`agent builder visit`, [decision §35](../decisions.md),
+[`specs/agents.md` §8.4a](../specs/agents.md)); delegation for that purpose was considered and
+rejected there. Sub-agents remain open only for cases a visit can't serve.
+
 ## Shell rationalisation — names in front, ids underneath
 
 **Status: shipped 2026-09-04** (planned 2026-09-03 with Daniel). All seven phases are built and the

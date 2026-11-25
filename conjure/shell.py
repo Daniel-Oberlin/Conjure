@@ -295,6 +295,8 @@ class Shell:
         # required because a command runs in the connection's receive-loop task, and a cross-task MCP
         # `aclose()` raises "exit a cancel scope in a different task". `async (agent_name, on_text) -> None`.
         self._agent_switch_hook = None
+        self.visiting = False            # is the current agent VISITING the live world? (set by the agent
+                                         # server from /state; docs/specs/agents.md §8.4a)
         # `clear` wipes the live session's chat history. The agent server sets this to clear BOTH the
         # Director's in-memory transcript (what the LLM sees) and the persisted JSONL; a hand-built shell
         # (tests) leaves it None and clears in-memory only. `async (on_text) -> None`.
@@ -327,6 +329,9 @@ class Shell:
             (re.compile(r"^agents?$", re.I), self._agents, "agent — list agents", True),
             (re.compile(r"^agent\s+(?P<name>[\w./-]+)$", re.I), self._switch_agent,
              "agent <name> — switch agent (relaunches its tools; its own sessions and worlds)", True),
+            (re.compile(r"^agent\s+(?P<name>[\w./-]+)\s+visit$", re.I), self._visit_agent,
+             "agent <name> visit — bring that agent into THIS world (the world stays; "
+             "'agent <host>' hands back)", True),
             (re.compile(r"^(?:llms?|models?)$", re.I), self._llms, "llm — list LLMs", True),
             (re.compile(r"^llm\s+(?P<name>[\w.-]+)$", re.I), self._switch_llm,
              "llm <name> — switch the active LLM (spoken: 'talk to gemini')", True),
@@ -375,6 +380,8 @@ class Shell:
              "cd [path] — change the working directory (bare: back to your agent)", False),
             (re.compile(r"^(?P<vis>public|private)(?:\s+(?P<path>\S.*))?$", re.I), self._visibility,
              "public | private [path] — visibility of the live session, or of a path", True),
+            (re.compile(r"^serve(?:\s+(?P<who>everyone|owner))?$", re.I), self._serve,
+             "serve [everyone | owner] — whom the agent makes changes for in this session", True),
             (re.compile(r"^rename\s+(?P<rest>\S.*)$", re.I), self._rename,
              "rename <path> <new name> — retitle a world, space or session; relabel an asset "
              "(quote a path containing spaces)", False),
@@ -724,8 +731,8 @@ class Shell:
             avail = ", ".join(self._agent_names()) or "none"
             await self._say(on_text, f"No agent {name!r}. Available: {avail}.")
             return
-        if match == self._agent_name():
-            await self._say(on_text, f"Already on {match}.")
+        if match == self._agent_name() and not self.visiting:   # visiting? then `agent <it>` means its
+            await self._say(on_text, f"Already on {match}.")       # OWN world — an ordinary switch
             return
         if self._agent_switch_hook is not None:               # hosted (agent server): delegate — route via
             await self._agent_switch_hook(match, on_text)     # the world server so every client follows and
@@ -739,6 +746,45 @@ class Shell:
             await self._say(on_text, f"Couldn't switch to {match}: {exc}")
             return
         await self._say(on_text, f"Switched to agent {match} ({self._director.active}).")
+
+    async def _visit_agent(self, on_text, m):
+        """`agent <name> visit` — another of your agents works in THIS world, which stays live
+        (docs/specs/agents.md §8.4). The world server decides whether the host lets it in."""
+        if not self._permitted:
+            await self._say(on_text, "This session is private — you can't switch the agent here.")
+            return
+        name = m.group("name").strip()
+        match = next((a for a in self._agent_names() if a.lower() == name.lower()), None)
+        if not match:
+            avail = ", ".join(self._agent_names()) or "none"
+            await self._say(on_text, f"No agent {name!r}. Available: {avail}.")
+            return
+        if match == self._agent_name():
+            await self._say(on_text, f"Already on {match}.")
+            return
+        if self._agent_switch_hook is None:
+            await self._say(on_text, "Visiting needs the agent server — run it hosted.")
+            return
+        await self._agent_switch_hook(match, on_text, visit=True)
+
+    async def _serve(self, on_text, m):
+        """`serve everyone | owner` — whom the live session's agent makes changes for (docs/specs/agents.md
+        §9.4). Bare `serve` says which it is. Changing it is the world owner's call; the server checks."""
+        who = (m.group("who") or "").lower()
+        if not who:
+            data = await self._session_api("GET", "/agent/serves")
+            if not data.get("ok"):
+                await self._say(on_text, data.get("error", "error"))
+                return
+            await self._say(on_text, "The agent makes changes for everyone present." if data["serves"] == "everyone"
+                            else "The agent makes changes only for the world's owner.")
+            return
+        data = await self._session_api("POST", "/session/serves", serves=who)
+        if not data.get("ok"):
+            await self._say(on_text, data.get("error", "error"))
+            return
+        await self._say(on_text, "The agent now makes changes for everyone present." if who == "everyone"
+                        else "The agent now makes changes only for the world's owner.")
 
     # -- sessions: list/new/switch/rename/delete, driven through the world server (the source of truth for
     # the live (scope, session)). A session switch doesn't re-bind the Director — same agent/tools; the

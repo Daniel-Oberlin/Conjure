@@ -86,7 +86,8 @@ asset_scopes)`, and every scoped read also drops superseded rows (`library.py:13
 reference, content-addressed assets keep their hash, and access is a predicate rather than path
 arithmetic. Path-encoded visibility was considered and rejected for exactly those reasons. The same flag
 and the same read/write rule (`owner == caller OR public` / `owner == caller`) apply to sessions,
-worlds, assets and spaces alike — see [`specs/spaces.md §5`](./spaces.md).
+worlds, assets and spaces alike — see [`specs/spaces.md §5`](./spaces.md). The one widening is for
+*writes to the live world*, which its agent may make for anyone present (§9.4).
 
 ### 2.2 Two stores, one scope
 
@@ -161,7 +162,8 @@ user-first, first match wins. `list_agents()` annotates each name `bundled` or `
   "context": ["space://current"],               // MCP resources injected each turn (§5.3)
   "dynamics": ["fireflies", "water", "grab"],  // required allow-list (specs/dynamics.md §9)
   "world":   { "outdoor": false, "on_create": [ … ], "on_exit": [] },  // §7.5
-  "session": { "public": true, "greeting": "…", "first_world": { … } },  // §7.5
+  "session": { "public": true, "serves": "everyone", "greeting": "…", "first_world": { … } },  // §7.5, §9.4
+  "visiting_agents": ["builder"],              // other agents of yours allowed to work in these worlds (§8.4)
   "state":   { "quest": { "seed": …, "schema": …, "inject": "{quest}" } }  // §7.4
 }
 ```
@@ -179,6 +181,8 @@ user-first, first match wins. `list_agents()` annotates each name `bundled` or `
 | `dynamics` | no (`[]`) | every module resolves on the dynamics search path | a dangling name **fails the load** |
 | `world.outdoor` | no (`false`) | — | this agent's worlds are **space-less**: they never adopt the live space (§7.5) |
 | `session.public` | no (`true`) | — | visibility a NEW session is born with, on **every** mint path (§7.5) |
+| `session.serves` | no (`"everyone"`) | — | whom the agent makes changes for: everyone present, or only the world's `"owner"`. A session's own setting (the `serve` verb) wins (§9.4) |
+| `visiting_agents` | no (`[]`) | — | agents of the **same user** that may work in this agent's worlds via `agent <name> visit` (§8.4). Read by the world server |
 | `world` / `session` / `state` | no (`{}`) | `state[].seed`/`schema` files parsed if present (failures skipped) | read by the world server and the agent server, not the loader |
 | `personas` | no (`[]`) | — | parsed into `AgentDef.personas` and **read by nothing** |
 
@@ -548,6 +552,8 @@ on anything addressable. Nouns for the live thing, paths for any thing.
 | `where` (`status`) | user · agent · LLM · session · world · mode, in one line | ✓ |
 | `tools` | what the active agent can call | — |
 | `agent` · `agent <name>` | list · switch (relaunches its MCP server; its own sessions and worlds) | ✓ |
+| `agent <name> visit` | bring that agent into **this** world, which stays live; `agent <host>` hands back (§8.4) | ✓ |
+| `serve` · `serve everyone\|owner` | say · set whom the agent makes changes for in this session; the world's owner only (§9.4) | ✓ |
 | `llm` · `llm <name>` | list · switch the shared active LLM | ✓ |
 | `sessions` · `session …` | list · `new [title]` · `rename <title>` · `<name>` · `<user> <name>` | ✓ |
 | `worlds` · `world [new] <name>` | list · switch · create and switch | ✓ |
@@ -782,7 +788,7 @@ and report "no session 'Home'", i.e. *doesn't-exist* when it meant *matches-two*
 
 **Visiting.** `session <user> <name>` switches into another user's session **in the caller's active
 agent** — allowed only if that session is public, and you land there as yourself (a guest: you can
-inhabit it, owner-only writes still refuse edits). Discovery (`available`) is scoped to the caller's
+inhabit it, and the agent makes your changes only if the session serves everyone, §9.4). Discovery (`available`) is scoped to the caller's
 active agent — the same lens as their own list — and excludes the caller's **whole user**, so your own
 other agents never masquerade as a stranger's.
 
@@ -1092,24 +1098,68 @@ LIFO in the same task, so opening on top and closing underneath raises. If the n
 the previous one is reopened so the shell isn't stranded. The current LLM is carried across when the new
 agent's roster allows it.
 
+### 8.4a Visiting another agent's world
+
+`agent <name> visit` brings another of the **same user's** agents into the live world without moving
+it. The point is to keep specialist agents small: the erotic agent doesn't carry the building tool
+surface; you bring `builder` in, build with it directly, and hand back. The host's agent definition
+must list the visitor (`visiting_agents`, §3); the world server refuses anything else, and refuses a
+non-owner speaker. Plain `agent <name>` still goes to that agent's own world.
+
+- **The pointer.** `POST /agent/visit` sets `active_visitor` on the world server. `/state` then reports
+  `agent` = the visitor, `host_agent` = the world's own agent, and `visitor`. The agent server follows
+  `agent` exactly as for any switch (§8.3), so every client follows: everyone present now talks to the
+  visitor. The §9 invariant is therefore `agent = visitor or agent_of(world.scope)`.
+- **Ending it.** `agent <host>` is a `/scope/activate` of the scope that is already live; during a visit
+  that ends the visit instead of answering `unchanged`. **Any** world move (`_switch_to`) also ends it,
+  so a visitor's own `switch_world` or `new_world` simply takes you to its own world, as it always did.
+  So does `agent <visitor>` without `visit`: the shell knows a visit is on (`Shell.visiting`, from
+  `/state`), so it treats that as an ordinary switch rather than "already on it".
+- **Not persisted.** A restart returns to the host agent. A visit is a working mode, not a place.
+- **Its own conversation.** The visitor's transcript and agent state live beside the host session's, at
+  `sessions/<id>/visits/<agent>/` (`SessionRepository.visit_dir`), so a second visit to the same world
+  resumes the first and the host's dialog is untouched. A visit doesn't seed, greet, or overwrite the
+  session's remembered LLM — those are the host session's. Back with the host, the host agent learns
+  what changed by reading the world.
+- **Writes.** The visitor's turns act as its own scope (`<user>/agents/<visitor>`), which the write gate
+  allows for exactly the agent visiting (§9.4).
+- **Assets.** A visitor searches its own library **and** the host's (`/library/search` merges both, and
+  the by-id wall `_asset_in_agent_scope` admits either). Anything it uses in the host's world — placed,
+  edited, played, or newly made — is **imported** into the host's scope with an `asset_scopes` grant
+  (`_import_for_visit`; no copy, the visitor keeps its own row; [library.md §5a](./library.md)). The host
+  agent can then find and reuse it, and no world references an asset its own agent can't see.
+
 ### 8.5 Per-turn identity
 
 Identity used to be fixed at MCP launch, so with a shared agent server every turn acted as the launch
 user — a real permission bypass (`--user guest` could edit daniel's world, and `list_worlds` showed
 daniel's worlds as guest's).
 
-Now the director calls `set_caller(user, scope)` at the start of each turn. The MCP server threads that
-speaker into **both** the request headers (`X-Conjure-User` / `X-Conjure-Scope`, for the owner gate) and
-the request **body** scope (for "your worlds" and asset ownership). `_post_patch` carries identity too
-and raises a clean owner-only message on a 403 — the patch path previously sent no header and so bypassed
-the gate entirely. Turns are serialized by the single floor, so one process-global caller is safe
-against interleaving. `set_caller` is exempt from the capability gate and is in no agent's allow-list.
+Now the director calls `set_caller(user, scope, actor)` at the start of each turn, with two identities:
+
+- the **speaker** — who asked (`user`, and their own `scope`);
+- the **actor** — the agent scope whose rights the turn's writes use. The agent server decides it
+  (`_actor_for`, handed to the director as `actor_for`): the world owner's scope for the agent in the
+  conversation when the speaker is the owner or the session serves everyone (§9.4); otherwise the
+  speaker's own scope, which the gate refuses for someone else's world. A standalone director acts as
+  its speaker.
+
+The MCP server sends `X-Conjure-Scope` = the **actor** (the write gate and asset ownership read it),
+`X-Conjure-Speaker` = the speaker, and `X-Conjure-User` = the speaker again for routes that predate the
+split. In request **bodies**, navigation and administration tools (`list_worlds`, `new_world`,
+`switch_world`, `delete_world`, visibility, `update_asset`, `delete_asset`) send the **speaker's** scope, so
+"your worlds" always means the speaker's own; the library reads (`search_library`, `query_assets`) send
+the **actor's**, so an agent acting for everyone searches the world's library. `_post_patch` carries
+identity too and raises a clean message on a 403 — the patch path previously sent no header and so
+bypassed the gate entirely. Turns are serialized by the single floor, so one process-global caller is
+safe against interleaving. `set_caller` is exempt from the capability gate and is in no agent's
+allow-list.
 
 ---
 
 ## 9. The one shared reality
 
-> There is exactly one active `(space, world)`, and `agent = agent_of(world.scope)`. No per-user worlds,
+> There is exactly one active `(space, world)`, and `agent = visitor or agent_of(world.scope)` (§8.4a). No per-user worlds,
 > no forking — the shared experience *is* the feature.
 
 ### 9.1 One session pointer
@@ -1177,14 +1227,34 @@ is told the new state and re-gates its own clients from it.
 |---|---|---|
 | **surface-match** | AR headsets only; VOID-exempt | `/space/select` — a headset can only move the pointer to the world for the space it is physically in |
 | **privacy** | everyone | the live **session**'s `public` flag: the `/ws` join gate, `_regate_clients`, and the agent server's `_permitted` |
-| **edit-ownership** | everyone | `_owner_only_writes` — only the active world's owner may mutate it |
+| **edit rights** | everyone | `_owner_only_writes` — the world's own agent (or its visitor) may change it, for the owner or, when the session serves everyone, for anyone present |
 
 `_OWNER_ONLY_PATHS` gates the mutating routes: `/reset`, `/patch`, `/space/capture`,
 `/space/realign`, `/texture_surface`,
 `/style_surface`, `/place_asset`, `/place_cached_asset`, `/place_image`, `/set_skybox`,
 `/set_grounded_skybox`, `/edit_image`, `/outpaint_image`, `/skybox_from_image`, `/module`,
-`/module/dismiss`, `/manipulate`, `/world_frame`, `/figure`. A missing `X-Conjure-User` header is treated
-as the owner (interim convenience for the direct dev CLI).
+`/module/dismiss`, `/manipulate`, `/world_frame`, `/figure`. A gated write is allowed when (`_write_denied`):
+
+1. the **speaker** (`X-Conjure-Speaker`, else `X-Conjure-User`) is the world's owner — or the request is
+   an agent turn (it carries an actor) and the live session **serves everyone**; and
+2. the **actor** (`X-Conjure-Scope`), when given, is the world's own scope or the scope of the agent
+   visiting it (§8.4a). This is a full-scope check; the user-only comparison it replaced let any of a
+   user's agents edit any of that user's worlds.
+
+`_OWNER_SPEAKER_PATHS` — `/reset`, `/space/capture`, `/space/realign`, `/world_frame` — need the owner as
+speaker whatever the session serves: wiping the world and re-authoring the space are the owner's alone.
+A request with no actor (a headset's own write: grab, the frame, a capture) is not an agent turn and
+keeps the owner-only rule. A missing header is treated as the owner (interim convenience for the direct
+dev CLI).
+
+**Whom the agent serves.** `serves` is `"everyone"` by default: in a shared session the people present
+talk to the world's agent as participants, and it makes their changes with the world's authority. Solo
+use is unaffected, and a private session already keeps guests out, so the setting only matters in a
+public session — where sharing is the point. `"owner"` restores the strict rule: others can talk to the
+agent but it can't change the world for them. The agent definition sets the default
+(`session.serves`, §3); a session's own `serves` (the `serve` verb, `POST /session/serves`, owner-only)
+wins; `/state.serves` carries the live value to the agent server. The shipped prompts tell the agent it
+acts for everyone present and to relay a refusal plainly ([decisions.md §35](../decisions.md)).
 
 Membership is an **exact string match** on the request path, so renaming a route without updating the
 set silently *ungates* it rather than 404ing — a route-inventory test would not notice. A test pins
@@ -1400,7 +1470,9 @@ with no ordering dance.
 |---|---|---|
 | `GET /state` | the canonical live-state identifiers | no |
 | `GET /agent/last` | the live agent (subsumed by `/state`) | no |
-| `POST /scope/activate` | make a world in a scope live (agent switch) | no |
+| `POST /scope/activate` | make a world in a scope live (agent switch); the host's own scope ends a visit | no |
+| `POST /agent/visit` | bring a listed agent into the live world (§8.4a) | owner as speaker |
+| `GET /agent/serves` · `POST /session/serves` | whom the live session's agent serves (§9.4) | `POST`: owner as speaker |
 | `POST /agent/reset` | wipe an agent back to never-used; re-enters it if it was live | no |
 | `GET /sessions?scope=` | a scope's sessions + visitable + live | no |
 | `POST /session/{new,switch,rename,delete,visibility}` | session verbs | no |

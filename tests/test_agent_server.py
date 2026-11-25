@@ -510,7 +510,7 @@ async def test_reconcile_loads_the_saved_transcript_for_the_live_session(tmp_pat
                                  "session": "session-1", "world": "default", "space": "<void>", "owner": "daniel"})
     assert [(t.speaker, t.by, t.text) for t in shell.director.transcript] == [
         ("user", "bob", "hi"), ("assistant", "", "hello")]
-    assert app.state.loaded_session == ("daniel/agents/builder", "session-1")
+    assert app.state.loaded_session == (("daniel/agents/builder", "session-1"), None)   # (session, visitor)
 
 
 async def test_second_utterance_is_rejected_busy_while_one_is_in_flight():
@@ -920,3 +920,53 @@ def test_interrupt_cancels_only_this_connections_turn_and_re_arms_the_prompt():
             ws.send_json({"type": "turn", "text": "conjure open shell"})
             nxt = ws.receive_json()
             assert nxt["type"] != "busy"
+
+
+# --------------------------------------------------------------------------- serving everyone / visits
+# docs/specs/agents.md §8.4, §8.5 — the agent server decides each turn's ACTOR and keeps a visitor's
+# conversation beside the host session's.
+
+def _live(**kw):
+    return {"agent": "builder", "scope": "daniel/agents/builder", "session": "session-1", "world": "default",
+            "space": "<void>", "owner": "daniel", **kw}
+
+
+def test_a_guests_turn_acts_as_the_world_when_the_session_serves_everyone():
+    from conjure.agent_server import _actor_for
+    app = _app(FakeShell())
+    app.state.shell.director.agent = types.SimpleNamespace(name="builder")
+    app.state.live = _live(serves="everyone")
+    assert _actor_for(app, "bob") == "daniel/agents/builder"
+    assert _actor_for(app, "daniel") == "daniel/agents/builder"
+    app.state.live = _live(serves="owner")
+    assert _actor_for(app, "bob") == "bob/agents/builder"           # the gate refuses this one
+    assert _actor_for(app, "daniel") == "daniel/agents/builder"
+
+
+def test_a_visiting_agents_turn_acts_as_the_visitor():
+    from conjure.agent_server import _actor_for
+    app = _app(FakeShell())
+    app.state.shell.director.agent = types.SimpleNamespace(name="outdoor")
+    app.state.live = _live(agent="outdoor", visitor="outdoor", serves="everyone")
+    assert _actor_for(app, "daniel") == "daniel/agents/outdoor"
+
+
+async def test_a_visitor_has_its_own_transcript_beside_the_hosts(tmp_path):
+    sessions = SessionRepository(tmp_path)
+    sessions.append_transcript("daniel/agents/builder", "session-1", {"role": "user", "by": "daniel", "text": "host"})
+    sessions.append_transcript("daniel/agents/builder", "session-1",
+                               {"role": "user", "by": "daniel", "text": "build"}, visitor="outdoor")
+    shell = FakeShell()
+    app = _app(shell, [], sessions=sessions)
+    await _reconcile_state(app, _live(agent="outdoor", visitor="outdoor"))
+    assert [t.text for t in shell.director.transcript] == ["build"]
+    await _reconcile_state(app, _live())                             # visit over → the host's dialog again
+    assert [t.text for t in shell.director.transcript] == ["host"]
+    assert (tmp_path / "daniel/agents/builder/sessions/session-1/visits/outdoor/transcript.jsonl").exists()
+
+
+def test_a_visitor_name_cannot_escape_the_session(tmp_path):
+    import pytest
+    sessions = SessionRepository(tmp_path)
+    with pytest.raises(ValueError):
+        sessions.transcript_path("daniel/agents/builder", "session-1", visitor="../x")
