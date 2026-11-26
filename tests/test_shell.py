@@ -1255,11 +1255,11 @@ def test_a_flag_like_word_inside_a_filename_is_not_a_flag():
 def test_a_spoken_command_loses_the_sentence_punctuation_a_recognizer_adds():
     from conjure.shell import spoken_command
 
-    assert spoken_command("agent erotic.") == "agent erotic"
-    assert spoken_command("agent, erotic.") == "agent erotic"
+    assert spoken_command("agent companion.") == "agent companion"
+    assert spoken_command("agent, companion.") == "agent companion"
     assert spoken_command("open shell!") == "open shell"
     assert spoken_command("talk to Gemini?  ") == "talk to Gemini"
-    assert spoken_command("agent erotic") == "agent erotic"            # idempotent on a clean command
+    assert spoken_command("agent companion") == "agent companion"            # idempotent on a clean command
 
 
 async def test_conjure_agent_x_spoken_as_a_sentence_switches_the_agent():

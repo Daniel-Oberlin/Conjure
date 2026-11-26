@@ -497,16 +497,16 @@ These are **voice-only**: in text they would claim every LLM name as a reserved 
 typed form is the noun command.
 
 **A spoken command is read as it would have been typed.** A recognizer writes sentences — "Conjure agent
-erotic." — and the command table was written for what people type. Before a voice line is matched
+companion." — and the command table was written for what people type. Before a voice line is matched
 (`spoken_command`, applied by the agent server ahead of the open/leave toggles, and again in `_dispatch`),
-trailing sentence punctuation is dropped and commas read as pauses: `agent, erotic.` → `agent erotic`.
+trailing sentence punctuation is dropped and commas read as pauses: `agent, companion.` → `agent companion`.
 Typed lines are untouched, because a typed `cd ..` means its dots. Without this, `agent` — whose names may
-contain dots — took `erotic.` as the name and answered "No agent 'erotic.'", which sounds like a refusal.
+contain dots — took `companion.` as the name and answered "No agent 'companion.'", which sounds like a refusal.
 
-**The wake word may be its own sentence.** Grok writes "Conjure. Agent erotic." — so any punctuation may
+**The wake word may be its own sentence.** Grok writes "Conjure. Agent companion." — so any punctuation may
 follow the wake word (`[\s,:;.!?…]*`), and a bare "Conjure." opens the shell like "conjure" does. And in
 shell mode a leading wake word is still stripped: every line there is a command, but "conjure agent
-erotic" spoken out of habit means `agent erotic`, not a command named *Conjure*.
+companion" spoken out of habit means `agent companion`, not a command named *Conjure*.
 
 **The `voice` flag also selects the OUTPUT.** Which commands exist is one registry; how their answers
 read is not. Every listing the shell prints is a column of rows with `*` or `@` marking the current one,
@@ -1122,7 +1122,7 @@ agent's roster allows it.
 ### 8.4a Visiting another agent's world
 
 `agent <name> visit` brings another of the **same user's** agents into the live world without moving
-it. The point is to keep specialist agents small: the erotic agent doesn't carry the building tool
+it. The point is to keep specialist agents small: the companion agent doesn't carry the building tool
 surface; you bring `builder` in, build with it directly, and hand back. The host's agent definition
 must list the visitor (`visiting_agents`, §3); the world server refuses anything else, and refuses a
 non-owner speaker. Plain `agent <name>` still goes to that agent's own world.

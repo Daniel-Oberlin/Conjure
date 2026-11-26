@@ -559,7 +559,7 @@ class Shell:
         self._cwd = cwd or default_cwd(self._acting, self._agent_name())
         self._cwd_display = cwd_display or self._cwd
         if voice:
-            cmd = spoken_command(cmd)                         # "agent erotic." → "agent erotic" (idempotent)
+            cmd = spoken_command(cmd)                         # "agent companion." → "agent companion" (idempotent)
             sm = _SPOKEN_LLM.match(cmd)                       # spoken aliases for `llm <name>`
             if sm and await self._switch_llm(on_text, sm):
                 return

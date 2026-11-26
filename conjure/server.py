@@ -2056,7 +2056,7 @@ async def scope_activate(req: ActivateScopeRequest) -> dict:
     """Activate a world in `scope` (resume last-active, else create default). Called on agent switch so
     the live world matches the new agent. Un-gated like /worlds/switch — everyone present comes along.
 
-    Switching back to the HOST agent during a visit (`agent erotic` while builder visits erotic's world)
+    Switching back to the HOST agent during a visit (`agent companion` while builder visits companion's world)
     targets the scope that is already live, so it would answer `unchanged` and move nothing. It ends the
     visit instead: the world stays, the conversation returns to its own agent."""
     global active_visitor

@@ -840,7 +840,7 @@ speaker. Built 2026-11-24: [`specs/agents.md` §8.4a, §8.5, §9.4](./specs/agen
 
 **Why:** Two wants drove it, on 2026-11-23/24. First, a shared session should be truly shared: in a
 multi-person experience the people present talk to the agent as participants, and the agent shapes the
-world for all of them. Second, a specialist agent (the erotic one) should not have to carry the whole
+world for all of them. Second, a specialist agent (the companion) should not have to carry the whole
 building tool surface; builder can come in and do it. Both come down to whose authority a write uses, not
 who holds the world, so one change to the write gate serves both. Making `everyone` the default reflects
 that solo use is unaffected and a private session already keeps guests out, so the switch only matters in
