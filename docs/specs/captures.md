@@ -704,7 +704,69 @@ glTF importer reads a joint node's TRS as the bone's *rest* and reconciles the d
 animation channel is the one thing it applies over everything else.
 
 
-## 6. Related specs
+## 6. Unity player builds
+
+`conjure/unity.py` + `scripts/unity_rebuild.py`. The same job as §3 for a different engine: a Unity
+player build (an APK's `assets/bin/Data`, or a desktop `*_Data` folder) holds its scene, meshes,
+materials and textures as serialized engine objects, which no browser and no ordinary viewer opens. It is
+read with **UnityPy**, an optional dependency (`pip install -e ".[unity]"`) that only the converter
+imports — the server never needs it, as §5 keeps Blender out of it.
+
+```bash
+python scripts/unity_rebuild.py <Data dir> --list --under Ships       # the things it would write
+python scripts/unity_rebuild.py <Data dir> --out temp/unity --under Ships
+python scripts/unity_rebuild.py <Data dir> --out out --under Ships --lossless   # full-size PNG
+```
+
+**One GLB per thing.** A thing is a child of `--under` (a GameObject name or path), or each scene root
+that renders anything when it is omitted. The thing keeps its **world rotation and scale** — the size the
+app shows it at, which can be real-world (a starship build exports its ships at canonical length, a
+1701-D at 641 m) — and sits at the origin. Children keep their local transforms, inactive ones included:
+a runtime script may enable them, and a part the app can show has to be in the file to be shown (the
+§3 rule). Each inactive object and disabled renderer is reported.
+
+**What is exact.** Measured against the build, not assumed:
+
+| | |
+|---|---|
+| positions | float32 in both; copied |
+| normals, tangents, UVs | float16 in the build is common; glTF has no half type, so they widen to float32 — every half value is representable, so this is exact. Unity **pads** half streams to 4 components (a normal is `xyz` + pad); streams are shaped by vertex count and sliced, never by a fixed width |
+| compressed meshes | Unity's quantised "mesh compression" decodes to exactly what the app renders; the pre-quantisation detail is not in the build |
+| handedness | X negated in positions, normals, tangents and node transforms; tangent `w` flips with it; winding reversed. A test holds the three together — a reversed winding with an unmirrored normal renders inside-out and looks like a lighting bug |
+| UVs | `v → 1 - v`; UnityPy decodes images upright to match |
+| submeshes | one primitive each, sharing one set of vertex accessors, in the renderer's material order |
+
+**Textures** are written as the build decodes them. On a headset build they were ASTC or ETC2 — already
+lossy, and the originals are not in the build — so the pixel-exact decode is the best there is.
+`--max-texture` defaults to the same 1024 budget as §3; `--lossless` keeps full size and PNG throughout.
+
+**Materials are a translation**, following `UnityStandardInput.cginc` rather than memory:
+
+- **Standard** (and custom shaders whose name ends `Standard…`, e.g. a decal variant with a depth offset)
+  maps exactly onto metallic-roughness: metallic from `_MetallicGlossMap.r` or `_Metallic`; smoothness
+  from the gloss map's alpha — or the **albedo's** alpha under `_SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A` —
+  times `_GlossMapScale`, else `_Glossiness`; roughness `= 1 - smoothness`, both perceptual. A derived
+  metal-rough texture is written when either comes from a map.
+- **Standard (Specular setup)** uses `KHR_materials_specular` with metallic 0 and
+  `specularColorFactor = 25`, so `F0 = 0.04 × 25 × texture` is the spec map itself, as Unity stores it.
+  Close, not identical: Unity's diffuse energy conservation is not glTF's.
+- Colours are serialized in **gamma** and linearised for glTF factors; an emission colour above 1 becomes
+  `KHR_materials_emissive_strength`. Standard emits only with `_EMISSION` and a non-black colour.
+- `_MainTex_ST` becomes `KHR_texture_transform`, re-expressed for the flipped V.
+- Anything else — legacy, custom — gets colour, texture and emission and a note. Where such a shader has
+  an emission colour but no emission map, the base texture glows rather than the whole surface.
+- Dropped with a note: detail maps, parallax, alpha masks in a second texture, premultiplied blending.
+
+**Reported, not exported:** behaviour scripts (spinning parts, pulsing lights are `MonoBehaviour`s, not
+animation clips), audio clips on `AudioSource`s, skinned meshes (not yet handled).
+
+Verified on one build (VROOM *Enterprises* 1.02, eleven ships, 12k–773k triangles): every output passes
+the Khronos glTF validator with no errors or warnings, loads through `scripts/glb_check.mjs`, and renders
+correctly in Blender — registries read the right way round, which is the handedness check a human can
+make at a glance.
+
+
+## 7. Related specs
 
 - [`specs/figures.md`](./figures.md) — what a figure IS once it arrives: bones, poses, parts, clips.
 - [`specs/library.md`](./library.md) — the catalog row, the kinds, scope, and search.
