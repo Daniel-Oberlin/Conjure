@@ -28,7 +28,7 @@ and its notes in [`research/companion-chatbots/notes/`](../research/companion-ch
 
 Companion apps keep people through **continuity**: one specific character who remembers what you
 shared, knows how long you've been apart, sounds like itself every time, and sometimes speaks first.
-The `erotic` agent has one of those four in miniature — a schema-checked `kinks` doc injected every
+The companion agent (`companion`, formerly `erotic`) has one of those four in miniature — a schema-checked `kinks` doc injected every
 turn — and none of the rest:
 
 | what a companion needs | Conjure today |
@@ -53,7 +53,7 @@ Two ordering rules follow from the research:
 
 **Everything here is generic.** The runtime stays agent-agnostic (`director.py:313` — "nothing
 agent-specific lives here"): every mechanism is a declaration in `agent.json` that any agent may opt
-into, and an agent that declares nothing behaves exactly as today. `erotic` is the first consumer, not
+into, and an agent that declares nothing behaves exactly as today. `companion` is the first consumer, not
 a special case. Schema changes are additive (live data is shared across branches).
 
 ---
@@ -85,7 +85,7 @@ a special case. Schema changes are additive (live data is shared across branches
 
 ## 2. Phase 0 — config and prompt only (days, no code)
 
-All in `~/.config/conjure/agents/erotic/`. Each item is reversible by editing one file.
+All in `~/.config/conjure/agents/companion/`. Each item is reversible by editing one file.
 
 1. **Acknowledge the LLM variation (decided 2026-11-25: don't pin yet).** The four LLMs stay in
    rotation; each is a slightly different woman, and that is accepted for now. What this phase does
@@ -114,7 +114,7 @@ least one genuine disagreement.
 
 **Status (2026-11-25): runtime built** — `scope`, `migrate_from` and `timeline` are in
 [`specs/agents.md`](../specs/agents.md) §7.4, the shell reaches agent-wide docs at
-`/<user>/agents/<agent>/state/`, and the erotic agent's config declares `profile` / `relationship` /
+`/<user>/agents/<agent>/state/`, and the companion agent's config declares `profile` / `relationship` /
 `self` / `scene`. **Deferred:** budgets (see below) and the director-written `last_used`/`uses` on likes
 — both wait until a doc is big enough, or the novelty rule demonstrably misfires.
 
@@ -144,7 +144,7 @@ private. A guest in a shared session reads and contributes to the owner's docs; 
 deferred to the backlog until shared companion sessions are real. `StateStore` is unchanged — the director holds two stores and routes by
 the doc's declared scope. The six `state_*` tools keep their signatures.
 
-**The docs** (schemas are the agent's, shown here for `erotic`):
+**The docs** (schemas are the agent's, shown here for `companion`):
 
 - `profile` — today's `kinks` (`likes.<slug>` with `note`, `heat`, `learned`; `limits`; `notes`),
   plus `last_used` and `uses` on each like, written by the director when a like's slug is mentioned
@@ -457,7 +457,7 @@ and back-off.
    director tool over the same `state_delete` / `episode_forget`.
 2. **"Why did you say that?"** A shell verb that shows the episodes and docs injected into the last
    reply (from phase 4's retrieval log).
-3. **Export.** `agent erotic export` → a versioned bundle: persona, schemas, agent-scoped state,
+3. **Export.** `agent companion export` → a versioned bundle: persona, schemas, agent-scoped state,
    episodes, optionally transcripts. Every competitor shutdown in 2026 (Ani, Character.AI, Replika
    2.0's diary) stranded users' memories; the file-based agent directory makes this cheap.
 

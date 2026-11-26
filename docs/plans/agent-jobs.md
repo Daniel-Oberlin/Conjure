@@ -228,7 +228,7 @@ rate-limits; bare-URL labelling; private-agent leak check; discreet default.
 
 ## 7. Phase 6 — the companion's jobs (first consumer)
 
-Declared in `~/.config/conjure/agents/erotic/agent.json`, owned by [`companion.md`](./companion.md):
+Declared in `~/.config/conjure/agents/companion/agent.json`, owned by [`companion.md`](./companion.md):
 
 | job | trigger | tools | delegate | output |
 |---|---|---|---|---|
