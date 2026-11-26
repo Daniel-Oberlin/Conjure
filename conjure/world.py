@@ -772,6 +772,16 @@ class SessionRepository:
         base = self.visit_dir(scope, sid, visitor) if visitor else self.dir(scope, sid)
         return base / "state"
 
+    def agent_state_dir(self, scope: str) -> Path:
+        """Where an agent keeps state that outlives any one session — ``<scope>/state/``, beside
+        ``sessions/`` (docs/specs/agents.md §7.4). The scope already names the user, so this is per user
+        per agent: every session that agent has for that user shares it."""
+        return self._scope_dir(scope) / "state"
+
+    def agent_state(self, scope: str) -> "StateStore":
+        """The agent-wide `StateStore` for `scope` (see `agent_state_dir`)."""
+        return StateStore(self.agent_state_dir(scope))
+
     def worlds_dir(self, scope: str, sid: str) -> Path:
         return self.dir(scope, sid) / "worlds"
 
@@ -935,6 +945,46 @@ class StateStore:
         if ok:
             self.write(doc, d)
         return ok
+
+
+class ScopedStateStore:
+    """One `StateStore`-shaped view over **two** stores: a session's and its agent's (docs/specs/agents.md
+    §7.4). Each doc lives in exactly one of them, chosen by the agent's declaration — a doc named in
+    `agent_docs` is the agent's, anything else the session's — so the six ``state_*`` tools and the
+    ``{…}`` injections keep addressing a doc by name and never learn where it lives."""
+
+    def __init__(self, session: "StateStore", agent: "StateStore", agent_docs=()):
+        self.session = session
+        self.agent = agent
+        self.agent_docs = frozenset(agent_docs)
+
+    def store_for(self, doc: str) -> "StateStore":
+        return self.agent if doc in self.agent_docs else self.session
+
+    def list(self) -> list[str]:
+        own = [d for d in self.agent.list() if d in self.agent_docs]
+        return sorted(set(own) | {d for d in self.session.list() if d not in self.agent_docs})
+
+    def _path(self, doc: str) -> Path:
+        return self.store_for(doc)._path(doc)
+
+    def read(self, doc: str) -> Any:
+        return self.store_for(doc).read(doc)
+
+    def write(self, doc: str, value: Any) -> None:
+        self.store_for(doc).write(doc, value)
+
+    def get(self, doc: str, path: str | None = None) -> Any:
+        return self.store_for(doc).get(doc, path)
+
+    def set(self, doc: str, path: str, value: Any, *, validate=None) -> Any:
+        return self.store_for(doc).set(doc, path, value, validate=validate)
+
+    def merge(self, doc: str, value: dict, *, validate=None) -> Any:
+        return self.store_for(doc).merge(doc, value, validate=validate)
+
+    def delete(self, doc: str, path: str | None = None) -> bool:
+        return self.store_for(doc).delete(doc, path)
 
 
 class SpaceStore:

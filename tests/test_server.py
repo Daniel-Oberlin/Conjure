@@ -2616,7 +2616,7 @@ def test_admin_tree_exposes_the_agent_and_session_levels(srv, client):
     # says so: hiding it merges two sessions' worlds into one indistinguishable list.
     _seed_worlds(srv, "alice/agents/builder", "w1", "w2")
     sid = srv.sessions.get_active("alice/agents/builder") or MIGRATED_SID
-    assert _ls(client, "/alice/agents/builder") == {"sessions", "assets", "worlds"}
+    assert _ls(client, "/alice/agents/builder") == {"sessions", "state", "assets", "worlds"}
     assert _ls(client, "/alice/agents/builder/sessions") == {sid}
     assert _ls(client, f"/alice/agents/builder/sessions/{sid}") == {"worlds", "state"}
     assert _ls(client, f"/alice/agents/builder/sessions/{sid}/worlds") == {"w1", "w2"}
@@ -3037,6 +3037,28 @@ def test_deleting_a_state_doc_makes_the_agent_forget_it(srv, client):
     assert r["ok"] is True and state.list() == ["map"]
     client.post("/admin/delete", json={"path": f"/{scope}/sessions/{sid}/state"}).json()
     assert state.list() == []
+
+
+def test_agent_wide_state_is_addressable_beside_sessions(srv, client):
+    # `scope: agent` docs (§7.4) live at <scope>/state/, outliving every session; the shell reaches them
+    # at the path that mirrors storage, shows them as agent-wide, and can delete them.
+    scope = "alice/agents/builder"
+    _seed_worlds(srv, scope, "w1")
+    store = srv.sessions.agent_state(scope)
+    store.write("profile", {"likes": {"rain": {"note": "rain"}}, "notes": "slow"})
+    store.write("self", {"opinions": {}})
+    assert _ls(client, f"/{scope}/state") == {"profile", "self"}
+    doc = client.post("/admin/show", json={"path": f"/{scope}/state/profile"}).json()
+    fields = dict(doc["fields"])
+    assert fields["doc"] == "profile" and "agent-wide" in fields["session"]
+    shown = client.post("/admin/tree", json={"path": f"/{scope}/state/profile"}).json()["display"]
+    assert shown == f"/{scope}/state/profile"
+    bad = client.post("/admin/tree", json={"path": f"/{scope}/state/nope"}).json()
+    assert bad["ok"] is False and "agent-wide" in bad["error"]
+    assert client.post("/admin/delete", json={"path": f"/{scope}/state/profile"}).json()["ok"] is True
+    assert store.list() == ["self"]
+    client.post("/admin/delete", json={"path": f"/{scope}/state"})
+    assert store.list() == []
 
 
 def test_a_void_space_shows_its_sentinel_not_a_word(srv, client):

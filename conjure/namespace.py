@@ -158,8 +158,15 @@ def resolve(path: str):
         return _asset_loc(user, agent, segs[4])
     if sub == "worlds":                                        # shortcut → the active session's worlds
         return resolve(f"/{scope}/sessions/{_h()._active_sid_for(scope)}/" + "/".join(segs[3:]))
+    if sub == "state":                                         # agent-wide memory: outlives every session
+        if len(segs) == 4:                                     # (specs/agents.md §7.4). `sid` empty = this one
+            return Loc("state", user, agent)
+        doc = "/".join(segs[4:])
+        if doc not in _h().sessions.agent_state(scope).list():
+            return f"no agent-wide state doc {doc!r} for {agent}"
+        return Loc("statedoc", user, agent, "", doc)
     if sub != "sessions":
-        return f"unknown category {sub!r} (worlds|sessions|assets)"
+        return f"unknown category {sub!r} (worlds|sessions|state|assets)"
     if len(segs) == 4:
         return Loc("sessions", user, agent)
 
@@ -184,7 +191,7 @@ def resolve(path: str):
         if len(segs) == 6:
             return Loc("state", user, agent, sid)
         doc = "/".join(segs[6:])
-        if doc not in _h().sessions.state(f"{user}/agents/{agent}", sid).list():
+        if doc not in _state_store(f"{user}/agents/{agent}", sid).list():
             return f"no state doc {doc!r} in {sid}"
         return Loc("statedoc", user, agent, sid, doc)
     if segs[5] != "worlds":
@@ -287,7 +294,10 @@ def loc_path(loc: Loc) -> str:
     if loc.kind == "session":
         return f"{base}/{loc.sid}"
     if loc.kind in ("state", "statedoc"):
-        return f"{base}/{loc.sid}/state" + (f"/{loc.name}" if loc.kind == "statedoc" else "")
+        leaf = f"/{loc.name}" if loc.kind == "statedoc" else ""
+        if not loc.sid:                                        # agent-wide (§7.4) — beside sessions/
+            return f"/{loc.user}/agents/{loc.agent}/state{leaf}"
+        return f"{base}/{loc.sid}/state{leaf}"
     return f"{base}/{loc.sid}/worlds" + (f"/{loc.name}" if loc.kind == "world" else "")
 
 def label_of(loc: Loc) -> str:
@@ -557,10 +567,19 @@ def _describe(v) -> str:
     return text if len(text) <= 60 else text[:59] + "…"
 
 
+def _state_store(scope: str, sid: str):
+    """A state Loc's store: the session's, or — with no `sid` — the agent-wide one (§7.4)."""
+    return _h().sessions.state(scope, sid) if sid else _h().sessions.agent_state(scope)
+
+
+def _state_dir(scope: str, sid: str):
+    return _h().sessions.state_dir(scope, sid) if sid else _h().sessions.agent_state_dir(scope)
+
+
 def state_row(scope: str, sid: str, doc: str) -> dict:
     """A state doc, summarised by what it holds — the shape is the agent's, not ours (§7.4), so the only
     honest summary is its size and how many top-level entries it has."""
-    store = _h().sessions.state(scope, sid)
+    store = _state_store(scope, sid)
     try:
         data = store.read(doc)
     except (OSError, ValueError):
@@ -618,14 +637,14 @@ def children(loc: Loc, *, limit: int = 200) -> list[dict]:
                 for a in agents(loc.user)]
     if loc.kind == "agent":
         sid = _h()._active_sid_for(loc.scope)
-        return [node("sessions", "category"), node("assets", "category"),
+        return [node("sessions", "category"), node("state", "category"), node("assets", "category"),
                 node("worlds", "shortcut", f"→ sessions/{sid}/worlds" if sid else "→ (no active session)")]
     if loc.kind == "sessions":
         return [session_row(loc.scope, s) for s in _h().sessions.list(loc.scope)]
     if loc.kind == "session":
         return [node("worlds", "category"), node("state", "category")]
     if loc.kind == "state":
-        return [state_row(loc.scope, loc.sid, d) for d in _h().sessions.state(loc.scope, loc.sid).list()]
+        return [state_row(loc.scope, loc.sid, d) for d in _state_store(loc.scope, loc.sid).list()]
     if loc.kind == "worlds":
         return [world_row(loc.scope, loc.sid, n) for n in _h()._session_worlds(loc.scope, loc.sid).list()]
     if loc.kind == "spaces":
@@ -774,9 +793,9 @@ def files(loc: Loc) -> list[dict]:
             out.append({"role": "source", "path": src})
         return out
     if loc.kind == "statedoc":
-        return [_stat("doc", h.sessions.state(loc.scope, loc.sid)._path(loc.name))]
+        return [_stat("doc", _state_store(loc.scope, loc.sid)._path(loc.name))]
     if loc.kind == "state":
-        return [_stat("dir", h.sessions.state_dir(loc.scope, loc.sid), required=False)]
+        return [_stat("dir", _state_dir(loc.scope, loc.sid), required=False)]
     if loc.kind in ("worlds",):
         return [_stat("dir", h.sessions.worlds_dir(loc.scope, loc.sid))]
     if loc.kind in ("sessions",):
@@ -999,12 +1018,12 @@ def fields(loc: Loc) -> list[list]:
                 ["last used", str(r.get("last_used") or "—")]]
         return rows + _attribute_rows(r) + _link_rows(r["id"])
     if loc.kind == "statedoc":
-        store = _h().sessions.state(loc.scope, loc.sid)
+        store = _state_store(loc.scope, loc.sid)
         try:
             data = store.read(loc.name)
         except (OSError, ValueError) as exc:
             return [["error", str(exc)]]
-        rows = [["doc", loc.name], ["session", loc.sid], ["scope", loc.scope]]
+        rows = [["doc", loc.name], ["session", loc.sid or "— (agent-wide)"], ["scope", loc.scope]]
         if isinstance(data, dict):
             # The agent owns this schema, not us (§7.4), so the only honest rendering is the top level
             # with each value described rather than dumped — a map or an inventory can be large.
@@ -1134,17 +1153,17 @@ def delete(loc: Loc) -> dict:
         return {"ok": True, "deleted": f"{_h().spaces.delete_user(loc.user)} spaces for {loc.user!r}"}
 
     if loc.kind == "statedoc":
-        p = _h().sessions.state(loc.scope, loc.sid)._path(loc.name)
+        p = _state_store(loc.scope, loc.sid)._path(loc.name)
         if not p.exists():
             return {"ok": False, "error": f"no state doc {loc.name!r}"}
         p.unlink()
         return {"ok": True, "deleted": f"state doc {loc.name!r} — the agent has forgotten it"}
     if loc.kind == "state":
-        store = _h().sessions.state(loc.scope, loc.sid)
+        store = _state_store(loc.scope, loc.sid)
         docs = store.list()
         for d in docs:
             store._path(d).unlink(missing_ok=True)
-        return {"ok": True, "deleted": f"{_plural(len(docs), 'state doc')} in {loc.sid}"}
+        return {"ok": True, "deleted": f"{_plural(len(docs), 'state doc')} in {loc.sid or 'agent-wide state'}"}
     if loc.kind == "asset":
         rec = _h().library.get(loc.name)
         sc = (rec or {}).get("scope") or ""

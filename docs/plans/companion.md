@@ -112,6 +112,18 @@ least one genuine disagreement.
 
 ## 3. Phase 1 — memory that outlives the session
 
+**Status (2026-11-25): runtime built** — `scope`, `migrate_from` and `timeline` are in
+[`specs/agents.md`](../specs/agents.md) §7.4, the shell reaches agent-wide docs at
+`/<user>/agents/<agent>/state/`, and the erotic agent's config declares `profile` / `relationship` /
+`self` / `scene`. **Deferred:** budgets (see below) and the director-written `last_used`/`uses` on likes
+— both wait until a doc is big enough, or the novelty rule demonstrably misfires.
+
+**Adopted into this phase 2026-11-25** (from §17): **facts with a timeline** — `timeline: true` docs
+stamp `since`, and deleting an entry closes it with `until` instead of erasing it (`forget: true`
+erases); and **prospective memory** — each `relationship.open_threads` entry may carry a `trigger`
+(`{place}`, `{after}` date, or `{next_session: true}`). The schema and prompt carry the trigger now;
+checking it at resume and on entering a world arrives with phases 2 and 6.
+
 The backlog's design (`backlogs/agents.md` "Agent state"), with its open question answered: an
 agent-scoped doc is **per user, per agent**.
 
@@ -145,7 +157,7 @@ the doc's declared scope. The six `state_*` tools keep their signatures.
   time). The anti-sycophancy anchor and the source material for initiative (phase 7).
 - `scene` — tonight's thread; session-scoped on purpose.
 
-**Budgets.** Each injected agent doc gets a `max_chars` (default none). Over budget, the injection
+**Budgets — deferred.** Each injected agent doc gets a `max_chars` (default none). Over budget, the injection
 drops lowest-`heat` / oldest entries from the *view*, never from disk, and `context_stats` reports it.
 
 **Migration.** On first load of an agent-scoped doc that doesn't exist yet, seed it from the same-name
@@ -528,14 +540,14 @@ would change. Decide, then move it into its phase or into §15.
    lean, which matters for the 5.9 s. Open question: how far to lean on the briefing versus live
    retrieval — briefing is faster and more coherent, but only retrieval catches something unexpected
    he raises mid-session. Leaning: both.
-2. **Facts with a timeline** (phase 1 schemas). Zep/Graphiti's bi-temporal idea without a graph DB:
+2. **Adopted into phase 1, 2026-11-25.** **Facts with a timeline** (phase 1 schemas). Zep/Graphiti's bi-temporal idea without a graph DB:
    `since` / `until` on profile and relationship entries; a contradiction **closes** the old entry
    rather than deleting it. Gives "you used to be into X, not lately" and "you told me in October",
    and handles corrections properly.
 3. **Multi-level summaries** (phase 4, a periodic roll-up job). Session → week → a running "story of
    us" (RAPTOR / Kindroid's cascaded memory), so recall can pick "last Tuesday" or "since summer"
    instead of searching a flat list of months of episodes.
-4. **Prospective memory — intentions with a trigger** (phase 1 `relationship.open_threads`, phase 2
+4. **Adopted into phase 1, 2026-11-25.** **Prospective memory — intentions with a trigger** (phase 1 `relationship.open_threads`, phase 2
    resume, phase 6 events). "Next time we're in the red room…", "ask how the interview went", "when
    I'm back from the trip": a thread carries a place, time or next-session trigger and is checked at
    resume and on entering a world.

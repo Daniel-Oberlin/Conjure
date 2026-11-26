@@ -108,6 +108,11 @@ class AgentDef:
     def allows_any_llm(self) -> bool:
         return WILDCARD in self.llms
 
+    def agent_docs(self) -> set[str]:
+        """The state docs declared `scope: agent` — kept once per user per agent, not per session (§7.4)."""
+        return {doc for doc, spec in self.state.items()
+                if isinstance(spec, dict) and spec.get("scope") == "agent"}
+
     def allows_llm(self, name: str) -> bool:
         return self.allows_any_llm() or name in self.llms
 
@@ -208,6 +213,18 @@ def load_agent(name: str, *, agents_dir: Optional[Path] = None,
                 spec["schema_data"] = json.loads((agent_dir / spec["schema"]).read_text())
             except (OSError, ValueError):
                 pass
+        # Lifetime (§7.4): `session` (default — a fresh copy per session) or `agent` (one doc per user per
+        # agent, shared by every session). A typo here would silently fall back to per-session and lose
+        # exactly the memory the author meant to keep, so anything else is fatal.
+        scope = spec.get("scope", "session")
+        if scope not in ("session", "agent"):
+            raise ValueError(f"agent {name!r}: state doc {doc!r} has scope {scope!r} (session|agent)")
+        if spec.get("migrate_from") is not None:
+            if scope != "agent" or not isinstance(spec["migrate_from"], str) or not spec["migrate_from"]:
+                raise ValueError(f"agent {name!r}: state doc {doc!r}: `migrate_from` names a per-session doc "
+                                 f"and is only meaningful on a `scope: agent` doc")
+        if not isinstance(spec.get("timeline", False), bool):
+            raise ValueError(f"agent {name!r}: state doc {doc!r}: `timeline` is true or false")
 
     return AgentDef(
         name=name, description=data.get("description", ""), prompt=prompt,
