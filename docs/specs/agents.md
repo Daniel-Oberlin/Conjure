@@ -164,7 +164,7 @@ user-first, first match wins. `list_agents()` annotates each name `bundled` or `
   "world":   { "outdoor": false, "on_create": [ … ], "on_exit": [] },  // §7.5
   "session": { "public": true, "serves": "everyone", "greeting": "…", "first_world": { … } },  // §7.5, §9.4
   "visiting_agents": ["builder"],              // other agents of yours allowed to work in these worlds (§8.4)
-  "state":   { "quest": { "seed": …, "schema": …, "inject": "{quest}" } }  // §7.4
+  "state":   { "quest": { "seed": …, "schema": …, "inject": "{quest}", "scope": "session" } }  // §7.4
 }
 ```
 
@@ -183,7 +183,7 @@ user-first, first match wins. `list_agents()` annotates each name `bundled` or `
 | `session.public` | no (`true`) | — | visibility a NEW session is born with, on **every** mint path (§7.5) |
 | `session.serves` | no (`"everyone"`) | — | whom the agent makes changes for: everyone present, or only the world's `"owner"`. A session's own setting (the `serve` verb) wins (§9.4) |
 | `visiting_agents` | no (`[]`) | — | agents of the **same user** that may work in this agent's worlds via `agent <name> visit` (§8.4). Read by the world server |
-| `world` / `session` / `state` | no (`{}`) | `state[].seed`/`schema` files parsed if present (failures skipped) | read by the world server and the agent server, not the loader |
+| `world` / `session` / `state` | no (`{}`) | `state[].seed`/`schema` files parsed if present (failures skipped); `state[].scope` ∈ session/agent, `migrate_from` only on agent docs, `timeline` boolean — else fatal | read by the world server and the agent server, not the loader |
 | `personas` | no (`[]`) | — | parsed into `AgentDef.personas` and **read by nothing** |
 
 A malformed def raises: unknown MCP server, unknown dynamic module, missing/empty prompt, a `name` that
@@ -602,6 +602,7 @@ Paths mirror storage, one level per real containment:
 /<user>/agents/<agent>/assets/<id>                     library rows (virtual — SQLite, not files)
 /<user>/agents/<agent>/sessions/<sid>/worlds/<name>
 /<user>/agents/<agent>/sessions/<sid>/state/<doc>      the agent's own memory (§7.4)
+/<user>/agents/<agent>/state/<doc>                     its agent-wide memory, outliving sessions (§7.4)
 /<user>/agents/<agent>/worlds                          shortcut → the ACTIVE session's worlds
 ```
 
@@ -836,17 +837,37 @@ state_delete(doc, path?)   state_list()   state_schema(doc)
 ```
 
 They are offered **only** when the agent declares a `state` block, and dispatched in-process against the
-live session's `StateStore` (`sessions.state(scope, sid)`) — never over MCP.
+live conversation's state — never over MCP.
 
-Each declared doc carries up to three optional things:
+Each declared doc carries these optional things:
 
 ```jsonc
-"state": { "quest": { "seed": "state/quest.json", "schema": "schema/quest.schema.json",
-                      "inject": "{quest}" } }
+"state": { "quest":   { "seed": "state/quest.json", "schema": "schema/quest.schema.json",
+                        "inject": "{quest}" },
+           "profile": { "scope": "agent", "timeline": true, "migrate_from": "kinks", "inject": "{profile}" } }
 ```
 
+- **`scope`** — the doc's lifetime. `session` (the default) is a fresh copy per session, at
+  `sessions/<id>/state/`. `agent` is **one doc per user per agent**, at `<user>/agents/<agent>/state/`
+  beside `sessions/`, shared by every session that agent has for that user — for what an agent learns
+  about *the user* rather than about one playthrough (a quest's progress should reset with a new game;
+  someone's preferences should not). Anything else is fatal at load, because a typo would silently fall
+  back to per-session and lose exactly the memory the author meant to keep. The tools and injections
+  address a doc by name either way: `ScopedStateStore` routes each name to its store, so the agent never
+  sees where a doc lives. A visiting agent's agent-wide docs are its own agent's, never the host's.
+- **`migrate_from`** (`scope: agent` only) — the name of a per-session doc to adopt when the agent-wide
+  doc doesn't exist yet: the most recently written copy across the scope's sessions is copied (the source
+  is left in place). Falls back to `seed`. This is how an agent moves a doc from per-session to
+  agent-wide without its users starting over.
+- **`timeline`** — the doc's object entries keep dates. A new entry written with `state_set` gets
+  `since` = today unless the model gave one, and a rewrite keeps the old `since`. `state_delete` on an
+  entry **closes** it — stamps `until` = today and keeps it as history ("used to, not lately") — and
+  erases only with `forget: true` (the user asked to forget it, or it was a mistake). A whole doc or a
+  scalar can't be closed and needs `forget: true`. The agent's schema must allow `since`/`until`; a
+  schema that forbids them rejects the stamp like any other invalid write.
+
 - **`seed`** — copied into the session's `state/` at construction (§7.5), a fresh mutable copy per
-  instance. The agent dir's copy stays pristine (class template); the session mutates its own
+  instance; an agent-wide doc is seeded once, the first time any session binds it. The agent dir's copy stays pristine (class template); the session mutates its own
   (instance).
 - **`schema`** — a JSON Schema validated on every write; a violation **rejects** the write with an
   explanation, so a hallucinating LLM can't corrupt a structured doc. Best-effort: skipped if

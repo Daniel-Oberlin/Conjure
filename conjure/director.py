@@ -153,6 +153,12 @@ def _pick_active(agentdef: AgentDef, roster: dict, default_active: str) -> str:
 # offered to the LLM only when the agent declares a `state` block, and dispatched in-process against the
 # live session's StateStore (never over the world MCP server). CRUD over named JSON docs by dotted path;
 # no domain schema here (that's the agent's own data).
+def _today() -> str:
+    """Local calendar date, ISO — the granularity a timeline entry keeps (a fact's day, not its second)."""
+    import datetime
+    return datetime.date.today().isoformat()
+
+
 _STATE_TOOL_SPECS = [
     ToolSpec("state_get", "Read an agent-state document, or a dotted path within it (e.g. doc='map', "
              "path='nodes.throne-room'). Returns JSON.",
@@ -164,8 +170,11 @@ _STATE_TOOL_SPECS = [
     ToolSpec("state_merge", "Shallow-merge an object into an agent-state document.",
              {"type": "object", "properties": {"doc": {"type": "string"}, "value": {"type": "object"}},
               "required": ["doc", "value"]}),
-    ToolSpec("state_delete", "Delete an agent-state document, or a dotted path within it.",
-             {"type": "object", "properties": {"doc": {"type": "string"}, "path": {"type": "string"}},
+    ToolSpec("state_delete", "Delete an agent-state document, or a dotted path within it. In a document "
+             "that keeps a timeline, deleting an entry CLOSES it (stamps `until`, kept as history) — pass "
+             "forget=true only when the user asks you to forget it or it was a mistake.",
+             {"type": "object", "properties": {"doc": {"type": "string"}, "path": {"type": "string"},
+                                               "forget": {"type": "boolean"}},
               "required": ["doc"]}),
     ToolSpec("state_list", "List the agent-state document names.",
              {"type": "object", "properties": {}}),
@@ -404,8 +413,11 @@ class Director:
         if name == "state_get":
             return json.dumps(self._state.get(doc, args.get("path")))
         if name == "state_set":
+            value = args.get("value")
+            if self._timeline(doc):
+                value = self._stamp_since(doc, args["path"], value)
             try:
-                self._state.set(doc, args["path"], args.get("value"), validate=self._state_validator(doc))
+                self._state.set(doc, args["path"], value, validate=self._state_validator(doc))
             except ValueError as e:
                 return f"error: {e}"
             return "ok"
@@ -416,11 +428,52 @@ class Director:
                 return f"error: {e}"
             return "ok"
         if name == "state_delete":
+            if self._timeline(doc) and not args.get("forget"):
+                return self._close_entry(doc, args.get("path"))
             return "ok" if self._state.delete(doc, args.get("path")) else "not found"
         if name == "state_schema":
             spec = self.state_defs.get(doc) or {}
             return json.dumps(spec.get("schema_data") or spec)   # the JSON Schema if declared, else the spec
         return f"error: unknown state tool {name!r}"
+
+    def _timeline(self, doc: str) -> bool:
+        """Whether `doc` keeps a timeline (`timeline: true`, docs/specs/agents.md §7.4): its object entries
+        carry `since`/`until`, and deleting one closes it instead of erasing it."""
+        return bool((self.state_defs.get(doc) or {}).get("timeline"))
+
+    def _stamp_since(self, doc: str, path: str, value):
+        """A timeline doc's entry keeps the date it became true: a NEW object entry gets `since` = today
+        unless the model supplied one, and a rewrite of an existing entry keeps the old `since` — so
+        updating a note doesn't make an old fact look new."""
+        if not isinstance(value, dict) or "since" in value:
+            return value
+        try:
+            prior = self._state.get(doc, path)
+        except (KeyError, TypeError, ValueError):
+            prior = None
+        since = prior.get("since") if isinstance(prior, dict) else None
+        return {**value, "since": since or _today()}
+
+    def _close_entry(self, doc: str, path: Optional[str]) -> str:
+        """Close a timeline entry rather than erase it: stamp `until` = today, keep the rest. Only object
+        entries can be closed; a whole doc or a scalar needs `forget=true`."""
+        if not path:
+            return ("error: this document keeps a timeline — close entries one at a time, or pass "
+                    "forget=true to erase the whole document")
+        try:
+            entry = self._state.get(doc, path)
+        except (KeyError, TypeError, ValueError):
+            entry = None
+        if not isinstance(entry, dict):
+            return ("not found" if entry is None else
+                    "error: only an entry (an object) can be closed — pass forget=true to erase this value")
+        if entry.get("until"):
+            return f"already closed ({entry['until']})"
+        try:
+            self._state.set(doc, path, {**entry, "until": _today()}, validate=self._state_validator(doc))
+        except ValueError as e:
+            return f"error: {e}"
+        return "closed — kept as history with `until`; pass forget=true to erase it"
 
     def _state_validator(self, doc: str):
         """A validator for a state doc's declared JSON Schema (docs/specs/agents.md §7.4), or None if the

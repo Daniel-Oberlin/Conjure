@@ -38,7 +38,7 @@ from .director import Busy
 from .llm import Turn
 from .shell import Shell, default_cwd, spoken_command
 from .speech import for_speech, strip_tags
-from .world import MIGRATED_SID, SessionRepository
+from .world import MIGRATED_SID, ScopedStateStore, SessionRepository
 
 
 # --------------------------------------------------------------------------- connections + fan-out
@@ -345,7 +345,7 @@ def _sync_transcript(app: FastAPI) -> None:
     d.transcript = [_turn(e) for e in app.state.sessions.read_transcript(scope, sid, visitor)]
     bind = getattr(d, "bind_state", None)                    # point state_* tools + {…} injections at this
     if bind:                                                 # session's state store (step 5, decision A)
-        bind(app.state.sessions.state(scope, sid, visitor))
+        bind(_state_view(app, scope, sid, visitor, d.agent))
     if not visitor:                                          # the remembered LLM is the HOST's choice
         try:                                                 # restore the session's remembered LLM, if valid
             llm = (app.state.sessions.load_meta(scope, sid).get("llm") or "")
@@ -354,6 +354,68 @@ def _sync_transcript(app: FastAPI) -> None:
         except (OSError, ValueError):
             pass
     app.state.loaded_session = key
+
+
+def _state_view(app: FastAPI, scope: str, sid: str, visitor: Optional[str], agent) -> "ScopedStateStore":
+    """The live conversation's state as ONE store (docs/specs/agents.md §7.4): the session's docs plus the
+    agent-wide ones (`scope: agent`), routed by name. A visitor's agent-wide docs are its OWN agent's
+    (``<owner>/agents/<visitor>/state/``), never the host's. Agent-wide docs that don't exist yet are
+    created here — migrated from a per-session doc if declared, else seeded — so the first conversation
+    after the declaration appears already has what the agent knew."""
+    from .config import scope_for
+
+    agent_scope = scope_for(scope.split("/", 1)[0], visitor) if visitor else scope
+    view = ScopedStateStore(app.state.sessions.state(scope, sid, visitor),
+                            app.state.sessions.agent_state(agent_scope),
+                            _agent_docs(agent))
+    if view.agent_docs:
+        _ensure_agent_docs(app, agent_scope, view, agent)
+    return view
+
+
+def _agent_docs(agent) -> set:
+    """The agent's `scope: agent` state docs (tolerates a definition without any state block)."""
+    return {doc for doc, spec in (getattr(agent, "state", None) or {}).items()
+            if isinstance(spec, dict) and spec.get("scope") == "agent"}
+
+
+def _ensure_agent_docs(app: FastAPI, agent_scope: str, view: "ScopedStateStore", agent) -> None:
+    """Create each missing agent-wide doc ONCE: from `migrate_from` (the most recently written copy of
+    that per-session doc in any of the scope's sessions) when declared and found, else from `seed`. An
+    existing doc is never touched, so this is idempotent and safe on every bind."""
+    have = set(view.agent.list())
+    for doc in view.agent_docs:
+        if doc in have:
+            continue
+        spec = agent.state.get(doc) or {}
+        value = _latest_session_doc(app, agent_scope, spec["migrate_from"]) if spec.get("migrate_from") else None
+        if value is None:
+            value = spec.get("seed_data")
+        if value is not None:
+            view.agent.write(doc, value)
+
+
+def _latest_session_doc(app: FastAPI, scope: str, doc: str):
+    """The most recently written copy of per-session state doc `doc` across `scope`'s sessions, or None."""
+    best = None
+    try:
+        sids = app.state.sessions.list(scope)
+    except (OSError, ValueError):
+        return None
+    for sid in sids:
+        sid = sid.get("id") if isinstance(sid, dict) else sid
+        try:
+            p = app.state.sessions.state(scope, sid)._path(doc)
+            if p.exists() and (best is None or p.stat().st_mtime > best[0]):
+                best = (p.stat().st_mtime, p)
+        except (OSError, ValueError):
+            continue
+    if best is None:
+        return None
+    try:
+        return json.loads(best[1].read_text())
+    except (OSError, ValueError):
+        return None
 
 
 def _persist_llm(app: FastAPI) -> None:
@@ -393,10 +455,13 @@ def _maybe_seed(app: FastAPI) -> None:
     if meta.get("seeded") is not False:
         return
     defs = getattr(d.agent, "state", {}) or {}
+    agent_docs = _agent_docs(d.agent)
     store = app.state.sessions.state(scope, sid)
     existing = set(store.list())
     for doc, spec in defs.items():
         seed = (spec or {}).get("seed_data")
+        if doc in agent_docs:                                # agent-wide: created once in `_state_view`
+            continue
         if seed is not None and doc not in existing:
             store.write(doc, seed)
     meta["seeded"] = True
