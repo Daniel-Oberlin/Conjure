@@ -241,6 +241,48 @@ Declared in `~/.config/conjure/agents/erotic/agent.json`, owned by [`companion.m
 
 ---
 
+## 7a. Phase 7 — a chat channel to the owner's phone (idea, 2026-11-26)
+
+Email is one-way and slow. The next outward channel is a **two-way chat with the owner's phone**: the
+agent messages him, and **his reply is a turn** — run detached (phase 1), so she can talk and write
+state but not build. Same shape as `email_owner`: one fixed peer, the owner, and nobody else.
+
+**Transport — open protocols only, end-to-end encrypted.**
+
+| | protocol | phone apps | bot side | why / why not |
+|---|---|---|---|---|
+| **Delta Chat** (first) | email + Autocrypt/OpenPGP E2EE | iOS, Android | `deltachat-rpc-client` (Python), a normal account | rides the owner-email whitelist we already have; E2EE; no server to run — a mailbox for her (chatmail or own domain) |
+| **Matrix** (later) | open, federated, E2EE | Element, FluffyChat | `matrix-nio` / matrix-rust-sdk (bot must do E2EE) | richest (voice notes, images, rooms, devices) and self-hostable (Synapse, Conduit); one more service to run — the upgrade if it becomes a hub for several agents |
+| XMPP | open, OMEMO | Conversations (Android), Monal (iOS) | `slixmpp` | works; weaker apps |
+| ntfy | open HTTP push, self-hostable | iOS, Android | one POST | one-way doorbell only ("come in"); fine as a fallback ping |
+
+Ruled out: **Telegram** (bot chats are never E2EE — the server reads everything), **Signal**
+(`signal-cli` is unofficial, needs its own number, against ToS), **WhatsApp / iMessage / Discord**
+(closed; explicit content is a liability).
+
+**Server.** `chat` in `agents/servers.json` — `message_owner(text, audio?)`. No recipient parameter;
+the peer comes from owner config (e.g. `CONJURE_OWNER_CHAT` in `.env`). Inbound messages from **any
+other sender are dropped** unread (logged, never shown to the model). Audio is her TTS output sent as
+a voice note.
+
+**Inbound turns.** A reply from the phone resumes the agent's most recent session (or opens a
+detached one) as an `on_message` trigger (phase 2). It is a user turn with no world: tools limited to
+`say` → chat, `state_*`, and queueing items for the next headset session. Rule 1 still holds — a run
+that read the web doesn't also message out.
+
+**Rules carried over from §6:**
+- **only the owner**, automatically; anything else drafted;
+- **private agents stay discreet on the lock screen** — E2EE protects the wire, not the notification
+  preview, so the *first* message of an exchange is a teaser unless he opts in; replies inside a
+  conversation he opened can carry content (per-agent `"chat": { "discreet": "first" | "always" | false }`);
+- **rate limit + quiet hours** — at most N unprompted messages a day, none in his quiet hours,
+  back-off when ignored (the initiative etiquette from phase 2).
+
+**Tests:** non-owner inbound dropped and never reaches the model; no recipient input honoured;
+discreet first message; rate limit and quiet hours; inbound turn can't call build tools.
+
+---
+
 ## 8. Sequence
 
 | phase | size | depends on | delivers |
@@ -251,13 +293,14 @@ Declared in `~/.config/conjure/agents/erotic/agent.json`, owned by [`companion.m
 | 4 world-editing jobs | medium | 1, 3 | detached visits, job caller in the gate, idle-only runs, snapshots, undo |
 | 5 web + email | small–medium | 1 | two MCP servers, rules 1–3 |
 | 6 companion jobs | small | 1–4, companion 1–4 | consolidation, reflection, "while you were away" |
+| 7 owner chat | medium | 1, 2, 5 | `message_owner` over Delta Chat, inbound replies as detached turns |
 
 ---
 
 ## 9. Not in scope
 
 Jobs for other users' agents; a job editing a world while someone is in it; outward channels other
-than owner email (SMS, chat apps, posting anywhere); jobs creating or deleting worlds; jobs changing
+than owner email and owner chat (SMS, closed chat apps, posting anywhere, messaging anyone but the owner); jobs creating or deleting worlds; jobs changing
 their own declaration.
 
 ---
@@ -271,7 +314,9 @@ their own declaration.
    override for when either bites.
 2. **Owner email — decided 2026-11-25: sent automatically, only to the owner's configured address**;
    the model never names a recipient.
-3. **Headless world edits** (a job editing a world that isn't live, while someone is in another) —
+3. **Owner chat transport — proposed 2026-11-26: Delta Chat first, Matrix later** (§7a); open,
+   E2EE protocols only. Open: discreet-first vs always for private agents.
+4. **Headless world edits** (a job editing a world that isn't live, while someone is in another) —
    deferred; switch-and-restore while idle covers the first consumers.
 4. **Under discussion, not adopted** (noted in [`companion.md`](./companion.md) §17): a **pre-session
    briefing** job that anticipates the next session; a periodic **summary roll-up** job; APScheduler

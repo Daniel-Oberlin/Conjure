@@ -401,6 +401,13 @@ that reads the web may not also act outward in the same run, and as a `private_o
 from her memory may appear in an email or a search query — web lookups stay generic (weather, news, a
 thing he asked her to check). Any other outward action would be drafted and raised next session.
 
+**Later — texting him (idea, 2026-11-26; agent-jobs §7a).** A two-way chat to his phone over an open,
+end-to-end-encrypted protocol — **Delta Chat** first (it rides the same whitelisted owner address),
+Matrix if it grows. She can message him (text or a voice note in her TTS voice); his reply is a turn
+with no world — she talks and remembers, but builds nothing until he's back in the headset. Only he
+can reach her; anyone else's message is dropped unread. The first message of an exchange stays a
+teaser on the lock screen; rate limit, quiet hours and back-off as for initiatives.
+
 **Measure:** initiatives fired, answered vs ignored, and suppressions — the tuning data for threshold
 and back-off.
 **Lands in:** `specs/agents.md` new §7.8.
@@ -496,7 +503,7 @@ the day the agent is shared. The stop verb and the crisis-referral line are chea
 
 ## 15. Not in scope
 
-Outward channels other than email to him (no phone notifications, SMS or chat apps); selfies/images sent outside the headset; a visible affection meter;
+Outward channels other than email or chat to him (no SMS, closed chat apps, or anyone but him) — chat is a later agent-jobs phase (§7a); selfies/images sent outside the headset; a visible affection meter;
 voice emotion recognition (no source suggests it pays its cost yet); full-duplex speech models
 (phase 8 streaming first); group scenes with several companions.
 
